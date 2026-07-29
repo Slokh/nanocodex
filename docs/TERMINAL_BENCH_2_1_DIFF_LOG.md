@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 13:52 UTC.
+Snapshot: 2026-07-29 13:59 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -817,10 +817,12 @@ Snapshot: 2026-07-29 13:52 UTC.
   | `schemelike-metacircular-eval` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `mteb-leaderboard` | 4/5 | 4/5 | 3/5 | 5/5 |
   | `tune-mjcf` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `circuit-fibsqrt` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `pytorch-model-cli` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 31 latest controlled task cells, Nanocodex is 104/155 in the
-  normal-stock cohort and 100/155 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 110/155 in normal Code Mode and 118/155 in `code_mode_only`.
+  Across these 33 latest controlled task cells, Nanocodex is 114/165 in the
+  normal-stock cohort and 110/165 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 120/165 in normal Code Mode and 128/165 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
   cohorts, so its four-score spread is sampling variance. Stock
   `code_mode_only` is numerically eight scores higher than normal Code Mode,
@@ -1453,6 +1455,30 @@ Snapshot: 2026-07-29 13:52 UTC.
   with six poll-only turns. Score is unchanged, so this is another controlled
   stock-efficiency win for Code-Mode-Only rather than evidence for direct
   outer tools.
+- Both `circuit-fibsqrt` cells close 5/5 for both agents. With normal stock
+  Code Mode, Nanocodex/stock medians are 241.4/252.4 seconds,
+  137,723/146,378 tokens, 10/10 generation turns, and 2/1 poll-only turns;
+  five-trial totals are 669,601/853,104 tokens and
+  1,188.7/1,380.0 agent-seconds. With stock Code-Mode-Only, medians are
+  318.2/237.1 seconds, 159,322/120,767 tokens, 11/8 generation turns, and
+  3/0 poll-only turns; totals are 837,563/846,981 tokens and
+  1,469.8/1,328.7 agent-seconds. Relative to the independent Nanocodex shift,
+  Code-Mode-Only saves stock 174,085 tokens, 332.3 agent-seconds, 19
+  generation turns, and 14 poll-only turns. Score is unchanged, so this cell
+  also favors Code-Mode-Only on every controlled stock-efficiency axis.
+- Both `pytorch-model-cli` cells close 5/5 for both agents. With normal stock
+  Code Mode, Nanocodex/stock medians are 140.0/161.7 seconds,
+  208,587/257,927 tokens, 14/16 generation turns, and zero poll-only turns;
+  five-trial totals are 1,026,069/1,205,990 tokens and
+  681.4/865.2 agent-seconds. With stock Code-Mode-Only, medians are
+  141.8/166.7 seconds, 181,716/244,216 tokens, 12/16 generation turns, and
+  zero poll-only turns; totals are 936,426/1,245,584 tokens and
+  727.8/830.2 agent-seconds. Nanocodex is faster and uses fewer median tokens
+  in both modes, reversing the original k=1 latency regression. The
+  difference-in-differences is mixed—Code-Mode-Only saves stock 81.4 relative
+  agent-seconds but costs 129,237 relative tokens and five relative
+  generation turns—so this cell supplies no reason to expose direct outer
+  tools and no Nanocodex loop regression to fix.
 - The next matched k=5 cohort uses exact runner `b2dff4be` and targets
   not-yet-k=5 score-parity tasks with first-sample Nanocodex latency or
   roundtrip regressions: `pytorch-model-cli`, `git-leak-recovery`,
