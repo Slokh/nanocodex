@@ -676,7 +676,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 12:10 UTC.
+Snapshot: 2026-07-29 12:16 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -805,14 +805,17 @@ Snapshot: 2026-07-29 12:10 UTC.
   | `password-recovery` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `regex-log` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `write-compressor` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `overfull-hbox` | 5/5 | 5/5 | 1/5 | 3/5 |
 
-  Across these 23 controlled tasks, Nanocodex is 71/115 in the normal-stock
-  cohort and 67/115 in the Code-Mode-Only-stock cohort. Stock Codex is 72/115
-  in normal Code Mode and 81/115 in `code_mode_only`. Nanocodex has the same
-  Code-Mode-Only configuration in both independent cohorts, so its four-score
-  spread is a useful estimate of task-sampling variance. Stock
-  `code_mode_only` retains the stronger aggregate result, although
-  `regex-chess` is a real task-level counterexample.
+  Across these 24 controlled tasks, Nanocodex is 76/120 in the normal-stock
+  cohort and 68/120 in the Code-Mode-Only-stock cohort. Stock Codex is 77/120
+  in normal Code Mode and 84/120 in `code_mode_only`. Nanocodex has the same
+  Code-Mode-Only configuration in both independent cohorts, so its eight-score
+  spread measures task-sampling variance. Stock `code_mode_only` is
+  numerically seven scores higher than normal Code Mode, but the unchanged
+  Nanocodex control moves eight scores in the same direction. The aggregate
+  therefore does not yet causally identify a stock tool-mode effect;
+  task-level results and fresh high-variance repetitions remain decisive.
 - Every failed `torch-pipeline-parallelism` arm passes the two structural tests
   and fails both world-size correctness tests. The common signature is a
   backward-activation mismatch on microbatch 0, usually at `lm_head.bwd`.
@@ -1262,6 +1265,23 @@ Snapshot: 2026-07-29 12:10 UTC.
   password and regex, while compressor trades slightly lower stock latency
   for slightly higher tokens; none changes score. This is mixed stochastic
   execution efficiency, not evidence to expose outer tools in Nanocodex.
+- `overfull-hbox` is 5/5 for both agents in the normal cohort, but 1/5 for
+  Nanocodex and 3/5 for stock in Code-Mode-Only. Normal Nanocodex/stock
+  medians are 131.8/196.8 seconds, 159,824/312,390 tokens, and 12/16
+  generation turns. Code-Mode-Only medians are 168.4/207.7 seconds,
+  143,240/222,638 tokens, and 11/15 turns. No arm polls. The unchanged
+  Nanocodex control's four-pass swing is larger than stock's two-pass
+  tool-mode swing, so this is high-variance evidence rather than a
+  demonstrated normal-Code-Mode win.
+- Every Overfull failure compiles and removes the warning but violates the
+  task's literal substitution policy: trajectories make plausible semantic
+  replacements across different comma-delimited families, such as
+  `traits` to `natures` or `odd` to `abnormal`, instead of choosing a member
+  of the original word's specified family. Code-Mode-Only initial context and
+  nested catalog match exactly, first generation divergence is model output,
+  cache keys are stable, and no response or tool-result link is broken. A
+  fresh independent k=5 repetition is required before using this task to
+  judge outer-tool exposure.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |
