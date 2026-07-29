@@ -350,6 +350,13 @@ crate-boundary checks pass. An exact remote binary passed a fresh excluded
 k=1 deployment/metadata smoke on both arms; its raw captures validate the
 ported identity lifetimes. Fresh matched k=5 affected-task cohorts are now
 running and are not mixed with older runners.
+Two stock arms in a later normal-Video repetition then exposed an independent
+eval-transport failure: guest DNS stopped resolving `host.containers.internal`
+while the host capture proxy remained alive. Commit `75bc9fac` now uses
+gvproxy's owned direct host-loopback route instead of DNS. Focused and complete
+eval/VM tests, doc tests, warnings-denied Clippy, formatting, and boundary
+checks pass; an exact remote release is staged for a fresh excluded connectivity
+smoke and clean normal-Video repetition as capacity returns.
 
 The first controlled cells for five more tasks have closed, bringing the
 latest valid table to 48 tasks. Thirty-three of the 37 previously queued tasks
