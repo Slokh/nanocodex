@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 14:46 UTC.
+Snapshot: 2026-07-29 15:08 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -812,6 +812,7 @@ Snapshot: 2026-07-29 14:46 UTC.
   | `overfull-hbox` | 2/5 | 4/5 | 3/5 | 3/5 |
   | `sam-cell-seg` | 2/5 | 5/5 | 2/5 | 4/5 |
   | `compile-compcert` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `build-cython-ext` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `build-pmars` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `mailman` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `schemelike-metacircular-eval` | 5/5 | 5/5 | 5/5 | 5/5 |
@@ -827,9 +828,9 @@ Snapshot: 2026-07-29 14:46 UTC.
   | `query-optimize` | 5/5 | 4/5 | 5/5 | 4/5 |
   | `custom-memory-heap-crash` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 40 latest controlled task cells, Nanocodex is 149/200 in the
-  normal-stock cohort and 145/200 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 154/200 in normal Code Mode and 162/200 in `code_mode_only`.
+  Across these 41 latest controlled task cells, Nanocodex is 154/205 in the
+  normal-stock cohort and 150/205 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 159/205 in normal Code Mode and 167/205 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
   cohorts, so its four-score spread is sampling variance. Stock
   `code_mode_only` is numerically eight scores higher than normal Code Mode,
@@ -1665,6 +1666,36 @@ Snapshot: 2026-07-29 14:46 UTC.
   tool-result link is broken, and neither agent replays history. Direct outer
   tools therefore add no score and materially degrade stock efficiency,
   while the complete cell exposes no Nanocodex loop defect.
+- Both `build-cython-ext` cells close 5/5 for both agents. With normal stock
+  Code Mode, Nanocodex/stock medians are 326.9/317.2 seconds,
+  674,714/793,015 tokens, 28/35 generation turns, and 0/1 poll-only turns;
+  five-trial totals are 3,430,105/4,136,941 tokens and
+  1,565.3/1,696.1 agent-seconds. With stock Code-Mode-Only, medians are
+  272.4/314.1 seconds, 1,031,409/744,295 tokens, 33/27 generation turns, and
+  3/0 poll-only turns; totals are 4,626,481/3,822,144 tokens and
+  1,545.1/1,526.3 agent-seconds.
+- Raw Code-Mode-Only stock saves 314,797 tokens, 169.8 agent-seconds, 34
+  generation turns, and 17 poll-only turns. The unchanged Nanocodex control
+  moves the other way on tokens, generation turns, and polling between these
+  independent samples, producing a much larger formal residual that is not a
+  credible causal estimate. Score is unchanged. Every Code-Mode-Only sample
+  has matching initial text and nested definitions, stable cache keys, no
+  broken response or tool-result links, no replay, and a first-generation
+  divergence consisting only of model output. The repeated stock efficiency
+  direction favors Code-Mode-Only, while Nanocodex's 23-poll sample tail is
+  stochastic model wait behavior rather than a mode-dependent runtime change.
+- Completion of both k5j processes released 8,192 MiB of configured future
+  capacity. It was immediately backfilled with matched k5n mode processes for
+  unresolved score and large-regression cases: `extract-elf`, `dna-assembly`,
+  `video-processing`, `build-pov-ray`, and `largest-eigenval`. Each process
+  runs one 4,096 MiB pair at a time, defaults to k=5, and uses exact runner
+  `b2dff4be`. Code-Mode-Only started as soon as its k5j process exited; normal
+  Code Mode joined when its final Build-Cython comparison completed. Together
+  with k5g, k5l, and k5m, their configured future maxima restore the exact
+  48 GiB host ceiling. Retained roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5n-code-mode-only-b2dff4be-20260729T145455Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5n-stock-code-mode-b2dff4be-20260729T145959Z`.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
