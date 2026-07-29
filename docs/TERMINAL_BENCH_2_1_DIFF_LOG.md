@@ -676,7 +676,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 09:51 UTC.
+Snapshot: 2026-07-29 10:02 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -789,14 +789,16 @@ Snapshot: 2026-07-29 09:51 UTC.
   | `torch-pipeline-parallelism` | 2/5 | 2/5 | 1/5 | 1/5 |
   | `filter-js-from-html` | 0/5 | 0/5 | 1/5 | 1/5 |
   | `video-processing` | 2/5 | 1/5 | 0/5 | 3/5 |
+  | `dna-assembly` | 0/5 | 2/5 | 1/5 | 1/5 |
+  | `build-pov-ray` | 3/5 | 3/5 | 4/5 | 5/5 |
 
-  Across these seven high-signal tasks, Nanocodex is 10/35 in the independent
-  cohort paired with stock normal Code Mode and 8/35 in the cohort paired with
-  stock `code_mode_only`; stock Codex is 9/35 and 15/35, respectively. Because
-  Nanocodex has the same Code-Mode-Only configuration in both cohorts, its
-  two-sample difference is a direct measure of independent sampling variance.
-  Stock `code_mode_only` nevertheless has the stronger directional result so
-  far; normal Code Mode has not demonstrated a score advantage.
+  Across these nine high-signal tasks, Nanocodex is 13/45 in both independent
+  cohorts. Stock Codex is 14/45 in normal Code Mode and 21/45 in
+  `code_mode_only`. Because Nanocodex has the same Code-Mode-Only
+  configuration in both cohorts, its exact aggregate tie is a useful
+  stochastic control. Stock `code_mode_only` now has the materially stronger
+  directional result; normal Code Mode has not demonstrated a score
+  advantage.
 - Every failed `torch-pipeline-parallelism` arm passes the two structural tests
   and fails both world-size correctness tests. The common signature is a
   backward-activation mismatch on microbatch 0, usually at `lm_head.bwd`.
@@ -838,6 +840,27 @@ Snapshot: 2026-07-29 09:51 UTC.
   `DEFAULT_STREAM_IDLE_TIMEOUT_MS` to 300,000 and Nanocodex uses the same
   five-minute limit for its socket, HTTP, and host transports. No timeout
   change is justified by these samples.
+- `dna-assembly` finishes 0/5 versus 2/5 in the normal-Code-Mode cohort and
+  1/5 versus 1/5 in the Code-Mode-Only cohort. Every one of the 16 failed arms
+  hits the same forward/reverse-primer Tm-delta assertion. Both agents usually
+  validate only the explicit binding suffix and miss that a BsaI overhang
+  suffix can also match the adjacent template, extending the actual annealing
+  tract used by the verifier. Passing samples account for that overlap. The
+  last Code-Mode-Only stock pass took 44 generation requests, 1,125,146
+  tokens, and 674.0 seconds after its paired Nanocodex failure had already
+  completed; continuous progress showed local primer/assembly validation, not
+  a stall. Initial context, response chains, cache identity, tool-result
+  links, and polling are healthy.
+- `build-pov-ray` finishes 3/5 versus 3/5 in the normal-Code-Mode cohort and
+  4/5 versus 5/5 in the Code-Mode-Only cohort. The official directory offers
+  both Unix `TAR.Z` archives and ZIP archives. The tar files contain the exact
+  LF source bytes expected by the verifier; ZIP extraction retains CRLF, so
+  all six canonical-source hashes differ even though the binary and render
+  work. Other failures put otherwise valid ZIP contents under an extra
+  `povsrc/` directory, while the task requires source files at
+  `/app/povray-2.2`. Both agents make both choices across samples, including
+  mirrored one-sided failures. This is archive/layout strategy stochasticity,
+  not an event-loop advantage.
 - Three retained Filter attempts exposed a real measurement defect without a
   response-chain defect: normal trials 1 and 2 and Code-Mode-Only trial 3
   received `response.created` plus nonterminal output before the WebSocket
@@ -859,6 +882,14 @@ Snapshot: 2026-07-29 09:51 UTC.
   new cohorts retain post-send receive, idle, transport, and cancellation
   uncertainty in agent metrics and eval billing completeness while leaving
   explicit provider-terminal failures certain.
+- The first production `0869ad3` cohort exercised that path immediately:
+  normal-Code-Mode `build-pov-ray` trial 1 received a WebSocket reset after
+  send on Nanocodex model call 9. Its retained failure event says
+  `billing_uncertain: true`; the replacement socket replayed 31 committed
+  input items and completed with zero broken links. The scored report records
+  one retry, one reconnect, one uncertain response attempt, and billing
+  completeness `unknown`. Nanocodex still passed the verifier, so the retry
+  did not determine the score split.
 - The next evaluator revision makes this operating pattern first-class:
   `nanocodex eval diff` accepts tasks or suites, defaults to k=5, preserves
   task/trial coordinates and queue timing, applies work-conserving
