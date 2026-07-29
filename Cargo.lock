@@ -4252,6 +4252,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -5125,6 +5126,7 @@ dependencies = [
  "futures-util",
  "hex",
  "ignore",
+ "jiff",
  "nanocodex-agent",
  "nanocodex-oai-api",
  "nanocodex-tools",

@@ -359,7 +359,11 @@ impl<S> ModelRun<S> {
         let factory = self.attempt_factory(&tools);
         let context = ContextState::new(selected_agents_md, ContextBaseline::Missing);
         let canonical_context = context
-            .capture(tools.working_directory(), tools.default_shell_name())
+            .capture(
+                tools.working_directory(),
+                tools.default_shell_name(),
+                self.context_source.local_time_context(),
+            )
             .full_item();
         Ok(ModelSessionState {
             workspace,

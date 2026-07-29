@@ -9,6 +9,7 @@ use crate::{NanocodexError, Result};
 #[derive(Clone, Default)]
 pub(crate) struct ContextSourceConfig {
     codex_home: Option<PathBuf>,
+    local_time_context: Option<super::LocalTimeContext>,
 }
 
 impl ContextSourceConfig {
@@ -20,9 +21,18 @@ impl ContextSourceConfig {
         self.codex_home.as_deref()
     }
 
+    pub(crate) fn set_local_time_context(&mut self, context: super::LocalTimeContext) {
+        self.local_time_context = Some(context);
+    }
+
+    pub(crate) const fn local_time_context(&self) -> Option<&super::LocalTimeContext> {
+        self.local_time_context.as_ref()
+    }
+
     pub(crate) fn build(&self) -> ContextSource {
         ContextSource {
             global_instructions: load_global_instructions(self.codex_home()),
+            local_time_context: self.local_time_context.clone(),
         }
     }
 }
@@ -30,6 +40,7 @@ impl ContextSourceConfig {
 #[derive(Clone)]
 pub(crate) struct ContextSource {
     global_instructions: Option<Arc<str>>,
+    local_time_context: Option<super::LocalTimeContext>,
 }
 
 impl ContextSource {
@@ -58,6 +69,10 @@ impl ContextSource {
 
     pub(crate) fn global_instructions(&self) -> Option<Arc<str>> {
         self.global_instructions.as_ref().map(Arc::clone)
+    }
+
+    pub(crate) const fn local_time_context(&self) -> Option<&super::LocalTimeContext> {
+        self.local_time_context.as_ref()
     }
 
     pub(crate) fn with_fallback_global(mut self, fallback: Option<Arc<str>>) -> Self {

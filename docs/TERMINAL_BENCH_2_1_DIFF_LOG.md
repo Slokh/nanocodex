@@ -740,6 +740,24 @@ Snapshot: 2026-07-29 08:05 UTC.
   to execute against the same account. Exact Code-Mode-Only and normal-Code-
   Mode smokes must pass the schema-v11 guard on both Alpine and Ubuntu-family
   images before the controlled treatment cohort starts.
+- Fresh Alpine, Ubuntu, and normal-Code-Mode smokes passed that shell gate at
+  commit `0c135a8`. The controlled medium-effort campaign then started with
+  independent normal-Code-Mode and Code-Mode-Only cohorts, using the same
+  `gpt-5.6-sol` model and one isolated VM per arm. `pytorch-model-recovery`
+  and `raman-fitting` now have five profile-valid samples in each stock mode;
+  `dna-insert` is being filled from three to five in each mode. The original
+  89-task baseline remains k=1 and must not be described as k=5.
+- Both `extract-elf` samples in each stock mode exposed one more real context
+  mismatch and are excluded from the controlled counts. Its Ubuntu image
+  links `/etc/localtime` through `/usr/share/zoneinfo//UTC`; stock Codex
+  therefore renders `<timezone>/UTC</timezone>`, while the host-resident
+  Nanocodex agent rendered the host's `Etc/UTC`. The profile guard correctly
+  rejected all four comparisons even though the task prompt, working
+  directory, shell, model, effort, and visible tool surfaces matched.
+  VM-backed Nanocodex attempts now derive the IANA timezone from the prepared
+  guest rootfs and calculate the guest-local date before building the agent.
+  A new pinned cohort must rerun `extract-elf` to k=5 after this correction;
+  no pre-fix ELF score is valid mode-comparison evidence.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |

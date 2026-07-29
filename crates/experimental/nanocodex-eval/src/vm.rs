@@ -28,6 +28,7 @@ use arcbox_ext4::{
 };
 use chrono::{DateTime, Utc};
 use fs2::FileExt as _;
+use jiff::{Timestamp, tz::TimeZone};
 use nanocodex_agent::NanocodexBuilder;
 use nanocodex_tools::{Tools, ToolsBuildError, standard::UpdatePlanTool};
 use nanocodex_vm::{
@@ -97,6 +98,13 @@ const VERIFIER_NETWORK_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 const GVPROXY_VERSION: &str = "v0.8.9";
 const EVAL_IMAGE_RUN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const DEFAULT_GUEST_TIMEZONE: &str = "Etc/UTC";
+const ZONEINFO_PREFIXES: [&str; 4] = [
+    "/usr/share/zoneinfo/",
+    "../usr/share/zoneinfo/",
+    "/etc/zoneinfo/",
+    "../etc/zoneinfo/",
+];
 
 /// Prepared VM resources shared by every attempt in one evaluation run.
 ///
@@ -260,7 +268,8 @@ impl VmResourcesBuilder {
             } else {
                 "/workspace"
             };
-            let environment = VmEnvironment::new(rootfs, workspace, "bash");
+            let timezone = guest_timezone(&rootfs);
+            let environment = VmEnvironment::new(rootfs, workspace, "bash").timezone(timezone);
             self.tasks
                 .iter()
                 .map(|task| (task.root().to_path_buf(), environment.clone()))
@@ -420,7 +429,8 @@ async fn prepare_vm_environments(
             "VM root disk ready"
         );
         let environment = VmEnvironment::new(prepared.path(), prepared.workdir(), prepared.shell())
-            .environment(prepared.environment().clone());
+            .environment(prepared.environment().clone())
+            .timezone(guest_timezone(prepared.path()));
         environments.insert(
             task.root().to_path_buf(),
             verifier.map_or(environment.clone(), |verifier| {
@@ -429,6 +439,75 @@ async fn prepare_vm_environments(
         );
     }
     Ok(environments)
+}
+
+fn guest_timezone(rootfs: &Path) -> String {
+    let timezone = if rootfs.is_file() {
+        ext4_timezone(rootfs)
+    } else {
+        directory_timezone(rootfs)
+    };
+    timezone.unwrap_or_else(|| DEFAULT_GUEST_TIMEZONE.to_owned())
+}
+
+fn ext4_timezone(rootfs: &Path) -> Option<String> {
+    let mut reader = Reader::new(rootfs).ok()?;
+    let link_timezone = reader
+        .stat_no_follow("/etc/localtime")
+        .ok()
+        .and_then(|(_, inode)| {
+            let size = usize::try_from(inode.file_size()).ok()?;
+            if !inode.is_link() || size > inode.block.len() {
+                return None;
+            }
+            std::str::from_utf8(&inode.block[..size])
+                .ok()
+                .and_then(timezone_from_link)
+        });
+    link_timezone.or_else(|| {
+        reader
+            .read_file("/etc/timezone", 0, None)
+            .ok()
+            .and_then(|contents| String::from_utf8(contents).ok())
+            .and_then(timezone_from_file)
+    })
+}
+
+fn directory_timezone(rootfs: &Path) -> Option<String> {
+    fs::read_link(rootfs.join("etc/localtime"))
+        .ok()
+        .and_then(|target| target.into_os_string().into_string().ok())
+        .and_then(|target| timezone_from_link(&target))
+        .or_else(|| {
+            fs::read_to_string(rootfs.join("etc/timezone"))
+                .ok()
+                .and_then(timezone_from_file)
+        })
+}
+
+fn timezone_from_link(target: &str) -> Option<String> {
+    ZONEINFO_PREFIXES
+        .iter()
+        .find_map(|prefix| target.strip_prefix(prefix).map(ToOwned::to_owned))
+        .filter(|timezone| !timezone.is_empty())
+}
+
+fn timezone_from_file(contents: String) -> Option<String> {
+    let timezone = contents.trim();
+    (!timezone.is_empty()).then(|| timezone.to_owned())
+}
+
+fn current_date(timezone: &str) -> String {
+    current_date_at(Timestamp::now(), timezone)
+}
+
+fn current_date_at(timestamp: Timestamp, timezone: &str) -> String {
+    let timezone_name = timezone.trim_start_matches('/');
+    let timezone = match TimeZone::get(timezone_name) {
+        Ok(timezone) => timezone,
+        Err(_) => TimeZone::UTC,
+    };
+    timestamp.to_zoned(timezone).date().to_string()
 }
 
 async fn prepare_gvproxy(cache: &Path) -> Result<PathBuf, VmResourcesError> {
@@ -581,6 +660,7 @@ pub struct VmEnvironment {
     workspace: String,
     environment: BTreeMap<String, String>,
     shell: String,
+    timezone: String,
     verifier: Option<VmVerifierEnvironment>,
 }
 
@@ -596,6 +676,7 @@ impl VmEnvironment {
             workspace: workspace.into(),
             environment: BTreeMap::new(),
             shell: shell.into(),
+            timezone: DEFAULT_GUEST_TIMEZONE.to_owned(),
             verifier: None,
         }
     }
@@ -604,6 +685,13 @@ impl VmEnvironment {
     #[must_use]
     pub fn environment(mut self, environment: impl IntoIterator<Item = (String, String)>) -> Self {
         self.environment = environment.into_iter().collect();
+        self
+    }
+
+    /// Sets the guest timezone described to the model.
+    #[must_use]
+    pub fn timezone(mut self, timezone: impl Into<String>) -> Self {
+        self.timezone = timezone.into();
         self
     }
 
@@ -1050,6 +1138,7 @@ pub enum VmAttemptError {
 /// One materialized VM attempt with its guest session and owned verifier.
 pub struct VmAttempt {
     tools: Tools,
+    timezone: String,
     verifier: VmVerifier,
 }
 
@@ -1074,9 +1163,14 @@ impl VmAttempt {
     /// Returns an error after the owned guest session has been consumed.
     pub fn nanocodex(self, builder: NanocodexBuilder) -> Result<AttemptAgent, VmAttemptError> {
         let readiness = self.session_handle()?;
-        Ok(AttemptAgent::new(builder.tools(self.tools))
-            .ready(async move { readiness.ready().await })
-            .verifier(self.verifier))
+        let current_date = current_date(&self.timezone);
+        Ok(AttemptAgent::new(
+            builder
+                .local_time_context(current_date, self.timezone)
+                .tools(self.tools),
+        )
+        .ready(async move { readiness.ready().await })
+        .verifier(self.verifier))
     }
 
     /// Attaches the owned VM verifier to a stock-Codex attempt driver.
@@ -1222,6 +1316,7 @@ fn vm_attempt_inner(
         .map_err(VmAttemptError::from)?;
     Ok(VmAttempt {
         tools,
+        timezone: environment.timezone.clone(),
         verifier: VmVerifier {
             agent_session: Some(session),
             launch,
@@ -2770,6 +2865,31 @@ mod tests {
         assert_eq!(verifier_shell("sh", false), "sh");
         assert_eq!(verifier_shell("bash", false), "bash");
         assert_eq!(verifier_shell("sh", true), "/bin/bash");
+    }
+
+    #[test]
+    fn guest_timezone_matches_iana_time_zone_link_parsing() {
+        assert_eq!(
+            timezone_from_link("/usr/share/zoneinfo//UTC").as_deref(),
+            Some("/UTC")
+        );
+        assert_eq!(
+            timezone_from_link("../usr/share/zoneinfo/America/New_York").as_deref(),
+            Some("America/New_York")
+        );
+        assert_eq!(timezone_from_link("/not-zoneinfo/UTC"), None);
+    }
+
+    #[test]
+    fn guest_date_uses_the_guest_timezone() {
+        let timestamp = Timestamp::from_second(1_774_918_800).unwrap();
+
+        assert_eq!(current_date_at(timestamp, "Etc/UTC"), "2026-03-31");
+        assert_eq!(
+            current_date_at(timestamp, "America/Los_Angeles"),
+            "2026-03-30"
+        );
+        assert_eq!(current_date_at(timestamp, "/UTC"), "2026-03-31");
     }
 
     #[test]

@@ -103,8 +103,8 @@ pub use session_context::AgentSessionContext;
 pub use turn::{PromptRoute, Turn, TurnControl, TurnResult};
 
 use builder::{CodexCompatibility, PromptCacheConfig};
-pub(crate) use context_source::ContextSource;
 use context_source::ContextSourceConfig;
+pub(crate) use context_source::{ContextSource, LocalTimeContext};
 use driver::{AgentDriver, AgentOrigin, BranchSpawner, DriverShutdown};
 use durability::{Durability, DurabilityConfig};
 pub(crate) use executor::{AgentFactory, AgentSend};
