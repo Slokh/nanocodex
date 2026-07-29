@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 13:59 UTC.
+Snapshot: 2026-07-29 14:06 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -819,10 +819,12 @@ Snapshot: 2026-07-29 13:59 UTC.
   | `tune-mjcf` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `circuit-fibsqrt` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `pytorch-model-cli` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `git-leak-recovery` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `distribution-search` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 33 latest controlled task cells, Nanocodex is 114/165 in the
-  normal-stock cohort and 110/165 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 120/165 in normal Code Mode and 128/165 in `code_mode_only`.
+  Across these 35 latest controlled task cells, Nanocodex is 124/175 in the
+  normal-stock cohort and 120/175 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 130/175 in normal Code Mode and 138/175 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
   cohorts, so its four-score spread is sampling variance. Stock
   `code_mode_only` is numerically eight scores higher than normal Code Mode,
@@ -1479,6 +1481,27 @@ Snapshot: 2026-07-29 13:59 UTC.
   agent-seconds but costs 129,237 relative tokens and five relative
   generation turns—so this cell supplies no reason to expose direct outer
   tools and no Nanocodex loop regression to fix.
+- Both `git-leak-recovery` cells close 5/5 for both agents. With normal stock
+  Code Mode, Nanocodex/stock medians are 77.2/96.9 seconds,
+  68,473/101,225 tokens, and 8/10 generation turns; five-trial totals are
+  341,212/530,337 tokens and 398.0/492.0 agent-seconds. With stock
+  Code-Mode-Only, medians are 82.3/63.4 seconds, 76,959/58,838 tokens, and
+  9/7 generation turns; totals are 407,882/289,315 tokens and
+  435.8/322.1 agent-seconds. No arm polls. Relative to the independent
+  Nanocodex shift, Code-Mode-Only saves stock 307,692 tokens, 207.7
+  agent-seconds, and 26 generation turns. Score is unchanged, so normal
+  outer tools are an all-axis stock-efficiency regression on this task.
+- Both `distribution-search` cells close 5/5 for both agents. With normal
+  stock Code Mode, Nanocodex/stock medians are 62.3/95.3 seconds,
+  42,901/82,457 tokens, and 5/8 generation turns; totals are
+  217,212/418,019 tokens and 319.1/444.8 agent-seconds. With stock
+  Code-Mode-Only, medians are 65.8/77.7 seconds, 43,917/44,839 tokens, and
+  5/5 generation turns; totals are 232,585/262,781 tokens and
+  343.0/385.8 agent-seconds. No arm polls. Relative to the independent
+  Nanocodex shift, Code-Mode-Only saves stock 170,611 tokens, 82.8
+  agent-seconds, and 15 generation turns. Nanocodex remains faster and more
+  token-efficient in both modes, while direct outer tools again provide no
+  score benefit and materially hurt stock efficiency.
 - The next matched k=5 cohort uses exact runner `b2dff4be` and targets
   not-yet-k=5 score-parity tasks with first-sample Nanocodex latency or
   roundtrip regressions: `pytorch-model-cli`, `git-leak-recovery`,
@@ -1535,6 +1558,17 @@ Snapshot: 2026-07-29 13:59 UTC.
   `path-tracing-reverse`. This process also defaults to k=5, uses exact
   runner `b2dff4be`, and has an 8,192 MiB live-arm ceiling. Retained root:
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5l-stock-code-mode-b2dff4be-20260729T134602Z`.
+- The normal-Code-Mode `adaptive-rejection-sampler` cell in k5l closes 5/5
+  for both agents. Nanocodex/stock medians are 239.1/289.9 seconds,
+  274,998/379,529 tokens, 12/16 generation turns, and 4/4 poll-only turns;
+  five-trial totals are 1,507,118/1,755,839 tokens and
+  1,214.6/1,376.8 agent-seconds. Four of five trials favor Nanocodex on
+  latency. The original task-1 behavior also recurs live: after already
+  passing the formal tests, stock spends extra turns probing and fixing edge
+  cases while Nanocodex stops. The cell demonstrates a repeated stopping-
+  policy difference, not a Nanocodex regression. It remains outside the
+  two-mode aggregate until its Code-Mode-Only k=5 counterpart can be admitted
+  under the host-wide memory ceiling.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
