@@ -384,9 +384,18 @@ VM-process contract, whose arguments, runtime, firmware, resources, network,
 resolver, and egress inputs remain independently keyed. A focused regression
 proves that the default identity changes with executable bytes, the explicit
 identity survives unrelated bytes, and an explicit version bump invalidates
-it. Complete VM and eval tests and doc tests pass. This removes revision-wide
-cold-cache churn after one intentional namespace transition; overlapped or
-lazy preparation remains the next generic time-to-first-result improvement.
+it. Complete VM and eval tests and doc tests pass, and the exact release is
+staged on `dev-georgios`. This removes revision-wide cold-cache churn after
+one intentional namespace transition; overlapped or lazy preparation remains
+the next generic time-to-first-result improvement.
+
+The first clean direct-IP Video repetition exposed a separate transient
+whole-gvproxy-route loss after several minutes of successful stock work.
+Subsequent trials completed, while the failed trial is retained and excluded.
+The prior owner silently discarded gvproxy's exit status, so the current
+follow-up appends unexpected early exit status/signal and lifetime to the
+attempt log and tracing. This strengthens the next causal diagnosis without
+pretending that direct addressing can repair a dead network process.
 
 ## Current execution order
 
