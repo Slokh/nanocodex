@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 14:08 UTC.
+Snapshot: 2026-07-29 14:14 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -822,10 +822,11 @@ Snapshot: 2026-07-29 14:08 UTC.
   | `git-leak-recovery` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `distribution-search` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `polyglot-c-py` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `fix-git` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 36 latest controlled task cells, Nanocodex is 129/180 in the
-  normal-stock cohort and 125/180 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 135/180 in normal Code Mode and 143/180 in `code_mode_only`.
+  Across these 37 latest controlled task cells, Nanocodex is 134/185 in the
+  normal-stock cohort and 130/185 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 140/185 in normal Code Mode and 148/185 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
   cohorts, so its four-score spread is sampling variance. Stock
   `code_mode_only` is numerically eight scores higher than normal Code Mode,
@@ -1513,6 +1514,15 @@ Snapshot: 2026-07-29 14:08 UTC.
   Nanocodex shift, Code-Mode-Only saves stock 207,278 tokens, 139.1
   agent-seconds, and 16 generation turns. Score is unchanged, so normal outer
   tools are again a clean stock-efficiency regression.
+- Both `fix-git` cells close 5/5 for both agents. With normal stock Code Mode,
+  Nanocodex/stock medians are 76.2/99.5 seconds, 114,186/196,612 tokens, and
+  11/16 generation turns; totals are 598,200/1,002,383 tokens and
+  356.2/499.0 agent-seconds. With stock Code-Mode-Only, medians are
+  83.0/68.1 seconds, 110,033/115,810 tokens, and 11/11 generation turns;
+  totals are 570,699/547,941 tokens and 383.7/321.8 agent-seconds. No arm
+  polls. Relative to the independent Nanocodex shift, Code-Mode-Only saves
+  stock 426,941 tokens, 204.7 agent-seconds, and 27 generation turns. Score is
+  unchanged, so normal outer tools again materially degrade stock efficiency.
 - The next matched k=5 cohort uses exact runner `b2dff4be` and targets
   not-yet-k=5 score-parity tasks with first-sample Nanocodex latency or
   roundtrip regressions: `pytorch-model-cli`, `git-leak-recovery`,
