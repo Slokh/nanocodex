@@ -300,10 +300,10 @@ that over-admission structurally impossible rather than relying on manual
 arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the latest valid cells for 49 controlled tasks Nanocodex is
-193/245 in the normal-stock cohort and 187/245 in the Code-Mode-Only-stock
-cohort, normal stock Codex is 199/245, and Code-Mode-Only stock Codex is
-206/245.
+active; across the latest valid cells for 50 controlled tasks Nanocodex is
+198/250 in the normal-stock cohort and 192/250 in the Code-Mode-Only-stock
+cohort, normal stock Codex is 204/250, and Code-Mode-Only stock Codex is
+211/250.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
@@ -363,8 +363,8 @@ drain, preserving its partial evidence. Fresh `75bc9fac` broad queues and
 matched normal/Code-Mode-Only Video repetitions are now running from new
 roots.
 
-The first controlled cells for six more tasks have closed, bringing the
-latest valid table to 49 tasks. Thirty-three of the 37 previously queued tasks
+The first controlled cells for seven more tasks have closed, bringing the
+latest valid table to 50 tasks. Thirty-three of the 37 previously queued tasks
 are running as one large k=5 work-conserving queue per stock mode. The
 remaining four each declare 8,192 MiB per arm and require a whole 16 GiB pair
 partition. At 2026-07-29 17:36 UTC, six live processes again summed to the
@@ -397,6 +397,16 @@ The prior owner silently discarded gvproxy's exit status, so the current
 follow-up appends unexpected early exit status/signal and lifetime to the
 attempt log and tracing. This strengthens the next causal diagnosis without
 pretending that direct addressing can repair a dead network process.
+
+Task-image preparation has a separate direct-TSI network boundary. A cold
+GPT-2 image resolved and downloaded one blob, then failed to resolve the same
+host for the next Dockerfile instruction and aborted the whole sweep before
+admission. `VmResourcesBuilder` now owns a bounded image-network retry policy,
+defaulting to two whole-image retries. Only recognized network failures in a
+Dockerfile build step are retried; deterministic build failures still return
+immediately. Retrying starts from immutable task inputs and the content cache,
+retains the full warning/error in the eval trace, and avoids requiring an
+operator to replace a zero-attempt sweep after transient DNS loss.
 
 ## Current execution order
 
