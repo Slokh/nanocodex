@@ -300,9 +300,9 @@ that over-admission structurally impossible rather than relying on manual
 arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the latest cells for 25 controlled tasks Nanocodex is 75/125
-in the normal-stock cohort and 72/125 in the Code-Mode-Only-stock cohort,
-normal stock Codex is 81/125, and Code-Mode-Only stock Codex is 88/125.
+active; across the latest cells for 30 controlled tasks Nanocodex is 99/150
+in the normal-stock cohort and 95/150 in the Code-Mode-Only-stock cohort,
+normal stock Codex is 105/150, and Code-Mode-Only stock Codex is 113/150.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
@@ -310,7 +310,13 @@ Code-Mode-Only. Nanocodex is 3/5 versus 4/5 on G-code and 4/5 in both
 independent Regex cohorts. CompCert is 5/5 for every arm in both modes:
 normal outer tools have a stock-specific token/roundtrip benefit after
 controlling for the independent Nanocodex sample, but no score or relative
-wall-time win.
+wall-time win. The additional `build-pmars`, `mailman`,
+`schemelike-metacircular-eval`, and `mteb-leaderboard` cells show no score
+benefit from direct outer tools; Mailman, Scheme, and MTEB instead favor
+Code-Mode-Only on stock efficiency, with MTEB also moving from 4/5 to 5/5.
+That is directional evidence for Code-Mode-Only, not yet a broad causal
+winner: each mode uses independent model samples, and repeated tasks continue
+to show substantial within-configuration variance.
 
 ## Current execution order
 
