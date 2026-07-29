@@ -1411,14 +1411,14 @@ struct FinishedEvaluation {
     harbor_finish: Duration,
 }
 
-struct DrainExecution<T, E> {
-    result: Result<T, E>,
-    terminal_attempts: usize,
-    interrupted: bool,
-    interrupt: InterruptListener,
+pub(super) struct DrainExecution<T, E> {
+    pub(super) result: Result<T, E>,
+    pub(super) terminal_attempts: usize,
+    pub(super) interrupted: bool,
+    pub(super) interrupt: InterruptListener,
 }
 
-enum InterruptListener {
+pub(super) enum InterruptListener {
     #[cfg(unix)]
     Unix(tokio::signal::unix::Signal),
     #[cfg(windows)]
@@ -1456,7 +1456,7 @@ impl InterruptListener {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum EvalInterruptError {
+pub(super) enum EvalInterruptError {
     #[error("failed to listen for Ctrl-C: {0}")]
     Listener(#[source] io::Error),
     #[error("second interrupt received; aborted admitted evaluation work")]
@@ -1465,7 +1465,7 @@ enum EvalInterruptError {
     Finalization,
 }
 
-fn ctrl_c_interrupt() -> io::Result<InterruptListener> {
+pub(super) fn ctrl_c_interrupt() -> io::Result<InterruptListener> {
     #[cfg(unix)]
     {
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
@@ -1481,7 +1481,7 @@ fn ctrl_c_interrupt() -> io::Result<InterruptListener> {
     }
 }
 
-async fn finish_or_drain<T, E, Work, Drain>(
+pub(super) async fn finish_or_drain<T, E, Work, Drain>(
     work: Work,
     mut interrupt: InterruptListener,
     terminal_attempts: usize,
@@ -1520,7 +1520,7 @@ where
     }
 }
 
-async fn finish_or_interrupt<T, Work>(
+pub(super) async fn finish_or_interrupt<T, Work>(
     work: Work,
     mut interrupt: InterruptListener,
 ) -> Result<T, EvalInterruptError>

@@ -284,6 +284,14 @@ three-task backfill smoke validate the new admission behavior on
 their original comparisons remained live. The lower-overhead task-worker
 allocation described above is not implemented, so no final reduced-VM-overhead
 claim is complete.
+The CLI now treats `--max-memory-mb` as a hard per-process safety boundary:
+it rejects a task whose two declared arms exceed that value instead of relying
+on the library scheduler's work-conserving oversized-task exception. It also
+reuses the standard eval interrupt machinery so the first Ctrl-C closes
+admission and drains already admitted comparisons, while a second Ctrl-C
+forces cancellation. Operators still have to partition one host-wide budget
+across concurrently running mode processes; cross-process admission is not
+implemented.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
 active; across the first 15 controlled tasks Nanocodex is 38/75 in both
