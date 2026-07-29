@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 13:46 UTC.
+Snapshot: 2026-07-29 13:52 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -816,10 +816,11 @@ Snapshot: 2026-07-29 13:46 UTC.
   | `mailman` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `schemelike-metacircular-eval` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `mteb-leaderboard` | 4/5 | 4/5 | 3/5 | 5/5 |
+  | `tune-mjcf` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 30 latest controlled task cells, Nanocodex is 99/150 in the
-  normal-stock cohort and 95/150 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 105/150 in normal Code Mode and 113/150 in `code_mode_only`.
+  Across these 31 latest controlled task cells, Nanocodex is 104/155 in the
+  normal-stock cohort and 100/155 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 110/155 in normal Code Mode and 118/155 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
   cohorts, so its four-score spread is sampling variance. Stock
   `code_mode_only` is numerically eight scores higher than normal Code Mode,
@@ -1432,8 +1433,26 @@ Snapshot: 2026-07-29 13:46 UTC.
   turns, while the normal-mode score tie becomes a two-pass stock edge.
   Normal outer tools therefore show no score or efficiency benefit on this
   task. The wrong-model choices and winner-flipping normal cell remain model
-  strategy variance rather than a loop defect, but both controlled cells
-  favor keeping stock Code-Mode-Only.
+  strategy variance rather than a loop defect. All five Code-Mode-Only trials
+  have equal initial model text and nested tool definitions, stable cache
+  keys, no broken response or tool-result links, no replay, and a first
+  divergence consisting only of model output. Both controlled cells therefore
+  favor keeping stock Code-Mode-Only without identifying a Nanocodex loop bug.
+- Both `tune-mjcf` cells close 5/5 for both agents. With normal stock Code
+  Mode, Nanocodex/stock medians are 242.3/212.9 seconds,
+  182,314/228,810 tokens, 15/18 generation turns, and 1/0 poll-only turns;
+  five-trial totals are 1,037,462/1,201,980 tokens and
+  1,447.3/1,356.7 agent-seconds. With stock Code-Mode-Only, medians are
+  277.9/243.3 seconds, 171,853/215,649 tokens, 13/17 generation turns, and
+  zero poll-only turns; totals are 1,323,475/1,024,588 tokens and
+  1,601.9/1,257.4 agent-seconds. Relative to the independent Nanocodex shift,
+  Code-Mode-Only saves stock 463,405 tokens, 253.9 agent-seconds, and 12
+  generation turns. Normal stock trial 5 supplies the clearest live example:
+  Nanocodex had already passed while stock continued PGS
+  iteration/tolerance simulations, eventually finishing 215.5 seconds later
+  with six poll-only turns. Score is unchanged, so this is another controlled
+  stock-efficiency win for Code-Mode-Only rather than evidence for direct
+  outer tools.
 - The next matched k=5 cohort uses exact runner `b2dff4be` and targets
   not-yet-k=5 score-parity tasks with first-sample Nanocodex latency or
   roundtrip regressions: `pytorch-model-cli`, `git-leak-recovery`,
