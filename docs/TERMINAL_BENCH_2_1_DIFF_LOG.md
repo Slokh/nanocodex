@@ -786,17 +786,33 @@ Snapshot: 2026-07-29 08:05 UTC.
   | `raman-fitting` | 0/5 | 1/5 | 0/5 | 2/5 |
   | `dna-insert` | 1/5 | 2/5 | 1/5 | 2/5 |
   | `extract-elf` | 4/5 | 3/5 | 4/5 | 4/5 |
+  | `torch-pipeline-parallelism` | 2/5 | 2/5 | 1/5 | 1/5 |
 
-  Across these four high-signal tasks, Nanocodex is 6/20 in either independent
-  cohort; stock Codex is 6/20 in normal Code Mode and 10/20 in
-  `code_mode_only`. This is early directional evidence against normal Code
-  Mode, not a broad mode conclusion.
-- `filter-js-from-html` trial 1 and `torch-pipeline-parallelism` trials 1–3 are
-  now running in both modes under the same `e8a4593` cohorts. Admission is
-  held at the 48 GiB declared two-arm memory ceiling. The Filter lanes remain
-  healthy: one is still iterating after a failed local edge-case assertion and
-  the other is in the task's long Chromium verifier; neither is an unexplained
-  stall.
+  Across these five high-signal tasks, Nanocodex is 8/25 in the independent
+  cohort paired with stock normal Code Mode and 7/25 in the cohort paired with
+  stock `code_mode_only`; stock Codex is 8/25 and 11/25, respectively. Because
+  Nanocodex is Code-Mode-Only in both cohorts, its one-sample difference is a
+  direct reminder that these are independent stochastic samples. The stock
+  mode delta remains early directional evidence against normal Code Mode, not
+  a broad mode conclusion.
+- Every failed `torch-pipeline-parallelism` arm passes the two structural tests
+  and fails both world-size correctness tests. The common signature is a
+  backward-activation mismatch on microbatch 0, usually at `lm_head.bwd`.
+  Reading every final `pipeline_parallel.py` directly from its retained ext4
+  image identifies the causal choice: all six passing implementations drain
+  backward work in forward microbatch order, while nearly every failure drains
+  in reverse order. The instruction requires all forwards before all
+  backwards but does not state the verifier's within-backward order. This is a
+  shared, sampling-sensitive interpretation error, not a Nanocodex loop
+  defect. In the exact Code-Mode-Only profile, initial prompt/tool definitions
+  match, the first divergence is generated model output, both prompt-cache
+  keys stay stable, all response and tool-result links are valid, and neither
+  arm polls.
+- `filter-js-from-html` has two trials in each stock mode and
+  `video-processing` is being backfilled under the same `e8a4593` cohorts.
+  Admission remains bounded by the 48 GiB declared two-arm campaign ceiling.
+  Long quiet Filter lanes are canonical Chromium verifier work and expose
+  verifier heartbeats; none is an unexplained model stall.
 - The next evaluator revision makes this operating pattern first-class:
   `nanocodex eval diff` accepts tasks or suites, defaults to k=5, preserves
   task/trial coordinates and queue timing, applies work-conserving
@@ -805,6 +821,16 @@ Snapshot: 2026-07-29 08:05 UTC.
   sweep rather than once per pair. This automates the current paired-VM
   schedule; it does not yet claim the lower-overhead task-worker isolation
   design described in `PLAN.md`.
+- The first remote smoke of that revision completed successfully from commit
+  `ca81552a`. It returned a stable two-element JSON array and retained two
+  profile-valid reports with exact task/trial coordinates and progress paths.
+  `extract-elf` records zero queue time and 4,096 MiB requested/admitted pair
+  memory. `torch-tensor-parallelism` requested 16,384 MiB, was admitted at the
+  deliberately small 8,192 MiB ceiling after 175.9 seconds, and then ran alone.
+  Both tasks share exactly one staged 310 MiB Codex release and CA bundle. The
+  process exited zero; `extract-elf` scored for Codex only and
+  `torch-tensor-parallelism` passed on both arms. This is runner validation at
+  k=1, not benchmark score evidence; controlled cells remain k=5.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |
