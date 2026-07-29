@@ -25,6 +25,56 @@ enum StockCodexToolMode {
     CodeModeOnly,
 }
 
+#[derive(Debug, Default, Eq, PartialEq)]
+struct DifferentialScoreSummary {
+    attempts: usize,
+    valid: usize,
+    infrastructure: usize,
+    incomplete: usize,
+    nanocodex_passes: usize,
+    codex_passes: usize,
+}
+
+impl DifferentialScoreSummary {
+    const fn observe(
+        &mut self,
+        classification: DifferentialClassification,
+        infrastructure: bool,
+        operational_error: bool,
+    ) {
+        self.attempts += 1;
+        if infrastructure {
+            self.infrastructure += 1;
+            return;
+        }
+        if operational_error {
+            self.incomplete += 1;
+            return;
+        }
+        match classification {
+            DifferentialClassification::BothPassed => {
+                self.valid += 1;
+                self.nanocodex_passes += 1;
+                self.codex_passes += 1;
+            }
+            DifferentialClassification::CodexOnlyPassed => {
+                self.valid += 1;
+                self.codex_passes += 1;
+            }
+            DifferentialClassification::NanocodexOnlyPassed => {
+                self.valid += 1;
+                self.nanocodex_passes += 1;
+            }
+            DifferentialClassification::NeitherPassed => {
+                self.valid += 1;
+            }
+            DifferentialClassification::Incomplete => {
+                self.incomplete += 1;
+            }
+        }
+    }
+}
+
 impl From<StockCodexToolMode> for CodexToolMode {
     fn from(value: StockCodexToolMode) -> Self {
         match value {
@@ -259,6 +309,7 @@ impl Diff {
                     }
                     Err(error) => return Err(error.into()),
                 };
+                write_score_summaries(&task_names, requested_trials, &reports);
                 if self.json {
                     write_json(&reports)?;
                 } else {
@@ -316,6 +367,39 @@ impl Diff {
     }
 }
 
+fn write_score_summaries(
+    task_names: &[String],
+    requested_trials: usize,
+    reports: &[DifferentialReport],
+) {
+    for task_name in task_names {
+        let mut summary = DifferentialScoreSummary::default();
+        for report in reports
+            .iter()
+            .filter(|report| report.task_name() == task_name)
+        {
+            summary.observe(
+                report.classification(),
+                report.has_infrastructure_failure(),
+                report.has_operational_error(),
+            );
+        }
+        eprintln!(
+            "Differential score: {task_name} · valid {}/{} · attempts {} · infrastructure {} · \
+             incomplete {} · Nanocodex {}/{} · stock Codex {}/{}",
+            summary.valid,
+            requested_trials,
+            summary.attempts,
+            summary.infrastructure,
+            summary.incomplete,
+            summary.nanocodex_passes,
+            summary.valid,
+            summary.codex_passes,
+            summary.valid
+        );
+    }
+}
+
 fn validate_pair_memory_limit(
     task_name: &str,
     arm_memory_mb: u64,
@@ -347,8 +431,9 @@ mod tests {
     use std::path::Path;
 
     use clap::Parser;
+    use nanocodex_eval::DifferentialClassification;
 
-    use super::{Diff, validate_pair_memory_limit};
+    use super::{Diff, DifferentialScoreSummary, validate_pair_memory_limit};
     use crate::eval::run::DEFAULT_TRIALS;
 
     #[derive(Parser)]
@@ -367,6 +452,34 @@ mod tests {
             "task terminal-bench/large requires 16384 MiB for its two arms, exceeding the 12288 \
              MiB --max-memory-mb ceiling; raise the ceiling or schedule this task in a separate \
              process"
+        );
+    }
+
+    #[test]
+    fn differential_score_summary_excludes_infrastructure_and_incomplete_pairs() {
+        let mut summary = DifferentialScoreSummary::default();
+        summary.observe(DifferentialClassification::BothPassed, false, false);
+        summary.observe(DifferentialClassification::CodexOnlyPassed, false, false);
+        summary.observe(
+            DifferentialClassification::NanocodexOnlyPassed,
+            false,
+            false,
+        );
+        summary.observe(DifferentialClassification::NeitherPassed, false, false);
+        summary.observe(DifferentialClassification::BothPassed, true, false);
+        summary.observe(DifferentialClassification::BothPassed, false, true);
+        summary.observe(DifferentialClassification::Incomplete, false, false);
+
+        assert_eq!(
+            summary,
+            DifferentialScoreSummary {
+                attempts: 7,
+                valid: 4,
+                infrastructure: 1,
+                incomplete: 2,
+                nanocodex_passes: 2,
+                codex_passes: 2,
+            }
         );
     }
 

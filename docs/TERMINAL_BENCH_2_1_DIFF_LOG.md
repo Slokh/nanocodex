@@ -2212,6 +2212,13 @@ Snapshot: 2026-07-29 18:02 UTC.
   coordinate/budget regression and the complete 165-test eval suite pass.
   The implementation is exact commit
   `2bb86561a2c06998d165f791c6fa50f2212ce2eb`.
+- Completed CLI sweeps now write one authoritative per-task score line to
+  stderr even with `--json`: requested/valid pairs, total attempts,
+  infrastructure and incomplete counts, and both pass numerators. It derives
+  those numbers from typed classifications after excluding unscored
+  infrastructure evidence, rather than from filesystem order or the last
+  terminal event. A focused mixed-classification regression covers the
+  denominator and both pass counts.
 - Exact broad-start timing quantifies the eager preparation bottleneck. The
   cold normal queue resolved its first image at 17:28:25 UTC but did not admit
   its first pair until 17:35:00, after the last selected image finished at
