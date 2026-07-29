@@ -275,9 +275,11 @@ starts, releases each arm's memory charge after evaluator and VM cleanup, and
 stages the stock release once per sweep. The initial retained production run
 demonstrated that pair-lifetime charging stranded capacity during long
 unpaired tails; the per-arm release closes that gap without weakening paired
-starts or VM isolation. Deployment and a representative throughput rerun on
-`dev-georgios` remain, and the lower-overhead task-worker allocation described
-above is not implemented, so no final reduced-VM-overhead claim is complete.
+starts or VM isolation. The pinned remote release and a deterministic
+three-task backfill smoke validate the new admission behavior on
+`dev-georgios`; the next representative k=5 cohort will measure its production
+throughput effect. The lower-overhead task-worker allocation described above
+is not implemented, so no final reduced-VM-overhead claim is complete.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
 active; the first nine controlled tasks directionally favor Code-Mode-Only

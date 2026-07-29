@@ -921,6 +921,26 @@ Snapshot: 2026-07-29 10:02 UTC.
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5-stock-code-mode-0869ad3-20260729T094952Z`
   and
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5-code-mode-only-0869ad3-20260729T094952Z`.
+- The first 44 completed comparisons in that cohort exposed a scheduler
+  throughput loss even though their agent loops were healthy. Pair-lifetime
+  admission kept one arm's declared memory unavailable after it had completed
+  whenever the other arm was still running. Summing that unavailable charge
+  over the exact arm-completion gaps gives 159.9 GiB-minutes through this
+  snapshot (84.3 in normal Code Mode and 75.6 in Code-Mode-Only). This is
+  declared-memory charge time, not a claim that the same amount of physical
+  RAM was resident or that the host was idle.
+- Commit `0537dfda6b91efcc1a18ecc443deb9dd8b3829d7` releases an arm's
+  admission charge only after its evaluator, verifier, and VM cleanup have
+  completed, while retaining the comparison's concurrency slot until the
+  other arm finishes. The deployed release has SHA-256
+  `d664b797ab6811f1737b708e98ec770390aef5e19ea68434eb2cb610b4b2e372`.
+  A three-task scheduler smoke used a 768 MiB ceiling with 512 MiB pairs:
+  `write-greeting`'s Codex arm released 256 MiB at
+  `2026-07-29T10:18:54.562995Z`, and `extract-todos` was admitted about
+  160 microseconds later while the paired Nanocodex arm remained live until
+  `10:18:55.233048Z`. All three pairs passed. Evidence:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/scheduler-arm-release-smoke-0537dfd-20260729T101827Z`.
+  This is k=1 infrastructure evidence, not benchmark score evidence.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |
