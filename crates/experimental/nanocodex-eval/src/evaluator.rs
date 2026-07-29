@@ -110,7 +110,14 @@ struct AdmissionState {
 
 pub(crate) struct AdmissionPermit {
     controller: Arc<AdmissionController>,
+    concurrency: usize,
     memory_mb: u64,
+}
+
+pub(crate) enum AdmissionAttempt {
+    Acquired(AdmissionPermit),
+    Unavailable,
+    Draining,
 }
 
 struct FiniteRun {
@@ -2206,35 +2213,68 @@ impl AdmissionController {
         self: &Arc<Self>,
         requested_memory_mb: u64,
     ) -> Option<AdmissionPermit> {
+        self.acquire_many(1, requested_memory_mb).await
+    }
+
+    pub(crate) async fn acquire_many(
+        self: &Arc<Self>,
+        requested_concurrency: usize,
+        requested_memory_mb: u64,
+    ) -> Option<AdmissionPermit> {
+        loop {
+            match self.try_acquire_many(requested_concurrency, requested_memory_mb) {
+                AdmissionAttempt::Acquired(permit) => return Some(permit),
+                AdmissionAttempt::Draining => return None,
+                AdmissionAttempt::Unavailable => self.wait_for_change().await,
+            }
+        }
+    }
+
+    pub(crate) fn try_acquire_many(
+        self: &Arc<Self>,
+        requested_concurrency: usize,
+        requested_memory_mb: u64,
+    ) -> AdmissionAttempt {
+        let concurrency = requested_concurrency.clamp(1, self.max_concurrency);
         let memory_mb = self
             .max_memory_mb
             .map_or(0, |limit| requested_memory_mb.min(limit));
-        loop {
-            let changed = self.changed.notified();
-            {
-                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-                if state.draining {
-                    return None;
-                }
-                let concurrency_available = state.running < self.max_concurrency;
-                let memory_available = self.max_memory_mb.is_none_or(|limit| {
-                    state
-                        .memory_mb
-                        .checked_add(memory_mb)
-                        .is_some_and(|total| total <= limit)
-                });
-                if concurrency_available && memory_available {
-                    state.running += 1;
-                    state.memory_mb += memory_mb;
-                    state.admitted = state.admitted.saturating_add(1);
-                    return Some(AdmissionPermit {
-                        controller: Arc::clone(self),
-                        memory_mb,
-                    });
-                }
-            }
-            changed.await;
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.draining {
+            return AdmissionAttempt::Draining;
         }
+        let concurrency_available = state
+            .running
+            .checked_add(concurrency)
+            .is_some_and(|running| running <= self.max_concurrency);
+        let memory_available = self.max_memory_mb.is_none_or(|limit| {
+            state
+                .memory_mb
+                .checked_add(memory_mb)
+                .is_some_and(|total| total <= limit)
+        });
+        if !concurrency_available || !memory_available {
+            return AdmissionAttempt::Unavailable;
+        }
+        state.running += concurrency;
+        state.memory_mb += memory_mb;
+        state.admitted = state.admitted.saturating_add(1);
+        AdmissionAttempt::Acquired(AdmissionPermit {
+            controller: Arc::clone(self),
+            concurrency,
+            memory_mb,
+        })
+    }
+
+    pub(crate) async fn wait_for_change(&self) {
+        self.changed.notified().await;
+    }
+
+    pub(crate) fn is_draining(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .draining
     }
 
     pub(crate) fn begin_drain(&self) -> usize {
@@ -2243,6 +2283,7 @@ impl AdmissionController {
         let admitted = state.admitted;
         drop(state);
         self.changed.notify_waiters();
+        self.changed.notify_one();
         admitted
     }
 }
@@ -2254,31 +2295,36 @@ impl Drop for AdmissionPermit {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        state.running = state.running.saturating_sub(1);
+        state.running = state.running.saturating_sub(self.concurrency);
         state.memory_mb = state.memory_mb.saturating_sub(self.memory_mb);
         drop(state);
         self.controller.changed.notify_waiters();
+        self.controller.changed.notify_one();
     }
 }
 
 impl AdmissionPermit {
-    /// Releases part of a running admission's memory charge while retaining
-    /// its concurrency slot.
-    pub(crate) fn release_memory(&mut self, memory_mb: u64) -> u64 {
-        let released = self.memory_mb.min(memory_mb);
-        if released == 0 {
-            return 0;
+    /// Releases part of a running admission after one independently owned
+    /// execution unit has completed.
+    pub(crate) fn release(&mut self, concurrency: usize, memory_mb: u64) -> (usize, u64) {
+        let released_concurrency = self.concurrency.min(concurrency);
+        let released_memory_mb = self.memory_mb.min(memory_mb);
+        if released_concurrency == 0 && released_memory_mb == 0 {
+            return (0, 0);
         }
-        self.memory_mb -= released;
+        self.concurrency -= released_concurrency;
+        self.memory_mb -= released_memory_mb;
         let mut state = self
             .controller
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        state.memory_mb = state.memory_mb.saturating_sub(released);
+        state.running = state.running.saturating_sub(released_concurrency);
+        state.memory_mb = state.memory_mb.saturating_sub(released_memory_mb);
         drop(state);
         self.controller.changed.notify_waiters();
-        released
+        self.controller.changed.notify_one();
+        (released_concurrency, released_memory_mb)
     }
 }
 

@@ -10,6 +10,7 @@ pub(crate) enum SessionRequest {
     WriteFile(WriteFileRequest),
     CreateDirectory(CreateDirectoryRequest),
     ReadFile(ReadFileRequest),
+    Memory(MemoryRequest),
     Execute(ExecuteRequest),
     Cancel(CancelRequest),
     Shutdown(ShutdownRequest),
@@ -24,6 +25,7 @@ impl SessionRequest {
             Self::WriteFile(request) => request.id,
             Self::CreateDirectory(request) => request.id,
             Self::ReadFile(request) => request.id,
+            Self::Memory(request) => request.id,
             Self::Execute(request) => request.id,
             Self::Cancel(request) => request.id,
             Self::Shutdown(request) => request.id,
@@ -39,6 +41,7 @@ pub(crate) enum SessionResponse {
     WriteFile(ControlResponse),
     CreateDirectory(ControlResponse),
     ReadFile(ReadFileResponse),
+    Memory(MemoryResponse),
     Execute(ExecuteResponse),
     Cancel(ControlResponse),
     Shutdown(ControlResponse),
@@ -54,6 +57,7 @@ impl SessionResponse {
             | Self::Cancel(response)
             | Self::Shutdown(response) => response.id,
             Self::ReadFile(response) => response.id,
+            Self::Memory(response) => response.id,
             Self::Execute(response) => response.id,
         }
     }
@@ -102,6 +106,12 @@ pub(crate) struct ReadFileRequest {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct MemoryRequest {
+    pub id: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ExecuteRequest {
     pub id: u64,
     pub program: String,
@@ -136,6 +146,16 @@ pub(crate) struct ReadFileResponse {
     pub id: u64,
     #[serde(default, with = "optional_wire_bytes")]
     pub contents: Option<Vec<u8>>,
+    pub error: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MemoryResponse {
+    pub id: u64,
+    pub total_kib: Option<u64>,
+    pub minimum_available_kib: Option<u64>,
+    pub oom_kills: u64,
     pub error: Option<String>,
 }
 
@@ -224,9 +244,9 @@ mod tests {
 
     use super::{
         CancelRequest, ControlResponse, CreateDirectoryRequest, ExecuteRequest, ExecuteResponse,
-        ReadFileRequest, ReadFileResponse, ReadyRequest, SessionRequest, SessionResponse,
-        ShutdownRequest, ToolRequest, ToolResponse, WireToolContext, WireToolInput,
-        WriteFileRequest,
+        MemoryRequest, MemoryResponse, ReadFileRequest, ReadFileResponse, ReadyRequest,
+        SessionRequest, SessionResponse, ShutdownRequest, ToolRequest, ToolResponse,
+        WireToolContext, WireToolInput, WriteFileRequest,
     };
 
     #[test]
@@ -433,6 +453,23 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&cancel).unwrap(),
             r#"{"kind":"cancel","payload":{"id":6,"error":null}}"#
+        );
+
+        let memory = SessionRequest::Memory(MemoryRequest { id: 7 });
+        assert_eq!(
+            serde_json::to_string(&memory).unwrap(),
+            r#"{"kind":"memory","payload":{"id":7}}"#
+        );
+        let memory = SessionResponse::Memory(MemoryResponse {
+            id: 7,
+            total_kib: Some(524_288),
+            minimum_available_kib: Some(131_072),
+            oom_kills: 1,
+            error: None,
+        });
+        assert_eq!(
+            serde_json::to_string(&memory).unwrap(),
+            r#"{"kind":"memory","payload":{"id":7,"total_kib":524288,"minimum_available_kib":131072,"oom_kills":1,"error":null}}"#
         );
     }
 }
