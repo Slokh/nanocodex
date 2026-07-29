@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 15:55 UTC.
+Snapshot: 2026-07-29 18:02 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -879,10 +879,11 @@ Snapshot: 2026-07-29 15:55 UTC.
   | `feal-linear-cryptanalysis` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `reshard-c4-data` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `financial-document-processor` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `merge-diff-arc-agi-task` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 49 latest controlled task cells, Nanocodex is 193/245 in the
-  normal-stock cohort and 187/245 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 199/245 in normal Code Mode and 206/245 in `code_mode_only`.
+  Across these 50 latest controlled task cells, Nanocodex is 198/250 in the
+  normal-stock cohort and 192/250 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 204/250 in normal Code Mode and 211/250 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
   cohorts, so its six-score spread is sampling variance. Stock
   `code_mode_only` is numerically seven scores higher than normal Code
@@ -2158,6 +2159,27 @@ Snapshot: 2026-07-29 15:55 UTC.
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5w-heavy-stock-code-mode-b069eaa5-20260729T175307Z`;
   it completed the cold GPT-2 image build and admitted the first comparison,
   restoring the exact 48 GiB declared ceiling.
+- `merge-diff-arc-agi-task` closes 5/5 for all four arms with complete
+  profiles. In normal mode Nanocodex/stock medians are 117.2/139.7 seconds,
+  258,200/393,409 tokens, and 15/20 generation turns; totals are
+  588.4/795.8 seconds, 1,307,382/1,884,090 tokens, 75/100 generations, and
+  3/0 polls. In Code-Mode-Only the medians are 118.2/123.5 seconds,
+  297,312/290,421 tokens, and 17/17 generations; totals are 596.1/674.3
+  seconds, 1,357,353/1,528,831 tokens, 78/86 generations, and 2/2 polls.
+  Nanocodex matches score while completing 285.6 agent-seconds and 748,186
+  tokens cheaper across both cells. Cache keys and chains are healthy; one
+  normal-stock sample performs a valid replay.
+- The zero-attempt heavy-image failure demonstrates a separate evaluator
+  reliability boundary from per-attempt gvproxy. Dockerfile builders use
+  libkrun's direct TSI network with the usable host resolver. A bounded
+  `VmResourcesBuilder::image_network_retries` policy now defaults to two
+  retries around task and separate-verifier image preparation. It recognizes
+  only DNS/route failures retained in `ImageError::BuildStep`, backs off for
+  2 then 4 seconds, and retries from immutable inputs plus the content cache;
+  deterministic Dockerfile failures are returned once. The focused
+  deterministic regression proves both branches. The complete eval suite
+  (164 tests), doc tests, warnings-denied Clippy, rustfmt, and crate-boundary
+  checks pass.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
