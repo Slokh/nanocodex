@@ -2231,6 +2231,15 @@ Snapshot: 2026-07-29 18:02 UTC.
   infrastructure evidence, rather than from filesystem order or the last
   terminal event. A focused mixed-classification regression covers the
   denominator and both pass counts.
+- The first staged build of the replacement feature came from a Git archive
+  and embedded `VERGEN_IDEMPOTENT_OUTPUT` instead of a source commit; it is
+  rejected and no cohort uses it. The accepted runner comes from an exact
+  detached Git worktree at
+  `5142c2880a24632115d35fc5d6f84d7be85a28a5`, reports build timestamp
+  `2026-07-29T18:27:27.315068238Z`, and has binary SHA-256
+  `fe9da1990c6866d58f9804d891239b9cad2d0b40f51b4f11ce0763b373a7a662`
+  at
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/target-5142c288/release/nanocodex`.
 - Exact broad-start timing quantifies the eager preparation bottleneck. The
   cold normal queue resolved its first image at 17:28:25 UTC but did not admit
   its first pair until 17:35:00, after the last selected image finished at
