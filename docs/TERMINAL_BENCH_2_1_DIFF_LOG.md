@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 15:52 UTC.
+Snapshot: 2026-07-29 15:55 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -803,6 +803,29 @@ Snapshot: 2026-07-29 15:52 UTC.
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5n-stock-code-mode-b2dff4be-20260729T145959Z`
   and
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5n-code-mode-only-b2dff4be-20260729T145455Z`.
+- Both first controlled `fix-ocaml-gc` k=5 cells close 5/5 for both agents.
+  With normal stock Code Mode, Nanocodex/stock medians are 396.9/406.9
+  seconds, 1,044,542/1,450,898 tokens, 27/38 generation turns, and 11/17
+  poll-only turns. Five-trial totals are 1,990.7/2,064.6 agent-seconds,
+  5,439,018/7,803,057 tokens, 131/184 generations, and 55/80 polls. With
+  stock Code-Mode-Only, medians are 396.5/404.3 seconds,
+  1,751,071/1,856,951 tokens, 35/44 generations, and 21/16 polls; totals are
+  1,984.5/2,172.9 seconds, 9,224,598/9,557,631 tokens, 195/215 generations,
+  and 119/96 polls.
+- Nanocodex is faster and uses fewer total tokens and generation turns in
+  both independent modes. Raw Code-Mode-Only stock is less efficient than
+  normal stock on every aggregate axis, while the unchanged Nanocodex control
+  also acquires a large independent token/roundtrip tail, so this cell does
+  not isolate a causal tool-mode effect. Every initial task section matches,
+  all Code-Mode-Only nested definitions match, every first-generation
+  divergence is model output, cache keys stay stable, and no response or
+  tool-result link is broken. One stock Code-Mode-Only trial performs a
+  healthy full-history replay and passes. The repeated process polling is
+  model-selected waiting for long compiler builds, not a loop defect.
+  Retained roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5m-stock-code-mode-b2dff4be-20260729T144533Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5m-code-mode-only-b2dff4be-20260729T144533Z`.
 - The current profile-valid k=5 score cells are:
 
   | task | Nanocodex with stock normal | stock normal | Nanocodex with stock only | stock only |
@@ -849,10 +872,11 @@ Snapshot: 2026-07-29 15:52 UTC.
   | `query-optimize` | 5/5 | 4/5 | 5/5 | 4/5 |
   | `custom-memory-heap-crash` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `adaptive-rejection-sampler` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `fix-ocaml-gc` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 42 latest controlled task cells, Nanocodex is 159/210 in the
-  normal-stock cohort and 152/210 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 162/210 in normal Code Mode and 173/210 in `code_mode_only`.
+  Across these 43 latest controlled task cells, Nanocodex is 164/215 in the
+  normal-stock cohort and 157/215 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 167/215 in normal Code Mode and 178/215 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
   cohorts, so its seven-score spread is sampling variance. Stock
   `code_mode_only` is numerically eleven scores higher than normal Code Mode,
