@@ -287,7 +287,7 @@ claim is complete.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
 active; across the first 15 controlled tasks Nanocodex is 38/75 in both
-independent cohorts, normal stock Codex is 38/75, and Code-Mode-Only stock
+independent cohorts, normal stock Codex is 37/75, and Code-Mode-Only stock
 Codex is 49/75. `gcode-to-text` is the clearest completed mode cell so
 far: stock is 2/5 with direct outer tools and 5/5 in Code-Mode-Only, while
 Nanocodex is 3/5 and 4/5 across its identically configured cohorts.
