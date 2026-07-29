@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 15:18 UTC.
+Snapshot: 2026-07-29 15:23 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -848,10 +848,11 @@ Snapshot: 2026-07-29 15:18 UTC.
   | `large-scale-text-editing` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `query-optimize` | 5/5 | 4/5 | 5/5 | 4/5 |
   | `custom-memory-heap-crash` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `adaptive-rejection-sampler` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 41 latest controlled task cells, Nanocodex is 151/205 in the
-  normal-stock cohort and 148/205 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 159/205 in normal Code Mode and 168/205 in `code_mode_only`.
+  Across these 42 latest controlled task cells, Nanocodex is 156/210 in the
+  normal-stock cohort and 153/210 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 164/210 in normal Code Mode and 173/210 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
   cohorts, so its three-score spread is sampling variance. Stock
   `code_mode_only` is numerically nine scores higher than normal Code Mode,
@@ -1665,9 +1666,23 @@ Snapshot: 2026-07-29 15:18 UTC.
   latency. The original task-1 behavior also recurs live: after already
   passing the formal tests, stock spends extra turns probing and fixing edge
   cases while Nanocodex stops. The cell demonstrates a repeated stopping-
-  policy difference, not a Nanocodex regression. It remains outside the
-  two-mode aggregate until its Code-Mode-Only k=5 counterpart can be admitted
-  under the host-wide memory ceiling.
+  policy difference, not a Nanocodex regression.
+- Its matched Code-Mode-Only cell also closes 5/5 for both agents.
+  Nanocodex/stock medians are 270.0/234.4 seconds, 194,149/338,095 tokens,
+  11/12 generation turns, and 2/3 poll-only turns; five-trial totals are
+  1,122,875/1,557,960 tokens and 1,319.3/1,256.9 agent-seconds. Relative to
+  the independent Nanocodex shift, Code-Mode-Only saves stock 197,879 tokens,
+  119.9 agent-seconds, 20 generation turns, and three polls. Every initial
+  task section and nested Code Mode definition matches, every first
+  generation divergence is model output, cache keys remain stable, and no
+  response or tool-result link is broken. One Nanocodex trial performs a
+  healthy full-history replay after a typed reconnect and still passes.
+  Direct outer tools add no score; the efficiency direction favors
+  Code-Mode-Only for stock while exposing no Nanocodex loop defect. Retained
+  roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5l-stock-code-mode-b2dff4be-20260729T134602Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5l-code-mode-only-b2dff4be-20260729T144431Z`.
 - The normal-Code-Mode `extract-moves-from-video` cell in k5l also closes 5/5
   for both agents. Nanocodex/stock medians are 960.6/1,237.2 seconds,
   2,140,021/3,484,629 observed API tokens, 70/82 generation turns, and
