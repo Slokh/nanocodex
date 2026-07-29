@@ -62,7 +62,15 @@ pub(crate) async fn run(
         &encoded,
     )
     .await
-    .map_err(|error| ResponsesServiceError::responses(error, FailurePhase::Send, 0))?;
+    .map_err(|error| {
+        let billing_uncertain = matches!(error, ResponsesError::HttpRequest { .. });
+        let error = ResponsesServiceError::responses(error, FailurePhase::Send, 0);
+        if billing_uncertain {
+            error.with_billing_uncertain()
+        } else {
+            error
+        }
+    })?;
     connection.observe_turn_state(metadata.turn_state.as_deref());
     let send_duration_ns = elapsed_ns(send_started_at);
     span.record("request.send.duration_ns", send_duration_ns);
@@ -75,7 +83,8 @@ pub(crate) async fn run(
                 required_call_index(request)?,
                 started_at,
             )
-            .await?,
+            .await
+            .map_err(ResponsesServiceError::with_billing_uncertain_unless_provider_terminal)?,
         ),
         ResponsesAttemptKind::Compaction => ResponsesOutput::Compaction(
             stream::receive_compaction(
@@ -85,7 +94,8 @@ pub(crate) async fn run(
                 required_call_index(request)?,
                 started_at,
             )
-            .await?,
+            .await
+            .map_err(ResponsesServiceError::with_billing_uncertain_unless_provider_terminal)?,
         ),
         ResponsesAttemptKind::Warmup => unreachable!("warmup rejected above"),
     };

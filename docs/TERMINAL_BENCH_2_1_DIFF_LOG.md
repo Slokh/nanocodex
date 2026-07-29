@@ -808,11 +808,27 @@ Snapshot: 2026-07-29 08:05 UTC.
   match, the first divergence is generated model output, both prompt-cache
   keys stay stable, all response and tool-result links are valid, and neither
   arm polls.
-- `filter-js-from-html` has two trials in each stock mode and
-  `video-processing` is being backfilled under the same `e8a4593` cohorts.
-  Admission remains bounded by the 48 GiB declared two-arm campaign ceiling.
-  Long quiet Filter lanes are canonical Chromium verifier work and expose
-  verifier heartbeats; none is an unexplained model stall.
+- `filter-js-from-html` has four completed normal-Code-Mode trials and three
+  completed Code-Mode-Only trials; `video-processing` has four completed
+  trials in each mode. Their remaining k=5 trials are active under the same
+  `e8a4593` cohorts. Admission remains bounded by the 48 GiB declared two-arm
+  campaign ceiling. Long quiet Filter lanes are canonical Chromium verifier
+  work and expose verifier heartbeats; none is an unexplained model stall.
+- Three retained Filter attempts exposed a real measurement defect without a
+  response-chain defect: normal trials 1 and 2 and Code-Mode-Only trial 3
+  received `response.created` plus nonterminal output before the WebSocket
+  closed or reset. Nanocodex opened one replacement socket, replayed complete
+  committed history, and finished each attempt with zero broken response or
+  tool-result links. The reports correctly record one retry, one reconnect,
+  and one full-history replay, but incorrectly record zero billing-uncertain
+  response attempts because `model.attempt.failed` did not carry the
+  potentially-billable state into terminal metrics. The next pinned runner
+  adds that typed failure field and counter through transport deltas, terminal
+  events, and eval billing completeness. Focused receive-reset, provider-
+  terminal, and pre/post-send cancellation tests establish that only sent
+  attempts without provider usage make the retained cost/usage snapshot a
+  lower bound. Existing `e8a4593` reports remain immutable evidence with this
+  known accounting undercount; their verifier scores are unaffected.
 - The next evaluator revision makes this operating pattern first-class:
   `nanocodex eval diff` accepts tasks or suites, defaults to k=5, preserves
   task/trial coordinates and queue timing, applies work-conserving

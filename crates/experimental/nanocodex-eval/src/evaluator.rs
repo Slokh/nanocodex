@@ -4714,6 +4714,22 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn completed_terminal_with_an_uncertain_attempt_remains_a_lower_bound() {
+        let observation = AgentObservation::default();
+        let mut payload = terminal_payload(2, 0.25);
+        payload["billing_uncertain_response_attempts"] = json!(1);
+        let terminal = agent_event(1, AgentEventKind::RunCompleted, payload);
+
+        let result = observation
+            .select_result(Some(&terminal), BillingCompleteness::Complete)
+            .result
+            .expect("valid terminal event must produce a result");
+
+        assert_eq!(result.billing_completeness, BillingCompleteness::Unknown);
+        assert_eq!(result.metadata.billing_uncertain_response_attempts, 1);
+    }
+
+    #[test]
     fn retained_terminal_metadata_requires_the_current_billing_field() {
         let mut payload = terminal_payload(1, 0.25);
         let fields = payload.as_object_mut().unwrap();
