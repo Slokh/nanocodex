@@ -60,7 +60,7 @@ pub struct CodexExec {
 }
 
 /// Stock Codex's model-visible tool exposure for a controlled evaluation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexToolMode {
     /// Expose normal tools directly as well as through Code Mode.
@@ -1803,8 +1803,11 @@ mod tests {
                 .contains(r#""aggregated_output":"hi""#)
         );
         assert_eq!(
-            trajectory.steps[6].reasoning_content.as_deref(),
-            Some(r#"[{"completed":true,"text":"finish"}]"#)
+            serde_json::from_str::<serde_json::Value>(
+                trajectory.steps[6].reasoning_content.as_deref().unwrap()
+            )
+            .unwrap(),
+            serde_json::json!([{"completed": true, "text": "finish"}])
         );
         assert_eq!(trajectory.steps[7].message, "done");
         assert!(trajectory.steps[8].message.is_empty());

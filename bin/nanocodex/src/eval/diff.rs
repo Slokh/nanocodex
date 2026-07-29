@@ -15,8 +15,10 @@ use crate::{
 };
 
 const DEFAULT_OUTPUT_DIRECTORY: &str = ".nanocodex/eval-diff";
+const DEFAULT_INITIAL_GUEST_MEMORY_MB: u64 = 512;
+const MEMORY_PROFILE_FILE: &str = "differential-memory-profiles.json";
 
-#[derive(Clone, Copy, Default, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 enum StockCodexToolMode {
     /// Expose normal tools directly as well as through Code Mode.
     CodeMode,
@@ -132,9 +134,24 @@ pub(crate) struct Diff {
     )]
     codex_bin: Option<PathBuf>,
 
-    /// Stock Codex tool exposure used by this controlled comparison.
-    #[arg(long, value_enum, default_value = "code-mode-only")]
-    codex_tool_mode: StockCodexToolMode,
+    /// Stock Codex tool exposure profiles included in this sweep.
+    ///
+    /// Repeat the flag or use a comma-delimited value to schedule several
+    /// profiles through one host-wide queue.
+    #[arg(
+        long = "codex-tool-mode",
+        value_enum,
+        value_delimiter = ',',
+        default_value = "code-mode-only"
+    )]
+    codex_tool_modes: Vec<StockCodexToolMode>,
+
+    /// Reasoning-effort profiles included in this sweep.
+    ///
+    /// Repeat the flag or use a comma-delimited value. When omitted, the
+    /// shared `--thinking` value (or medium) supplies the sole effort.
+    #[arg(long = "thinking-profile", value_delimiter = ',')]
+    thinking_profiles: Vec<Thinking>,
 
     /// Parent directory for paired evaluator artifacts.
     #[arg(long, default_value = DEFAULT_OUTPUT_DIRECTORY)]
@@ -148,16 +165,27 @@ pub(crate) struct Diff {
     )]
     trials: u16,
 
-    /// Maximum number of matched pairs executing at once.
+    /// Active-arm capacity expressed as matched-pair equivalents.
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     concurrency: Option<u16>,
 
-    /// Hard ceiling on task-declared memory across live arms in this process.
+    /// Maximum number of cold task images prepared concurrently.
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+    prepare_concurrency: Option<u16>,
+
+    /// Target ceiling on measured host memory across live VM arms.
     ///
-    /// Both arms are charged at pair start. A task whose pair exceeds this
-    /// ceiling is rejected instead of being admitted as an oversized job.
+    /// Both arms are charged at pair start and released independently. A pair
+    /// whose current estimate exceeds this ceiling runs alone.
     #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u64).range(1..))]
     max_memory_mb: Option<u64>,
+
+    /// Initial eval-only guest RAM allocated to each arm before calibration.
+    ///
+    /// Tasks declaring less retain their smaller allocation. Confirmed OOMs
+    /// grow this value; successful runs persist measured sizing with slack.
+    #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u64).range(1..))]
+    guest_memory_mb: Option<u64>,
 
     /// Percentage of detected host CPU and memory used for omitted limits.
     #[arg(
@@ -180,7 +208,7 @@ pub(crate) struct Diff {
     #[arg(long)]
     vm_refresh: bool,
 
-    /// Print the complete comparison record as JSON.
+    /// Print the complete sweep record as JSON.
     #[arg(long)]
     json: bool,
 
@@ -206,6 +234,14 @@ impl Diff {
 
         let tasks = run::load_tasks(self.tasks, self.suites)?;
         let requested_trials = usize::from(self.trials);
+        let codex_tool_modes = resolve_codex_tool_modes(&self.codex_tool_modes)?;
+        let thinking_profiles =
+            resolve_thinking_profiles(self.agent.thinking(), &self.thinking_profiles)?;
+        let profiles = resolve_differential_profiles(&thinking_profiles, &codex_tool_modes);
+        let primary_profile = profiles
+            .first()
+            .copied()
+            .ok_or_else(|| eyre!("at least one differential profile is required"))?;
         let task_names = tasks
             .iter()
             .map(|task| task.name().to_owned())
@@ -213,23 +249,26 @@ impl Diff {
         let (automatic_concurrency, automatic_memory_mb) =
             run::automatic_scheduling_defaults(self.host_utilization);
         let concurrency = self.concurrency.unwrap_or(automatic_concurrency);
+        let prepare_concurrency = self
+            .prepare_concurrency
+            .unwrap_or_else(|| concurrency.clamp(1, 8));
         let max_memory_mb = self.max_memory_mb.or(automatic_memory_mb);
-        if let Some(max_memory_mb) = max_memory_mb {
-            for task in &tasks {
-                validate_pair_memory_limit(task.name(), task.resources().memory_mb, max_memory_mb)?;
-            }
-        }
+        let initial_guest_memory_mb = self
+            .guest_memory_mb
+            .unwrap_or(DEFAULT_INITIAL_GUEST_MEMORY_MB);
         eprintln!(
-            "Differential sweep: {} task(s) × k={} · up to {} pair(s) · {}",
+            "Differential sweep: {} task(s) × {} profile(s) × k={} · up to {} pair(s) · {} · \
+             {initial_guest_memory_mb} MiB initial per-arm guest RAM",
             tasks.len(),
+            profiles.len(),
             self.trials,
             concurrency,
             max_memory_mb.map_or_else(
-                || "unbounded declared memory".to_owned(),
-                |memory| format!("{memory} MiB live-arm memory ceiling")
+                || "unbounded measured host memory".to_owned(),
+                |memory| format!("{memory} MiB measured host-memory target")
             )
         );
-        let thinking = self.agent.thinking().unwrap_or(Thinking::Medium);
+        let thinking = primary_profile.thinking();
         let web_search = self.agent.web_search().unwrap_or(false);
         let (nanocodex, auth) = self.agent.shared_builder(thinking, web_search)?;
         let codex_auth = match auth {
@@ -248,8 +287,8 @@ impl Diff {
             } else {
                 CachePolicy::Reuse
             })
-            .prepare()
-            .await?;
+            .image_preparation_concurrency(usize::from(prepare_concurrency));
+        let vm = vm.prepare().await?;
         let output = self.output;
         let mut evaluator = DifferentialEvaluator::builder(nanocodex)
             .codex(
@@ -261,22 +300,27 @@ impl Diff {
             .output_directory(&output)
             .thinking(thinking)
             .web_search(web_search)
-            .codex_tool_mode(self.codex_tool_mode.into())
+            .codex_tool_mode(primary_profile.codex_tool_mode())
             .nanocodex_executable(
                 ExecutableIdentity::new(current_executable, env!("NANOCODEX_SEMVER_VERSION"))
                     .git_sha(env!("VERGEN_GIT_SHA"))
                     .built_at(env!("VERGEN_BUILD_TIMESTAMP")),
             )
+            .initial_guest_memory_mb(initial_guest_memory_mb)
+            .memory_profile_path(self.vm_cache.join(MEMORY_PROFILE_FILE))
             .max_concurrency(usize::from(concurrency))
             .max_infrastructure_replacements(requested_trials);
         if let Some(max_memory_mb) = max_memory_mb {
             evaluator = evaluator.max_memory_mb(max_memory_mb);
         }
         let evaluator = evaluator.build()?;
-        let comparison_count = tasks.len().saturating_mul(requested_trials);
+        let comparison_count = tasks
+            .len()
+            .saturating_mul(profiles.len())
+            .saturating_mul(requested_trials);
         let interrupts = run::ctrl_c_interrupt()?;
         let execution = run::finish_or_drain(
-            evaluator.tasks_n(tasks, requested_trials),
+            evaluator.tasks_n_with_profiles(tasks, requested_trials, profiles.clone()),
             interrupts,
             comparison_count,
             || {
@@ -297,8 +341,8 @@ impl Diff {
         } = execution;
         run::finish_or_interrupt(
             async move {
-                let reports = match result {
-                    Ok(reports) => reports,
+                let sweep = match result {
+                    Ok(sweep) => sweep,
                     Err(error) if interrupted => {
                         return Err(eyre!(
                             "differential sweep interrupted after draining admitted comparisons; \
@@ -309,24 +353,19 @@ impl Diff {
                     }
                     Err(error) => return Err(error.into()),
                 };
-                write_score_summaries(&task_names, requested_trials, &reports);
+                write_score_summaries(&task_names, &profiles, requested_trials, sweep.summaries());
+                if sweep.skipped() > 0 {
+                    eprintln!(
+                        "Differential resume: skipped {} already-valid pair(s)",
+                        sweep.skipped()
+                    );
+                }
                 if self.json {
-                    write_json(&reports)?;
+                    write_json(&sweep)?;
                 } else {
-                    for report in &reports {
+                    for report in sweep.reports() {
                         print!("{}", report.human_summary());
                     }
-                }
-                let operational_errors = reports
-                    .iter()
-                    .filter(|report| report.has_operational_error())
-                    .collect::<Vec<_>>();
-                if !operational_errors.is_empty() {
-                    return Err(eyre!(
-                        "{} comparison runner(s) failed; first evidence retained at {}",
-                        operational_errors.len(),
-                        operational_errors[0].comparison_path().display()
-                    ));
                 }
                 if interrupted {
                     return Err(eyre!(
@@ -336,25 +375,45 @@ impl Diff {
                         output.display()
                     ));
                 }
-                if let Some((task_name, valid_pairs)) = task_names.iter().find_map(|task_name| {
-                    let valid_pairs = reports
-                        .iter()
-                        .filter(|report| {
-                            report.task_name() == task_name && !report.has_infrastructure_failure()
+                if let Some((task_name, profile, valid_pairs)) =
+                    task_names.iter().find_map(|task_name| {
+                        profiles.iter().find_map(|profile| {
+                            let valid_pairs = sweep
+                                .summaries()
+                                .iter()
+                                .filter(|summary| {
+                                    summary.task_name() == task_name
+                                        && summary.thinking() == profile.thinking().as_str()
+                                        && summary.codex_tool_mode() == profile.codex_tool_mode()
+                                        && !summary.has_infrastructure_failure()
+                                        && !summary.has_operational_error()
+                                })
+                                .count();
+                            (valid_pairs < requested_trials).then_some((
+                                task_name,
+                                *profile,
+                                valid_pairs,
+                            ))
                         })
-                        .count();
-                    (valid_pairs < requested_trials).then_some((task_name, valid_pairs))
-                }) {
-                    let evidence = reports
+                    })
+                {
+                    let evidence = sweep
+                        .summaries()
                         .iter()
-                        .find(|report| {
-                            report.task_name() == task_name && report.has_infrastructure_failure()
+                        .find(|summary| {
+                            summary.task_name() == task_name
+                                && summary.thinking() == profile.thinking().as_str()
+                                && summary.codex_tool_mode() == profile.codex_tool_mode()
+                                && (summary.has_infrastructure_failure()
+                                    || summary.has_operational_error())
                         })
-                        .map_or(output.as_path(), DifferentialReport::comparison_path);
+                        .map_or(output.as_path(), DifferentialReportSummary::comparison_path);
                     return Err(eyre!(
-                        "task {task_name} retained {valid_pairs}/{requested_trials} valid matched \
-                         pairs after {requested_trials} infrastructure replacement(s); evidence \
+                        "task {task_name} profile {}/{} retained {valid_pairs}/{requested_trials} \
+                         valid matched pairs after bounded retries and replacements; evidence \
                          retained at {}",
+                        profile.thinking().as_str(),
+                        profile.codex_tool_mode().as_str(),
                         evidence.display()
                     ));
                 }
@@ -369,53 +428,96 @@ impl Diff {
 
 fn write_score_summaries(
     task_names: &[String],
+    profiles: &[DifferentialProfile],
     requested_trials: usize,
-    reports: &[DifferentialReport],
+    summaries: &[DifferentialReportSummary],
 ) {
     for task_name in task_names {
-        let mut summary = DifferentialScoreSummary::default();
-        for report in reports
-            .iter()
-            .filter(|report| report.task_name() == task_name)
-        {
-            summary.observe(
-                report.classification(),
-                report.has_infrastructure_failure(),
-                report.has_operational_error(),
+        for profile in profiles {
+            let mut summary = DifferentialScoreSummary::default();
+            for report in summaries.iter().filter(|report| {
+                report.task_name() == task_name
+                    && report.thinking() == profile.thinking().as_str()
+                    && report.codex_tool_mode() == profile.codex_tool_mode()
+            }) {
+                summary.observe(
+                    report.classification(),
+                    report.has_infrastructure_failure(),
+                    report.has_operational_error(),
+                );
+            }
+            eprintln!(
+                "Differential score: {task_name} · profile {}/{} · valid {}/{} · attempts {} · \
+                 infrastructure {} · incomplete {} · Nanocodex {}/{} · stock Codex {}/{}",
+                profile.thinking().as_str(),
+                profile.codex_tool_mode().as_str(),
+                summary.valid,
+                requested_trials,
+                summary.attempts,
+                summary.infrastructure,
+                summary.incomplete,
+                summary.nanocodex_passes,
+                summary.valid,
+                summary.codex_passes,
+                summary.valid
             );
         }
-        eprintln!(
-            "Differential score: {task_name} · valid {}/{} · attempts {} · infrastructure {} · \
-             incomplete {} · Nanocodex {}/{} · stock Codex {}/{}",
-            summary.valid,
-            requested_trials,
-            summary.attempts,
-            summary.infrastructure,
-            summary.incomplete,
-            summary.nanocodex_passes,
-            summary.valid,
-            summary.codex_passes,
-            summary.valid
-        );
     }
 }
 
-fn validate_pair_memory_limit(
-    task_name: &str,
-    arm_memory_mb: u64,
-    max_memory_mb: u64,
-) -> Result<()> {
-    let pair_memory_mb = arm_memory_mb.checked_mul(2).ok_or_else(|| {
-        eyre!("task {task_name} pair memory overflows while applying --max-memory-mb")
-    })?;
-    if pair_memory_mb > max_memory_mb {
+fn resolve_codex_tool_modes(requested: &[StockCodexToolMode]) -> Result<Vec<CodexToolMode>> {
+    let mut resolved = Vec::with_capacity(requested.len());
+    for tool_mode in requested.iter().copied().map(CodexToolMode::from) {
+        if resolved.contains(&tool_mode) {
+            return Err(eyre!(
+                "duplicate --codex-tool-mode profile {}",
+                tool_mode.as_str()
+            ));
+        }
+        resolved.push(tool_mode);
+    }
+    if resolved.is_empty() {
+        return Err(eyre!("at least one --codex-tool-mode is required"));
+    }
+    Ok(resolved)
+}
+
+fn resolve_thinking_profiles(
+    shared: Option<Thinking>,
+    requested: &[Thinking],
+) -> Result<Vec<Thinking>> {
+    if requested.is_empty() {
+        return Ok(vec![shared.unwrap_or(Thinking::Medium)]);
+    }
+    if shared.is_some() {
         return Err(eyre!(
-            "task {task_name} requires {pair_memory_mb} MiB for its two arms, exceeding the \
-             {max_memory_mb} MiB --max-memory-mb ceiling; raise the ceiling or schedule this task \
-             in a separate process"
+            "--thinking and --thinking-profile cannot be used together"
         ));
     }
-    Ok(())
+    let mut resolved = Vec::with_capacity(requested.len());
+    for thinking in requested.iter().copied() {
+        if resolved.contains(&thinking) {
+            return Err(eyre!("duplicate --thinking-profile {}", thinking.as_str()));
+        }
+        resolved.push(thinking);
+    }
+    Ok(resolved)
+}
+
+fn resolve_differential_profiles(
+    thinking_profiles: &[Thinking],
+    codex_tool_modes: &[CodexToolMode],
+) -> Vec<DifferentialProfile> {
+    thinking_profiles
+        .iter()
+        .copied()
+        .flat_map(|thinking| {
+            codex_tool_modes
+                .iter()
+                .copied()
+                .map(move |tool_mode| DifferentialProfile::new(thinking, tool_mode))
+        })
+        .collect()
 }
 
 fn write_json(value: &impl serde::Serialize) -> Result<()> {
@@ -431,28 +533,19 @@ mod tests {
     use std::path::Path;
 
     use clap::Parser;
-    use nanocodex_eval::DifferentialClassification;
+    use nanocodex::Thinking;
+    use nanocodex_eval::{CodexToolMode, DifferentialClassification};
 
-    use super::{Diff, DifferentialScoreSummary, validate_pair_memory_limit};
+    use super::{
+        Diff, DifferentialScoreSummary, StockCodexToolMode, resolve_codex_tool_modes,
+        resolve_differential_profiles, resolve_thinking_profiles,
+    };
     use crate::eval::run::DEFAULT_TRIALS;
 
     #[derive(Parser)]
     struct TestCli {
         #[command(flatten)]
         diff: Diff,
-    }
-
-    #[test]
-    fn differential_memory_ceiling_is_strict_for_a_pair() {
-        validate_pair_memory_limit("terminal-bench/small", 2_048, 4_096).unwrap();
-
-        let error = validate_pair_memory_limit("terminal-bench/large", 8_192, 12_288).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "task terminal-bench/large requires 16384 MiB for its two arms, exceeding the 12288 \
-             MiB --max-memory-mb ceiling; raise the ceiling or schedule this task in a separate \
-             process"
-        );
     }
 
     #[test]
@@ -514,8 +607,12 @@ mod tests {
             "7",
             "--concurrency",
             "12",
+            "--prepare-concurrency",
+            "6",
             "--max-memory-mb",
             "49152",
+            "--guest-memory-mb",
+            "1024",
         ])
         .unwrap();
 
@@ -529,7 +626,52 @@ mod tests {
         assert_eq!(cli.diff.suites, [Path::new("tasks/suite").to_path_buf()]);
         assert_eq!(cli.diff.trials, 7);
         assert_eq!(cli.diff.concurrency, Some(12));
+        assert_eq!(cli.diff.prepare_concurrency, Some(6));
         assert_eq!(cli.diff.max_memory_mb, Some(49_152));
+        assert_eq!(cli.diff.guest_memory_mb, Some(1_024));
+        assert_eq!(
+            cli.diff.codex_tool_modes,
+            [StockCodexToolMode::CodeModeOnly]
+        );
+    }
+
+    #[test]
+    fn differential_cli_accepts_multiple_profiles_for_one_queue() {
+        let cli = TestCli::try_parse_from([
+            "nanoeval",
+            "--task",
+            "tasks/first",
+            "--codex-bin",
+            "/opt/codex",
+            "--codex-tool-mode",
+            "code-mode,code-mode-only",
+            "--thinking-profile",
+            "low,high",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.diff.codex_tool_modes,
+            [
+                StockCodexToolMode::CodeMode,
+                StockCodexToolMode::CodeModeOnly
+            ]
+        );
+        assert_eq!(
+            resolve_codex_tool_modes(&cli.diff.codex_tool_modes).unwrap(),
+            [CodexToolMode::CodeMode, CodexToolMode::CodeModeOnly]
+        );
+        let thinking = resolve_thinking_profiles(None, &cli.diff.thinking_profiles).unwrap();
+        assert_eq!(thinking, [Thinking::Low, Thinking::High]);
+        let profiles = resolve_differential_profiles(
+            &thinking,
+            &resolve_codex_tool_modes(&cli.diff.codex_tool_modes).unwrap(),
+        );
+        assert_eq!(profiles.len(), 4);
+        assert_eq!(profiles[0].thinking(), Thinking::Low);
+        assert_eq!(profiles[0].codex_tool_mode(), CodexToolMode::CodeMode);
+        assert_eq!(profiles[3].thinking(), Thinking::High);
+        assert_eq!(profiles[3].codex_tool_mode(), CodexToolMode::CodeModeOnly);
     }
 
     #[test]

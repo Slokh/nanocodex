@@ -92,8 +92,8 @@ pub use guest::VmGuestError;
 pub use runtime_disk::{GuestRuntimeDisk, GuestRuntimeDiskError, GuestRuntimeDiskStatus};
 #[cfg(all(feature = "host", any(target_os = "linux", target_os = "macos")))]
 pub use session::{
-    VmCommand, VmCommandOutput, VmCommandPartialOutput, VmToolSession, VmToolSessionError,
-    VmToolSessionHandle,
+    VmCommand, VmCommandOutput, VmCommandPartialOutput, VmMemoryObservation, VmToolSession,
+    VmToolSessionError, VmToolSessionHandle,
 };
 
 /// One VM-aware execution capability shared by all proxied workspace tools.

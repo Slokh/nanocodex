@@ -5,7 +5,7 @@ use std::{
     process::{ExitStatus, Stdio},
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -30,14 +30,111 @@ use tokio::{
 
 use super::protocol::{
     CancelRequest, ControlResponse, CreateDirectoryRequest, ExecuteRequest, ExecuteResponse,
-    ReadFileRequest, ReadFileResponse, SessionRequest, SessionResponse, ShutdownRequest,
-    ToolResponse, WriteFileRequest,
+    MemoryResponse, ReadFileRequest, ReadFileResponse, SessionRequest, SessionResponse,
+    ShutdownRequest, ToolResponse, WriteFileRequest,
 };
 
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CONTROL_FILE_BYTES: usize = 32 * 1024 * 1024;
 const FILESYSTEM_SYNC_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_IN_FLIGHT_REQUESTS: usize = 64;
+const MEMORY_SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
+
+#[derive(Default)]
+struct GuestMemoryMonitor {
+    total_kib: AtomicU64,
+    minimum_available_kib: AtomicU64,
+    initial_oom_kills: AtomicU64,
+    current_oom_kills: AtomicU64,
+    oom_baseline_ready: AtomicBool,
+}
+
+impl GuestMemoryMonitor {
+    async fn sample(&self) {
+        let (meminfo, vmstat) = tokio::join!(
+            tokio::fs::read_to_string("/proc/meminfo"),
+            tokio::fs::read_to_string("/proc/vmstat"),
+        );
+        if let Ok(meminfo) = meminfo
+            && let Some((total_kib, available_kib)) = parse_meminfo(&meminfo)
+        {
+            self.total_kib.store(total_kib, Ordering::Relaxed);
+            let _ = self
+                .minimum_available_kib
+                .fetch_min(available_kib, Ordering::Relaxed);
+        }
+        if let Ok(vmstat) = vmstat
+            && let Some(oom_kills) = parse_vmstat_oom_kills(&vmstat)
+        {
+            if self
+                .oom_baseline_ready
+                .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                self.initial_oom_kills.store(oom_kills, Ordering::Relaxed);
+            }
+            self.current_oom_kills.store(oom_kills, Ordering::Relaxed);
+        }
+    }
+
+    async fn run(self: Arc<Self>) {
+        loop {
+            self.sample().await;
+            tokio::time::sleep(MEMORY_SAMPLE_INTERVAL).await;
+        }
+    }
+
+    fn response(&self, id: u64) -> MemoryResponse {
+        let total_kib = self.total_kib.load(Ordering::Relaxed);
+        let minimum_available_kib = self.minimum_available_kib.load(Ordering::Relaxed);
+        let available = total_kib > 0 && minimum_available_kib != u64::MAX;
+        MemoryResponse {
+            id,
+            total_kib: available.then_some(total_kib),
+            minimum_available_kib: available.then_some(minimum_available_kib),
+            oom_kills: self
+                .current_oom_kills
+                .load(Ordering::Relaxed)
+                .saturating_sub(self.initial_oom_kills.load(Ordering::Relaxed)),
+            error: (!available).then(|| "guest /proc memory telemetry is unavailable".to_owned()),
+        }
+    }
+}
+
+fn parse_meminfo(contents: &str) -> Option<(u64, u64)> {
+    let mut total = None;
+    let mut available = None;
+    for line in contents.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let Some(value) = value
+            .split_whitespace()
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        match key {
+            "MemTotal" => total = Some(value),
+            "MemAvailable" => available = Some(value),
+            _ => {}
+        }
+        if total.is_some() && available.is_some() {
+            break;
+        }
+    }
+    Some((total?, available?))
+}
+
+fn parse_vmstat_oom_kills(contents: &str) -> Option<u64> {
+    contents.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let key = fields.next()?;
+        let value = fields.next()?;
+        (key == "oom_kill").then(|| value.parse().ok()).flatten()
+    })
+}
 
 /// Failure while serving VM tool requests inside the guest.
 #[derive(Debug, Error)]
@@ -93,6 +190,12 @@ async fn serve_io_with_frame_limit(
             std::env::vars_os().collect(),
         ),
     );
+    let memory = Arc::new(GuestMemoryMonitor {
+        minimum_available_kib: AtomicU64::new(u64::MAX),
+        ..GuestMemoryMonitor::default()
+    });
+    memory.sample().await;
+    let memory_task = tokio::spawn(Arc::clone(&memory).run());
     let mut input = BufReader::new(input);
     let mut requests = JoinSet::<SessionResponse>::new();
     let mut active = HashMap::<u64, tokio::task::AbortHandle>::new();
@@ -144,8 +247,11 @@ async fn serve_io_with_frame_limit(
                                 return Err(VmGuestError::DuplicateRequestId(id));
                             }
                             let runtime = Arc::clone(&runtime);
+                            let memory = Arc::clone(&memory);
                             let task =
-                                requests.spawn(async move { execute_request(runtime, request).await });
+                                requests.spawn(async move {
+                                    execute_request(runtime, memory, request).await
+                                });
                             active.insert(id, task);
                         }
                     }
@@ -157,6 +263,7 @@ async fn serve_io_with_frame_limit(
     .await;
 
     runtime.control().cancel().await;
+    memory_task.abort();
     if let Some(request) = result? {
         let response = SessionResponse::Shutdown(sync_filesystems(request).await);
         write_response(&mut output, &response, max_frame_bytes).await?;
@@ -166,6 +273,7 @@ async fn serve_io_with_frame_limit(
 
 async fn execute_request(
     runtime: Arc<WorkspaceToolRuntime>,
+    memory: Arc<GuestMemoryMonitor>,
     request: SessionRequest,
 ) -> SessionResponse {
     match request {
@@ -194,6 +302,7 @@ async fn execute_request(
             SessionResponse::CreateDirectory(create_directory(request).await)
         }
         SessionRequest::ReadFile(request) => SessionResponse::ReadFile(read_file(request).await),
+        SessionRequest::Memory(request) => SessionResponse::Memory(memory.response(request.id)),
         SessionRequest::Execute(request) => {
             SessionResponse::Execute(execute_command(request).await)
         }
@@ -752,12 +861,22 @@ mod tests {
         SessionResponse, ShutdownRequest, ToolRequest, WireToolContext, WireToolInput,
     };
     use super::{
-        atomic_write_file, command_environment, create_directory_path, execute_command, read_file,
-        serve_io, serve_io_with_frame_limit,
+        atomic_write_file, command_environment, create_directory_path, execute_command,
+        parse_meminfo, parse_vmstat_oom_kills, read_file, serve_io, serve_io_with_frame_limit,
     };
 
     const DEFAULT_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
     const PATH_TRACING_IMAGE_BYTES: u64 = 48_262_737;
+
+    #[test]
+    fn parses_guest_peak_memory_inputs() {
+        let meminfo = "MemTotal:       524288 kB\nmalformed\nMemAvailable:   131071 kB\n";
+        assert_eq!(parse_meminfo(meminfo), Some((524_288, 131_071)));
+        assert_eq!(
+            parse_vmstat_oom_kills("pgfault 12\noom_kill 3\npgmajfault 1\n"),
+            Some(3)
+        );
+    }
 
     #[test]
     fn trusted_commands_inherit_guest_environment_and_apply_explicit_overrides() {

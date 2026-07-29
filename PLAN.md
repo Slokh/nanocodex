@@ -276,7 +276,29 @@ preserves task/trial and queue coordinates, charges both arms when a pair
 starts, releases each arm's memory charge after evaluator and VM cleanup, and
 stages the stock release once per sweep. Here k=5 means five valid independent
 matched pairs per task, not five launches regardless of evaluator health.
-Comparison schema v10 and the evaluator builder now retain infrastructure-
+The process-wide runner now accepts repeated reasoning-effort and stock
+tool-mode profiles in one invocation and expands
+`(task × effort × tool mode × repetition)` through one central completion
+queue, admission controller, prepared-image map, and staged stock release.
+Pair capacity is represented as two active-arm slots; each completed arm
+returns one slot and its own learned host-RSS estimate, so two unrelated
+completed arms can backfill another matched pair while their former
+counterparts remain live. Task images are prepared lazily through bounded
+single-flight cells: each task enters admission as its image resolves while
+other image work continues, and a failed image blocks only its task coordinates.
+The immutable image is shared by matched arms while writable disks, sessions,
+and verifier state remain private.
+
+Differential VM arms now start from a low eval-only guest allocation, sample
+guest peak use and OOM counters plus VMM host RSS, and persist task-content-
+keyed sizing with slack in the VM cache. A confirmed OOM retains an unscored
+attempt and geometrically requeues both arms of the same logical trial up to
+the task declaration; ordinary model loss never changes memory. Separate
+Nanocodex and stock host estimates drive admission and are released with their
+arms. A sweep manifest and exclusive output lock make the full matrix safely
+resumable without mixing tasks, profiles, trials, models, or executable builds.
+Explicit `nanocodex eval prepare` remains available independently.
+Comparison schema v12 and the evaluator builder now retain infrastructure-
 broken pairs, schedule bounded replacements at fresh trial coordinates, and
 link every replacement to the failed trial it supersedes. The CLI budgets up
 to one extra k-sized cell per task and fails after writing all evidence if it
@@ -295,23 +317,18 @@ three-task backfill smoke validate the new admission behavior on
 their original comparisons remained live. The lower-overhead task-worker
 allocation described above is not implemented, so no final reduced-VM-overhead
 claim is complete.
-The largest measured host-utilization loss is currently before admission, not
-inside the pair scheduler: a cold 33-task process took about 6.5 minutes to
-eagerly prepare every selected image before its first comparison, while the
-same queue with warm semantic image keys resolved all images in under two
-seconds. Image preparation must become lazy or overlap with admitted work so a
-large mixed queue can start from its first ready task without weakening
-content-addressed isolation. Cross-process host packing is also still manual,
-so several independently correct 8/16 GiB process ceilings can collectively
-over-admit the machine.
-The CLI now treats `--max-memory-mb` as a hard per-process safety boundary:
-it rejects a task whose two declared arms exceed that value instead of relying
-on the library scheduler's work-conserving oversized-task exception. It also
+The earlier largest host-utilization loss was before admission: a cold 33-task
+process took about 6.5 minutes to prepare every selected image before its first
+comparison, while warm semantic keys resolved in under two seconds. Lazy
+bounded preparation now removes that batch barrier. `--max-memory-mb` is a
+process-wide measured-host-memory target; an estimate above it runs alone, and
+`--guest-memory-mb` selects the initial per-arm guest allocation rather than a
+permanent cap. The CLI also
 reuses the standard eval interrupt machinery so the first Ctrl-C closes
 admission and drains already admitted comparisons, while a second Ctrl-C
-forces cancellation. Operators still have to partition one host-wide budget
-across concurrently running mode processes; cross-process admission is not
-implemented. The live campaign demonstrated the exact remaining hazard: an
+forces cancellation. The supported saturation path is one invocation owning
+the complete profile matrix; independently launched processes still do not
+share admission. The live campaign demonstrated the old hazard: an
 operator initially counted an 8,192 MiB-per-arm MTEB task as a 4,096 MiB pair
 and launched two additional mode processes. The first pair in each process
 was cancelled and excluded from scores after briefly taking the host from
@@ -420,10 +437,10 @@ running. The heavy-task lane and both fresh `train-fasttext` mode cells are
 also active. The five admitted eval processes again sum to the exact 48 GiB
 configured future ceiling.
 
-The broad launch exposed two separate image-startup costs. First,
-`VmResources::prepare` eagerly materializes every selected task image before
-admitting the first comparison, so a cold large sweep leaves its attempt
-capacity idle. Second, the build-cache key hashed the complete evaluator
+The broad launch exposed two separate image-startup costs. First, eager image
+materialization left a cold large sweep idle before admission; the central
+runner now resolves each task lazily with bounded single-flight preparation.
+Second, the build-cache key hashed the complete evaluator
 executable because that executable also hosts the `vm-run-config` entry point.
 Any unrelated agent, capture, reporting, or evaluator revision therefore
 invalidated every Dockerfile-built task image even when VM build semantics and
@@ -436,8 +453,8 @@ proves that the default identity changes with executable bytes, the explicit
 identity survives unrelated bytes, and an explicit version bump invalidates
 it. Complete VM and eval tests and doc tests pass, and the exact release is
 staged on `dev-georgios`. This removes revision-wide cold-cache churn after
-one intentional namespace transition; overlapped or lazy preparation remains
-the next generic time-to-first-result improvement.
+one intentional namespace transition; lazy scheduling now also removes the
+generic cold batch barrier.
 
 The first clean direct-IP Video repetition exposed a separate transient
 whole-gvproxy-route loss after several minutes of successful stock work.

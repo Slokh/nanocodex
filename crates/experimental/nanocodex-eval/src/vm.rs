@@ -18,7 +18,7 @@ use std::{
     os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex as StdMutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -36,11 +36,14 @@ use nanocodex_vm::{
         BlockDevice, GuestCommand, Gvproxy as GvproxyProcess, GvproxyError as VmGvproxyError,
         Network, VmConfig,
     },
-    tools::{VmCommandOutput, VmCommandPartialOutput, VmToolSession},
+    tools::{VmCommandOutput, VmCommandPartialOutput, VmMemoryObservation, VmToolSession},
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
-use tokio::process::Command;
+use tokio::{
+    process::Command,
+    sync::{OnceCell as AsyncOnceCell, Semaphore},
+};
 use tracing::{info, info_span, warn};
 
 pub use nanocodex_vm::{
@@ -94,6 +97,7 @@ const VERIFIER_CACHE_PREPARE_SCRIPT: &str = "/tmp/nanoeval-prepare-verifier.sh";
 const GUEST_PUBLIC_RESOLV_CONF: &str =
     "nameserver 192.168.127.1\\nnameserver 1.1.1.1\\noptions timeout:2 attempts:5\\n";
 const DEFAULT_IMAGE_NETWORK_RETRIES: usize = 2;
+const DEFAULT_IMAGE_PREPARATION_CONCURRENCY: usize = 4;
 const IMAGE_NETWORK_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 const VERIFIER_NETWORK_RETRIES: usize = 4;
 const VERIFIER_NETWORK_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
@@ -112,6 +116,14 @@ const ZONEINFO_PREFIXES: [&str; 4] = [
     "../etc/zoneinfo/",
 ];
 
+type PreparedEnvironmentCell = Arc<AsyncOnceCell<Result<VmEnvironment, Arc<str>>>>;
+
+fn effective_guest_memory_mb(declared_memory_mb: u64, max_guest_memory_mb: Option<u64>) -> u64 {
+    max_guest_memory_mb
+        .map_or(declared_memory_mb, |limit| declared_memory_mb.min(limit))
+        .clamp(1, u64::from(u32::MAX))
+}
+
 /// Prepared VM resources shared by every attempt in one evaluation run.
 ///
 /// Use [`VmResources::builder`] to select tasks and deliberate cache policy.
@@ -121,7 +133,10 @@ pub struct VmResources {
     vmm: PathBuf,
     runtime_image: PathBuf,
     tasks: Vec<Task>,
-    environments: BTreeMap<PathBuf, VmEnvironment>,
+    environments: BTreeMap<PathBuf, PreparedEnvironmentCell>,
+    environment_source: VmEnvironmentSource,
+    preparation_slots: Arc<Semaphore>,
+    max_guest_memory_mb: Option<u64>,
     gvproxy: Option<PathBuf>,
     verifier_cache: PathBuf,
 }
@@ -134,8 +149,21 @@ pub struct VmResourcesBuilder {
     rootfs: Option<PathBuf>,
     cache: PathBuf,
     cache_policy: CachePolicy,
+    max_guest_memory_mb: Option<u64>,
     image_network_retries: usize,
+    image_preparation_concurrency: usize,
     gvproxy: Option<PathBuf>,
+}
+
+#[derive(Clone)]
+enum VmEnvironmentSource {
+    Rootfs(VmEnvironment),
+    Image {
+        cache: PathBuf,
+        policy: CachePolicy,
+        builder: VmImageBuilder,
+        network_retries: usize,
+    },
 }
 
 impl VmResources {
@@ -152,7 +180,9 @@ impl VmResources {
             rootfs: None,
             cache: PathBuf::from(DEFAULT_VM_CACHE),
             cache_policy: CachePolicy::Reuse,
+            max_guest_memory_mb: None,
             image_network_retries: DEFAULT_IMAGE_NETWORK_RETRIES,
+            image_preparation_concurrency: DEFAULT_IMAGE_PREPARATION_CONCURRENCY,
             gvproxy: None,
         }
     }
@@ -168,15 +198,16 @@ impl VmResources {
     /// Returns an error when immutable backend configuration or verifier-cache
     /// preparation fails.
     pub async fn backend(&self, builder: VmBackendBuilder) -> Result<VmBackend, VmResourcesError> {
-        self.backend_for_tasks(builder, &self.tasks).await
+        self.backend_for_tasks(builder, &self.tasks, None).await
     }
 
-    pub(crate) async fn backend_for_task(
+    pub(crate) async fn backend_for_task_with_guest_memory(
         &self,
         builder: VmBackendBuilder,
         task: &Task,
+        guest_memory_mb: u64,
     ) -> Result<VmBackend, VmResourcesError> {
-        self.backend_for_tasks(builder, std::slice::from_ref(task))
+        self.backend_for_tasks(builder, std::slice::from_ref(task), Some(guest_memory_mb))
             .await
     }
 
@@ -184,9 +215,11 @@ impl VmResources {
         &self,
         builder: VmBackendBuilder,
         tasks: &[Task],
+        guest_memory_mb: Option<u64>,
     ) -> Result<VmBackend, VmResourcesError> {
         let backend = builder.build();
-        self.configure_for_tasks(&backend, tasks).await?;
+        self.configure_for_tasks(&backend, tasks, guest_memory_mb)
+            .await?;
         Ok(backend)
     }
 
@@ -200,17 +233,22 @@ impl VmResources {
     /// Returns an error when immutable backend configuration or verifier-cache
     /// preparation fails.
     pub async fn configure(&self, backend: &VmBackend) -> Result<(), VmResourcesError> {
-        self.configure_for_tasks(backend, &self.tasks).await
+        self.configure_for_tasks(backend, &self.tasks, None).await
     }
 
     async fn configure_for_tasks(
         &self,
         backend: &VmBackend,
         tasks: &[Task],
+        guest_memory_mb: Option<u64>,
     ) -> Result<(), VmResourcesError> {
+        let environments = self.prepare_tasks(tasks).await?;
         let mut configuration = VmBackendConfiguration::builder(&self.vmm, &self.runtime_image)
-            .environments(self.environments.clone())
+            .environments(environments)
             .verifier_cache(&self.verifier_cache);
+        if let Some(max_guest_memory_mb) = guest_memory_mb.or(self.max_guest_memory_mb) {
+            configuration = configuration.max_guest_memory_mb(max_guest_memory_mb);
+        }
         if let Some(gvproxy) = &self.gvproxy {
             configuration = configuration.gvproxy(gvproxy);
         }
@@ -219,14 +257,54 @@ impl VmResources {
         Ok(())
     }
 
-    /// Returns the prepared environment for one task package.
+    /// Prepares and returns one task environment through its shared
+    /// single-flight cell.
     ///
     /// This detailed accessor is intended for custom guest agents such as the
     /// stock-Codex differential arm. Normal Nanocodex evaluators only need
     /// [`Self::backend`].
-    #[must_use]
-    pub fn environment(&self, task: &Task) -> Option<&VmEnvironment> {
-        self.environments.get(task.root())
+    pub(crate) async fn environment(&self, task: &Task) -> Result<VmEnvironment, VmResourcesError> {
+        let cell = self
+            .environments
+            .get(task.root())
+            .ok_or_else(|| VmResourcesError::UnknownTask(task.root().to_path_buf()))?;
+        let task = task.clone();
+        let task_name = task.name().to_owned();
+        let task_to_prepare = task.clone();
+        let source = self.environment_source.clone();
+        let slots = Arc::clone(&self.preparation_slots);
+        cell.get_or_init(|| async move {
+            let permit = slots.acquire_owned().await.map_err(|error| {
+                Arc::<str>::from(format!("image preparation scheduler closed: {error}"))
+            })?;
+            let result = prepare_vm_environment(&task_to_prepare, &source)
+                .await
+                .map_err(|error| Arc::<str>::from(format!("{error:#}")));
+            drop(permit);
+            result
+        })
+        .await
+        .clone()
+        .map_err(|message| VmResourcesError::TaskPreparation {
+            task: task_name,
+            message,
+        })
+    }
+
+    async fn prepare_tasks(
+        &self,
+        tasks: &[Task],
+    ) -> Result<BTreeMap<PathBuf, VmEnvironment>, VmResourcesError> {
+        let mut preparations = futures_util::stream::FuturesUnordered::new();
+        for task in tasks {
+            preparations.push(async move { (task.clone(), self.environment(task).await) });
+        }
+        let mut environments = BTreeMap::new();
+        while let Some((task, environment)) = futures_util::StreamExt::next(&mut preparations).await
+        {
+            environments.insert(task.root().to_path_buf(), environment?);
+        }
+        Ok(environments)
     }
 }
 
@@ -268,6 +346,17 @@ impl VmResourcesBuilder {
         self
     }
 
+    /// Caps guest RAM for each attempt without modifying the benchmark task.
+    ///
+    /// This is an evaluator allocation policy. Tasks declaring less memory
+    /// retain their declaration, and task metadata remains unchanged in
+    /// retained evidence.
+    #[must_use]
+    pub const fn max_guest_memory_mb(mut self, memory_mb: u64) -> Self {
+        self.max_guest_memory_mb = Some(memory_mb);
+        self
+    }
+
     /// Sets whole-image retries after a recognized transient build-network failure.
     ///
     /// Each retry starts again from the immutable task inputs and content
@@ -276,6 +365,16 @@ impl VmResourcesBuilder {
     #[must_use]
     pub const fn image_network_retries(mut self, retries: usize) -> Self {
         self.image_network_retries = retries;
+        self
+    }
+
+    /// Bounds concurrent cold task-image materialization.
+    ///
+    /// Warm cache hits still join the same task-local single-flight cell. The
+    /// default is four independent image preparations.
+    #[must_use]
+    pub const fn image_preparation_concurrency(mut self, concurrency: usize) -> Self {
+        self.image_preparation_concurrency = concurrency;
         self
     }
 
@@ -289,7 +388,11 @@ impl VmResourcesBuilder {
         self
     }
 
-    /// Materializes immutable resources for the complete task set.
+    /// Discovers shared VM resources and installs lazy task-image recipes.
+    ///
+    /// Task images materialize through bounded single-flight cells when first
+    /// requested. Explicit evaluator configuration still resolves all tasks
+    /// selected for that backend before admitting its attempts.
     ///
     /// # Errors
     ///
@@ -300,10 +403,16 @@ impl VmResourcesBuilder {
         if self.tasks.is_empty() {
             return Err(VmResourcesError::NoTasks);
         }
+        if self.max_guest_memory_mb == Some(0) {
+            return Err(VmResourcesError::InvalidMemory);
+        }
+        if self.image_preparation_concurrency == 0 {
+            return Err(VmResourcesError::InvalidPreparationConcurrency);
+        }
         if let Some(task) = self.tasks.iter().find(|task| task.requires_compose()) {
             return Err(VmResourcesError::Compose(task.name().to_owned()));
         }
-        let environments = if let Some(rootfs) = self.rootfs {
+        let environment_source = if let Some(rootfs) = self.rootfs {
             if !rootfs.exists() {
                 return Err(VmResourcesError::InvalidRootfs(rootfs));
             }
@@ -313,22 +422,22 @@ impl VmResourcesBuilder {
                 "/workspace"
             };
             let timezone = guest_timezone(&rootfs);
-            let environment = VmEnvironment::new(rootfs, workspace, "bash").timezone(timezone);
-            self.tasks
-                .iter()
-                .map(|task| (task.root().to_path_buf(), environment.clone()))
-                .collect()
-        } else {
-            let image_builder = image_builder(&self.vmm, &self.runtime_image);
-            prepare_vm_environments(
-                &self.tasks,
-                &self.cache,
-                self.cache_policy,
-                &image_builder,
-                self.image_network_retries,
+            VmEnvironmentSource::Rootfs(
+                VmEnvironment::new(rootfs, workspace, "bash").timezone(timezone),
             )
-            .await?
+        } else {
+            VmEnvironmentSource::Image {
+                cache: self.cache.clone(),
+                policy: self.cache_policy,
+                builder: image_builder(&self.vmm, &self.runtime_image),
+                network_retries: self.image_network_retries,
+            }
         };
+        let environments = self
+            .tasks
+            .iter()
+            .map(|task| (task.root().to_path_buf(), Arc::new(AsyncOnceCell::new())))
+            .collect();
         let public_network = self
             .tasks
             .iter()
@@ -347,6 +456,9 @@ impl VmResourcesBuilder {
             runtime_image: self.runtime_image,
             tasks: self.tasks,
             environments,
+            environment_source,
+            preparation_slots: Arc::new(Semaphore::new(self.image_preparation_concurrency)),
+            max_guest_memory_mb: self.max_guest_memory_mb,
             gvproxy,
             verifier_cache: self.cache,
         })
@@ -359,6 +471,27 @@ pub enum VmResourcesError {
     /// No task was selected.
     #[error("a VM evaluation requires at least one task")]
     NoTasks,
+
+    /// The eval-only guest-memory cap was zero.
+    #[error("VM evaluation guest memory must be greater than zero")]
+    InvalidMemory,
+
+    /// The cold-image preparation bound was zero.
+    #[error("VM image preparation concurrency must be greater than zero")]
+    InvalidPreparationConcurrency,
+
+    /// A task outside the selected resource set was requested.
+    #[error("task {0} was not selected for this VM resource set")]
+    UnknownTask(PathBuf),
+
+    /// One task's immutable environment failed its single-flight preparation.
+    #[error("failed to prepare VM environment for task {task}: {message}")]
+    TaskPreparation {
+        /// Stable task name.
+        task: String,
+        /// Shared preparation diagnostic returned to every waiter.
+        message: Arc<str>,
+    },
 
     /// The single-guest backend cannot reproduce a Compose topology.
     #[error(
@@ -437,74 +570,73 @@ pub fn image_builder(vmm: &Path, runtime_image: &Path) -> VmImageBuilder {
     }
 }
 
-async fn prepare_vm_environments(
-    tasks: &[Task],
-    cache: &Path,
-    policy: CachePolicy,
-    builder: &VmImageBuilder,
-    image_network_retries: usize,
-) -> Result<BTreeMap<PathBuf, VmEnvironment>, VmResourcesError> {
-    let mut environments = BTreeMap::new();
-    for task in tasks {
-        if environments.contains_key(task.root()) {
-            continue;
+async fn prepare_vm_environment(
+    task: &Task,
+    source: &VmEnvironmentSource,
+) -> Result<VmEnvironment, VmResourcesError> {
+    let (cache, policy, builder, network_retries) = match source {
+        VmEnvironmentSource::Rootfs(environment) => {
+            task.validate_package()?;
+            return Ok(environment.clone());
         }
-        task.validate_package()?;
-        let prepared = prepare_image_with_network_retries(
+        VmEnvironmentSource::Image {
+            cache,
+            policy,
+            builder,
+            network_retries,
+        } => (cache, policy, builder, network_retries),
+    };
+    task.validate_package()?;
+    let prepared = prepare_image_with_network_retries(
+        task.name(),
+        "task",
+        *network_retries,
+        || prepare_task_image(builder, task, cache, *policy),
+        tokio::time::sleep,
+    )
+    .await?;
+    task.validate_package()?;
+    let verifier = if task.verifier().environment_mode() == VerifierEnvironmentMode::Separate {
+        let verifier = prepare_image_with_network_retries(
             task.name(),
-            "task",
-            image_network_retries,
-            || prepare_task_image(builder, task, cache, policy),
+            "verifier",
+            *network_retries,
+            || prepare_verifier_image(builder, task, cache, *policy),
             tokio::time::sleep,
         )
         .await?;
         task.validate_package()?;
-        let verifier = if task.verifier().environment_mode() == VerifierEnvironmentMode::Separate {
-            let verifier = prepare_image_with_network_retries(
-                task.name(),
-                "verifier",
-                image_network_retries,
-                || prepare_verifier_image(builder, task, cache, policy),
-                tokio::time::sleep,
-            )
-            .await?;
-            task.validate_package()?;
-            info!(
-                target: "nanocodex_eval",
-                task_name = task.name(),
-                oci_manifest_digest = verifier.manifest_digest(),
-                oci_manifest_source = verifier.manifest_source().as_str(),
-                vm_rootfs_cache_status = verifier.disk_status().as_str(),
-                vm_rootfs_path = %verifier.path().display(),
-                "separate verifier VM root disk ready"
-            );
-            Some(
-                VmVerifierEnvironment::new(verifier.path(), verifier.workdir(), verifier.shell())
-                    .environment(verifier.environment().clone()),
-            )
-        } else {
-            None
-        };
         info!(
             target: "nanocodex_eval",
             task_name = task.name(),
-            oci_manifest_digest = prepared.manifest_digest(),
-            oci_manifest_source = prepared.manifest_source().as_str(),
-            vm_rootfs_cache_status = prepared.disk_status().as_str(),
-            vm_rootfs_path = %prepared.path().display(),
-            "VM root disk ready"
+            oci_manifest_digest = verifier.manifest_digest(),
+            oci_manifest_source = verifier.manifest_source().as_str(),
+            vm_rootfs_cache_status = verifier.disk_status().as_str(),
+            vm_rootfs_path = %verifier.path().display(),
+            "separate verifier VM root disk ready"
         );
-        let environment = VmEnvironment::new(prepared.path(), prepared.workdir(), prepared.shell())
-            .environment(prepared.environment().clone())
-            .timezone(guest_timezone(prepared.path()));
-        environments.insert(
-            task.root().to_path_buf(),
-            verifier.map_or(environment.clone(), |verifier| {
-                environment.verifier(verifier)
-            }),
-        );
-    }
-    Ok(environments)
+        Some(
+            VmVerifierEnvironment::new(verifier.path(), verifier.workdir(), verifier.shell())
+                .environment(verifier.environment().clone()),
+        )
+    } else {
+        None
+    };
+    info!(
+        target: "nanocodex_eval",
+        task_name = task.name(),
+        oci_manifest_digest = prepared.manifest_digest(),
+        oci_manifest_source = prepared.manifest_source().as_str(),
+        vm_rootfs_cache_status = prepared.disk_status().as_str(),
+        vm_rootfs_path = %prepared.path().display(),
+        "VM root disk ready"
+    );
+    let environment = VmEnvironment::new(prepared.path(), prepared.workdir(), prepared.shell())
+        .environment(prepared.environment().clone())
+        .timezone(guest_timezone(prepared.path()));
+    Ok(verifier.map_or(environment.clone(), |verifier| {
+        environment.verifier(verifier)
+    }))
 }
 
 async fn prepare_image_with_network_retries<T, F, Fut, S, Sleep>(
@@ -877,6 +1009,7 @@ pub struct VmBackendConfiguration {
     environments: BTreeMap<PathBuf, VmEnvironment>,
     runtime_image: PathBuf,
     vmm: PathBuf,
+    max_guest_memory_mb: Option<u64>,
     gvproxy: Option<PathBuf>,
     verifier_cache: PathBuf,
 }
@@ -897,6 +1030,7 @@ impl VmBackendConfiguration {
                 environments: BTreeMap::new(),
                 runtime_image: runtime_image.into(),
                 vmm: vmm.into(),
+                max_guest_memory_mb: None,
                 gvproxy: None,
                 verifier_cache: PathBuf::from(DEFAULT_VM_CACHE),
             },
@@ -932,6 +1066,13 @@ impl VmBackendConfigurationBuilder {
     #[must_use]
     pub fn gvproxy(mut self, binary: impl Into<PathBuf>) -> Self {
         self.configuration.gvproxy = Some(binary.into());
+        self
+    }
+
+    /// Caps guest RAM for attempts created from this backend.
+    #[must_use]
+    pub const fn max_guest_memory_mb(mut self, memory_mb: u64) -> Self {
+        self.configuration.max_guest_memory_mb = Some(memory_mb);
         self
     }
 
@@ -1049,6 +1190,7 @@ impl VmBackend {
             VmAttemptHost {
                 runtime_image: &configuration.runtime_image,
                 vmm: &configuration.vmm,
+                max_guest_memory_mb: configuration.max_guest_memory_mb,
                 gvproxy: configuration.gvproxy.as_deref(),
                 verifier_cache: &configuration.verifier_cache,
                 retain_passed_rootfs: self.retain_passed_rootfs,
@@ -1153,6 +1295,7 @@ pub enum VmBackendConfigureError {
 struct VmAttemptHost<'a> {
     runtime_image: &'a Path,
     vmm: &'a Path,
+    max_guest_memory_mb: Option<u64>,
     gvproxy: Option<&'a Path>,
     verifier_cache: &'a Path,
     retain_passed_rootfs: bool,
@@ -1264,7 +1407,85 @@ pub struct VmAttempt {
     verifier: VmVerifier,
 }
 
+/// Memory observed across the agent and verifier VM sessions for one attempt.
+#[derive(Clone, Default)]
+pub(crate) struct VmAttemptMemory {
+    inner: Arc<StdMutex<VmAttemptMemorySnapshot>>,
+}
+
+/// Best-effort peak memory and confirmed OOM evidence for one VM attempt.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct VmAttemptMemorySnapshot {
+    host_peak_rss_mib: Option<u64>,
+    guest_total_mib: Option<u64>,
+    guest_peak_used_mib: Option<u64>,
+    guest_oom_kills: u64,
+    oom_detected: bool,
+}
+
+impl VmAttemptMemorySnapshot {
+    pub(crate) const fn host_peak_rss_mib(self) -> Option<u64> {
+        self.host_peak_rss_mib
+    }
+
+    pub(crate) const fn guest_total_mib(self) -> Option<u64> {
+        self.guest_total_mib
+    }
+
+    pub(crate) const fn guest_peak_used_mib(self) -> Option<u64> {
+        self.guest_peak_used_mib
+    }
+
+    pub(crate) const fn guest_oom_kills(self) -> u64 {
+        self.guest_oom_kills
+    }
+
+    pub(crate) const fn oom_detected(self) -> bool {
+        self.oom_detected
+    }
+}
+
+impl VmAttemptMemory {
+    pub(crate) fn snapshot(&self) -> VmAttemptMemorySnapshot {
+        *lock_memory(&self.inner)
+    }
+
+    fn record(&self, observation: VmMemoryObservation) {
+        let mut memory = lock_memory(&self.inner);
+        memory.host_peak_rss_mib =
+            max_optional(memory.host_peak_rss_mib, observation.host_peak_rss_mib());
+        memory.guest_total_mib =
+            max_optional(memory.guest_total_mib, observation.guest_total_mib());
+        memory.guest_peak_used_mib = max_optional(
+            memory.guest_peak_used_mib,
+            observation.guest_peak_used_mib(),
+        );
+        memory.guest_oom_kills = memory.guest_oom_kills.max(observation.guest_oom_kills());
+        memory.oom_detected |= observation.oom_detected();
+    }
+}
+
+fn lock_memory(
+    memory: &StdMutex<VmAttemptMemorySnapshot>,
+) -> std::sync::MutexGuard<'_, VmAttemptMemorySnapshot> {
+    memory
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+const fn max_optional(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(if left > right { left } else { right }),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
 impl VmAttempt {
+    pub(crate) fn memory_observation(&self) -> VmAttemptMemory {
+        self.verifier.memory.clone()
+    }
+
     /// Returns a cheap handle for guest commands used by a custom attempt driver.
     ///
     /// # Errors
@@ -1309,6 +1530,7 @@ struct VmVerifier {
     cache: Option<VerifierCache>,
     attempt_cache: Option<AttemptVerifierCache>,
     retain_passed_rootfs: bool,
+    memory: VmAttemptMemory,
     _network: Option<AttemptGvproxy>,
 }
 
@@ -1354,6 +1576,10 @@ fn vm_attempt(
     host: VmAttemptHost<'_>,
     attempt: EvalAttempt<'_>,
 ) -> Result<VmAttempt, VmAttemptError> {
+    let guest_memory_mb = effective_guest_memory_mb(
+        attempt.task().resources().memory_mb,
+        host.max_guest_memory_mb,
+    );
     let span = info_span!(
         target: "nanocodex_eval",
         "vm.attempt.setup",
@@ -1363,7 +1589,8 @@ fn vm_attempt(
         vm.rootfs.template = %environment.rootfs.display(),
         vm.rootfs.destination = %attempt.directory().display(),
         vm.cpu.count = attempt.task().resources().cpus,
-        vm.memory_mib = attempt.task().resources().memory_mb,
+        vm.memory.declared_mib = attempt.task().resources().memory_mb,
+        vm.memory_mib = guest_memory_mb,
         status = tracing::field::Empty,
         error.message = tracing::field::Empty,
         duration_ns = tracing::field::Empty,
@@ -1399,11 +1626,10 @@ fn vm_attempt_inner(
         runtime_image: host.runtime_image.to_path_buf(),
         vmm: host.vmm.to_path_buf(),
         cpus: attempt.task().resources().cpus.clamp(1, u32::from(u8::MAX)),
-        memory_mib: attempt
-            .task()
-            .resources()
-            .memory_mb
-            .clamp(1, u64::from(u32::MAX)),
+        memory_mib: effective_guest_memory_mb(
+            attempt.task().resources().memory_mb,
+            host.max_guest_memory_mb,
+        ),
         ext4: template.is_file(),
         resolver_configuration: network
             .as_ref()
@@ -1422,6 +1648,7 @@ fn vm_attempt_inner(
         .map(|cache| cache.materialize(&verifier_directory))
         .transpose()?;
     let session = launch.spawn(attempt_cache.as_ref(), VmProcessGroup::Isolated)?;
+    let memory = VmAttemptMemory::default();
     let vm = session.tools();
     let tools = Tools::builder()
         .without_defaults()
@@ -1446,6 +1673,7 @@ fn vm_attempt_inner(
             cache: verifier_cache,
             attempt_cache,
             retain_passed_rootfs: host.retain_passed_rootfs,
+            memory,
             _network: network,
         },
     })
@@ -1527,11 +1755,10 @@ fn prepare_separate_verifier_launch(
                 runtime_image: host.runtime_image.to_path_buf(),
                 vmm: host.vmm.to_path_buf(),
                 cpus: attempt.task().resources().cpus.clamp(1, u32::from(u8::MAX)),
-                memory_mib: attempt
-                    .task()
-                    .resources()
-                    .memory_mb
-                    .clamp(1, u64::from(u32::MAX)),
+                memory_mib: effective_guest_memory_mb(
+                    attempt.task().resources().memory_mb,
+                    host.max_guest_memory_mb,
+                ),
                 ext4: true,
                 resolver_configuration: agent.resolver_configuration.clone(),
                 environment: verifier.environment.clone(),
@@ -2220,7 +2447,9 @@ impl VmVerifier {
         .await;
         let verification_error_at = verification.as_ref().err().map(|_| Utc::now());
         let cleanup_started = Utc::now();
+        self.observe_session(&verifier_session).await;
         let shutdown = verifier_session.shutdown().await;
+        self.observe_session(&verifier_session).await;
         let (output, stdout, stderr, reward) = match verification {
             Ok(verification) => verification,
             Err(primary) => {
@@ -2297,7 +2526,9 @@ impl VmVerifier {
                 }
             };
             let cleanup_started = Utc::now();
+            self.observe_session(&agent_session).await;
             if let Err(primary) = agent_session.shutdown().await {
+                self.observe_session(&agent_session).await;
                 let occurred_at = Utc::now();
                 if let Err(cache_error) = self.try_remove_attempt_cache() {
                     warn!(
@@ -2314,6 +2545,7 @@ impl VmVerifier {
                     cleanup,
                 ));
             }
+            self.observe_session(&agent_session).await;
             let session = match launch.spawn(None, VmProcessGroup::Isolated) {
                 Ok(session) => session,
                 Err(primary) => {
@@ -2393,10 +2625,19 @@ impl VmVerifier {
         }
         let cleanup_started = Utc::now();
         let shutdown = match session {
-            Some(session) => session.shutdown().await,
+            Some(session) => {
+                self.observe_session(session).await;
+                let shutdown = session.shutdown().await;
+                self.observe_session(session).await;
+                shutdown
+            }
             None => Ok(()),
         };
         self.cleanup_after_shutdown(cleanup_started, shutdown, false)
+    }
+
+    async fn observe_session(&self, session: &VmToolSession) {
+        self.memory.record(session.memory_observation().await);
     }
 
     fn cleanup_after_shutdown(
@@ -2875,6 +3116,48 @@ mod tests {
             .unwrap();
 
         assert_eq!(evaluator.attempt_environment(), EvalEnvironment::MicroVm);
+    }
+
+    #[test]
+    fn eval_guest_memory_cap_only_reduces_large_task_allocations() {
+        assert_eq!(effective_guest_memory_mb(8_192, None), 8_192);
+        assert_eq!(effective_guest_memory_mb(8_192, Some(1_024)), 1_024);
+        assert_eq!(effective_guest_memory_mb(256, Some(1_024)), 256);
+        assert_eq!(effective_guest_memory_mb(0, Some(1_024)), 1);
+        assert_eq!(
+            effective_guest_memory_mb(u64::MAX, None),
+            u64::from(u32::MAX)
+        );
+    }
+
+    #[tokio::test]
+    async fn vm_resources_leave_task_environments_lazy_and_single_flight() {
+        let task =
+            Task::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tasks/write-greeting"))
+                .unwrap();
+        let assets = tempfile::tempdir().unwrap();
+        let rootfs = assets.path().join("rootfs");
+        let gvproxy = assets.path().join("gvproxy");
+        fs::create_dir(&rootfs).unwrap();
+        fs::write(&gvproxy, []).unwrap();
+        let resources = VmResources::builder(
+            assets.path().join("vmm"),
+            assets.path().join("runtime.ext4"),
+        )
+        .task(task.clone())
+        .rootfs(&rootfs)
+        .gvproxy(gvproxy)
+        .image_preparation_concurrency(1)
+        .prepare()
+        .await
+        .unwrap();
+        let cell = resources.environments.get(task.root()).unwrap();
+        assert!(cell.get().is_none());
+
+        let (first, second) =
+            tokio::join!(resources.environment(&task), resources.environment(&task));
+        assert_eq!(first.unwrap(), second.unwrap());
+        assert!(cell.get().is_some());
     }
 
     #[tokio::test]
