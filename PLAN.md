@@ -301,7 +301,7 @@ arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
 active; across the latest valid cells for 50 controlled tasks Nanocodex is
-198/250 in the normal-stock cohort and 192/250 in the Code-Mode-Only-stock
+199/250 in the normal-stock cohort and 192/250 in the Code-Mode-Only-stock
 cohort, normal stock Codex is 204/250, and Code-Mode-Only stock Codex is
 211/250.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is

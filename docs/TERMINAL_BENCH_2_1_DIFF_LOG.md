@@ -854,7 +854,7 @@ Snapshot: 2026-07-29 18:02 UTC.
   | `regex-log` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `write-compressor` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `overfull-hbox` | 2/5 | 4/5 | 3/5 | 3/5 |
-  | `sam-cell-seg` | 2/5 | 5/5 | 2/5 | 4/5 |
+  | `sam-cell-seg` | 3/5 | 5/5 | 2/5 | 4/5 |
   | `compile-compcert` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `build-cython-ext` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `build-pmars` | 5/5 | 5/5 | 5/5 | 5/5 |
@@ -881,7 +881,7 @@ Snapshot: 2026-07-29 18:02 UTC.
   | `financial-document-processor` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `merge-diff-arc-agi-task` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 50 latest controlled task cells, Nanocodex is 198/250 in the
+  Across these 50 latest controlled task cells, Nanocodex is 199/250 in the
   normal-stock cohort and 192/250 in the Code-Mode-Only-stock cohort. Stock
   Codex is 204/250 in normal Code Mode and 211/250 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
@@ -2180,6 +2180,22 @@ Snapshot: 2026-07-29 18:02 UTC.
   deterministic regression proves both branches. The complete eval suite
   (164 tests), doc tests, warnings-denied Clippy, rustfmt, and crate-boundary
   checks pass.
+- The fresh normal-Code-Mode `sam-cell-seg` cell supersedes the prior normal
+  row at Nanocodex/stock 3/5 versus 5/5. Nanocodex is substantially cheaper:
+  medians are 220.5/231.8 seconds, 109,678/203,878 tokens, and 8/11
+  generations; totals are 1,118.0/1,260.5 seconds, 621,377/1,016,833 tokens,
+  and 42/60 generations. Neither arm polls or replays, cache keys stay stable,
+  and no chain breaks. Nanocodex's two failures are generated mask-allocation
+  defects: trial 1 reaches IoU `0.4306454158` against `0.5`; trial 5 reaches
+  zero IoU and also produces a disconnected cell mask. Stock spends more
+  generations on every trial and passes all five. The matched fresh
+  Code-Mode-Only cell is still running.
+- The image-retry release is staged exactly at commit
+  `cdf360354834147e0f5c5efed43698c1bc3dffe6`, built at
+  `2026-07-29T18:05:45.394533708Z`, with binary SHA-256
+  `ed1f0db14790a16e9f9a9d1a23d58fc75037bcadd5c82ffbaaa883ccf6d49be4`
+  at
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/target-cdf36035/release/nanocodex`.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
