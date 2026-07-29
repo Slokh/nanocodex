@@ -1117,8 +1117,13 @@ Snapshot: 2026-07-29 10:40 UTC.
   A live strict-ceiling smoke loaded `caffe-cifar-10`, calculated its
   16,384 MiB pair declaration, and rejected a 12,288 MiB ceiling before
   authorization, VM preparation, output-directory creation, or model work.
-  The single-interrupt drain path still requires a live k=1 infrastructure
-  smoke when campaign capacity is available.
+  A separate k=1 drain smoke admitted one 512 MiB `write-greeting` pair and
+  then received one Ctrl-C. It closed admission at exactly one pair, allowed
+  both admitted arms to pass and retain `comparison.json`, created no
+  directory or VM for the two queued tasks, left no child process, and exited
+  with an explicit retained-evidence interruption error. Evidence:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/safety-drain-b0714f6-20260729T110600Z`.
+  These are infrastructure smokes, not benchmark score samples.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |
