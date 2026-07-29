@@ -676,7 +676,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 10:02 UTC.
+Snapshot: 2026-07-29 10:40 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -794,14 +794,16 @@ Snapshot: 2026-07-29 10:02 UTC.
   | `largest-eigenval` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `llm-inference-batching-scheduler` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `qemu-startup` | 5/5 | 4/5 | 5/5 | 5/5 |
+  | `gcode-to-text` | 3/5 | 2/5 | 4/5 | 5/5 |
+  | `sparql-university` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `configure-git-webserver` | 2/5 | 3/5 | 1/5 | 3/5 |
 
-  Across these 12 controlled tasks, Nanocodex is 28/60 in both independent
-  cohorts. Stock Codex is 28/60 in normal Code Mode and 36/60 in
-  `code_mode_only`. Because Nanocodex has the same Code-Mode-Only
-  configuration in both cohorts, its exact aggregate tie is a useful
-  stochastic control. Stock `code_mode_only` now has the materially stronger
-  directional result; normal Code Mode has not demonstrated a score
-  advantage.
+  Across these 15 controlled tasks, Nanocodex is 38/75 in both independent
+  cohorts. Stock Codex is 38/75 in normal Code Mode and 49/75 in
+  `code_mode_only`. Nanocodex has the same Code-Mode-Only configuration in
+  both cohorts, so its exact tie is a useful stochastic control. Stock
+  `code_mode_only` now has the materially stronger directional result; normal
+  Code Mode has not demonstrated a score advantage.
 - Every failed `torch-pipeline-parallelism` arm passes the two structural tests
   and fails both world-size correctness tests. The common signature is a
   backward-activation mismatch on microbatch 0, usually at `lm_head.bwd`.
@@ -891,7 +893,51 @@ Snapshot: 2026-07-29 10:02 UTC.
   `unknown`. API-comparison schema v12 therefore adds per-arm total captured
   usage and usage-completeness counts to both JSON and the human reanalysis
   summary. This derives from already retained API payloads and requires no
-  model, VM, agent, or verifier rerun.
+  model, VM, agent, or verifier rerun. The pushed release at
+  `05ef13da640f41950f12e0a98c8006545db6ee86` has binary SHA-256
+  `81b2064555ff2ad6dc0362a2b55f3a28b8f81725613f79f1231a131d61badd09`.
+  Reanalyzing this retained trial with that binary produces schema v12 and
+  reconstructs 2,528,349 stock tokens on all 78 API turns versus the unchanged
+  zero-token terminal summary. Nanocodex has 78,555 captured tokens on all ten
+  turns.
+- `gcode-to-text` finishes 3/5 versus 2/5 in the normal-stock cohort and 4/5
+  versus 5/5 in Code-Mode-Only. The failed outputs are literal transcription
+  errors, including `gcode3` for `gc0d3`, `c0d3_iZ` for `gc0d3_iz`, and `flj`
+  for the expected flag; verifier and lifecycle behavior are otherwise
+  normal. In all Code-Mode-Only samples, the initial text and nested tool
+  definitions match exactly and the first difference is generated model
+  output. Stock normal mode directly exposes shell, image, and patch tools and
+  scores only 2/5, while its otherwise matched Code-Mode-Only cell scores 5/5.
+  Nanocodex's medians are 186.6 seconds/309,804 tokens in the normal-stock
+  cohort and 155.8 seconds/228,025 tokens in the Code-Mode-Only-stock cohort;
+  stock's are 176.6 seconds/321,507 tokens and 160.8 seconds/273,305 tokens.
+  This task favors keeping stock in Code-Mode-Only and does not show a
+  Nanocodex loop or context regression.
+- `sparql-university` passes all 20 arms across its two mode cohorts.
+  Nanocodex and stock have nearly identical median agent durations: 73.2
+  versus 78.0 seconds in the normal-stock cohort and 74.4 versus 76.7 seconds
+  in Code-Mode-Only. Median token use is 87,120 versus 83,644 and 75,997
+  versus 85,589, respectively. This is a score, latency, and usage parity
+  control rather than a mode or runtime signal.
+- `configure-git-webserver` finishes 2/5 versus 3/5 in the normal-stock
+  cohort and 1/5 versus 3/5 in Code-Mode-Only. Both agents alternate between
+  installing and validating live native Git/SSH/nginx services and writing an
+  unstarted Docker scaffold into an environment without Docker. The latter
+  reliably fails with HTTP 000; incomplete native setups can return 404.
+  Winners flip across samples. Every Code-Mode-Only initial prompt and nested
+  tool definition matches exactly, and first divergence is generated model
+  output. Normal median agent time/token use is 169.9 seconds/126,954 for
+  Nanocodex versus 162.6 seconds/191,977 for stock; Code-Mode-Only medians are
+  166.2 seconds/192,150 versus 146.4 seconds/168,800.
+- Code-Mode-Only configure trial 5 is a healthy long-tail diagnosis rather
+  than a stuck agent. Stock completed and scored zero. Nanocodex completed 17
+  model calls in 204.5 seconds, after which the canonical verifier's SSH/Git
+  flow hung. Progress heartbeats continuously reported `verifier.started`
+  until the configured 900-second verifier deadline returned exit 124 and
+  reward zero. The retained comparison is `neither_passed`; it was neither
+  killed nor retried. This is a candidate-service strategy failure and a
+  bounded canonical-verifier timeout, not model-loop drift or infrastructure
+  loss.
 - Three retained Filter attempts exposed a real measurement defect without a
   response-chain defect: normal trials 1 and 2 and Code-Mode-Only trial 3
   received `response.created` plus nonterminal output before the WebSocket
@@ -1003,6 +1049,17 @@ Snapshot: 2026-07-29 10:02 UTC.
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5c-stock-code-mode-0537dfd-20260729T102702Z`
   and
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5c-code-mode-only-0537dfd-20260729T102702Z`.
+- A fourth k=5 cohort started at 2026-07-29 10:38 UTC to backfill the 8 GiB
+  released when the first cohort ended. It targets three discovery-run
+  wall-time regressions that had score parity: `password-recovery`,
+  `regex-log`, and `write-compressor`. Each task requests a 4,096 MiB pair.
+  Each stock-mode process has a 4,096 MiB live-arm ceiling, so exactly one pair
+  runs per mode while retaining the default five trials. Together with the
+  second and third cohorts, this restores the campaign's 48 GiB declared
+  live-arm ceiling. Retained roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5d-stock-code-mode-0537dfd-20260729T103802Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5d-code-mode-only-0537dfd-20260729T103802Z`.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |
