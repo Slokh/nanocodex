@@ -281,7 +281,11 @@ broken pairs, schedule bounded replacements at fresh trial coordinates, and
 link every replacement to the failed trial it supersedes. The CLI budgets up
 to one extra k-sized cell per task and fails after writing all evidence if it
 still cannot obtain k valid pairs; verifier failures, timeouts, refusals, and
-ordinary model losses are never retried. The initial retained production run
+ordinary model losses are never retried. Every completed CLI sweep also emits
+one typed per-task score line with valid/target pairs, total attempts,
+infrastructure and incomplete counts, and exact Nanocodex/stock pass
+numerators, so operators do not infer a cell from terminal event order. The
+initial retained production run
 demonstrated that pair-lifetime charging stranded capacity during long
 unpaired tails; the per-arm release closes that gap without weakening paired
 starts or VM isolation. The pinned remote release and a deterministic
