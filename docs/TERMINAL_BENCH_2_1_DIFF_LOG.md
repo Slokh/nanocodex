@@ -1341,6 +1341,34 @@ Snapshot: 2026-07-29 15:08 UTC.
   comparison still places the first generation divergence at request 2 and
   classifies it solely as model output. Evidence:
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/reanalysis-b2dff4be-sam-codeonly-t2-20260729T130432Z`.
+- Raw b2 captures across independent attempts establish the exact stock 0.145
+  prewarm/turn envelope rather than only its semantic shape. One stock
+  installation UUIDv4 remains stable within an attempt; session and thread
+  share the UUIDv7 session identity; the window is `<session>:0`; prewarm uses
+  an empty turn ID; generation uses one UUIDv7 turn ID and start timestamp
+  across the logical turn; and every physical WebSocket send gets its own
+  request-start timestamp. The serialized turn blob also carries
+  `prewarm`/`turn`, thread source `user`, and sandbox `none`. The released
+  stock blob does not yet carry Code Mode tool names. This agrees with local
+  Codex tag `rust-v0.145.0-alpha.24` in
+  `codex-rs/core/src/responses_metadata.rs`,
+  `codex-rs/core/src/turn_metadata.rs`, and
+  `codex-rs/core/src/client.rs`. Newer upstream commit
+  `25b6fc9bbc49bbec12e8d38ceee550fc07cbc60d` adds the tool-name extension
+  only for Responses Lite.
+- Commit `d3d01b7dcd31fab2b3466a9fd88b8e8f96ac8aec` ports those prewarm/turn
+  invariants into the owned Responses request path. `RequestProfile` owns the
+  stable UUIDv4 installation and window identities; the attempt factory owns
+  UUIDv7 turn identity and start time, replaces them only at a logical-turn
+  boundary, and preserves them through physical retries. Serialization stamps
+  each WebSocket send separately, sends the common envelope over HTTPS too,
+  and keeps the newer Code Mode name map Responses-Lite-only. Unit tests cover
+  UUID versions, warmup and generation shapes, HTTPS/Lite boundaries, and
+  retry/logical-turn identity; the real agent WebSocket tests assert the full
+  warmup envelope. All OAI unit/integration/doc tests, 72 focused agent model
+  tests, warnings-denied all-feature Clippy, rustfmt, and crate-boundary checks
+  pass. Existing cohorts remain immutable; any performance claim requires a
+  newly pinned k=5 rerun plus unchanged controls.
 - Both `sam-cell-seg` k=5 cells are complete. Nanocodex/stock score 2/5 versus
   5/5 with normal stock Code Mode and 2/5 versus 4/5 with stock
   Code-Mode-Only. Normal-mode Nanocodex/stock medians are 268.1/242.0
