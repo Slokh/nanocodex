@@ -854,7 +854,7 @@ Snapshot: 2026-07-29 18:02 UTC.
   | `regex-log` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `write-compressor` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `overfull-hbox` | 2/5 | 4/5 | 3/5 | 3/5 |
-  | `sam-cell-seg` | 3/5 | 5/5 | 2/5 | 4/5 |
+  | `sam-cell-seg` | 3/5 | 5/5 | 4/5 | 3/5 |
   | `compile-compcert` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `build-cython-ext` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `build-pmars` | 5/5 | 5/5 | 5/5 | 5/5 |
@@ -882,11 +882,11 @@ Snapshot: 2026-07-29 18:02 UTC.
   | `merge-diff-arc-agi-task` | 5/5 | 5/5 | 5/5 | 5/5 |
 
   Across these 50 latest controlled task cells, Nanocodex is 200/250 in the
-  normal-stock cohort and 192/250 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 205/250 in normal Code Mode and 208/250 in `code_mode_only`.
+  normal-stock cohort and 194/250 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 205/250 in normal Code Mode and 207/250 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
-  cohorts, so its eight-score spread is sampling variance. Stock
-  `code_mode_only` is numerically three scores higher than normal Code
+  cohorts, so its six-score spread is sampling variance. Stock
+  `code_mode_only` is numerically two scores higher than normal Code
   Mode, but these are not paired model samples; the fresh DNA repetition
   alone moves Nanocodex by three normal-mode passes and one Code-Mode-Only
   pass and moves normal stock by two passes without a runtime change. The
@@ -2188,8 +2188,20 @@ Snapshot: 2026-07-29 18:02 UTC.
   and no chain breaks. Nanocodex's two failures are generated mask-allocation
   defects: trial 1 reaches IoU `0.4306454158` against `0.5`; trial 5 reaches
   zero IoU and also produces a disconnected cell mask. Stock spends more
-  generations on every trial and passes all five. The matched fresh
-  Code-Mode-Only cell is still running.
+  generations on every trial and passes all five.
+- The matched fresh Code-Mode-Only SAM cell closes Nanocodex/stock 4/5 versus
+  3/5, reversing the fresh normal cell's 3/5 versus 5/5 ordering. Its medians
+  are 207.4/184.8 seconds and 99,094/86,507 tokens; totals are
+  1,110.9/1,112.2 seconds, 595,100/537,471 tokens, and 39/38 generation
+  turns. Neither arm polls. Trial 2 is a Nanocodex-only pass, trial 5 is a
+  shared failure, and the other three are shared passes. Every profile guard
+  passes; initial text and nested definitions match; cache keys stay stable;
+  all response and tool-result links are valid; and every first generation
+  divergence is model output. The normal stock advantage therefore does not
+  generalize to Code-Mode-Only, while the unchanged Nanocodex control's
+  two-pass movement prevents attributing the whole reversal to direct outer
+  tools. Root:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5x-sam-code-mode-only-75bc9fac-20260729T175916Z`.
 - The image-retry release is staged exactly at commit
   `cdf360354834147e0f5c5efed43698c1bc3dffe6`, built at
   `2026-07-29T18:05:45.394533708Z`, with binary SHA-256
