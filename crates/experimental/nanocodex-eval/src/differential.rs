@@ -109,7 +109,7 @@ where
 
 const DEFAULT_OUTPUT_DIRECTORY: &str = ".nanocodex/eval-diff";
 const COMPARISON_FILE: &str = "comparison.json";
-const COMPARISON_SCHEMA_VERSION: u32 = 7;
+const COMPARISON_SCHEMA_VERSION: u32 = 8;
 const PROGRESS_FILE: &str = "progress.jsonl";
 const PROGRESS_SCHEMA_VERSION: u32 = 1;
 const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -119,7 +119,7 @@ const TRAJECTORY_FILE: &str = "agent/trajectory.json";
 const API_EXCHANGES_FILE: &str = "agent/api-exchanges.jsonl";
 const API_COMPARISON_FILE: &str = "api-comparison.json";
 const API_CAPTURE_SCHEMA_VERSION: u32 = 1;
-const API_COMPARISON_SCHEMA_VERSION: u32 = 12;
+const API_COMPARISON_SCHEMA_VERSION: u32 = 13;
 const DIFF_CODEX_SHARE_TAG: &str = "nanoeval-codex";
 const DIFF_CODEX_SHARE_MOUNT: &str = "/run/nanoeval-codex";
 const DIFF_CODEX_GUEST_BINARY: &str = "/run/nanoeval-codex/codex";
@@ -755,6 +755,9 @@ struct ApiEventLoopTailSummary {
     generation_turns: u64,
     tool_call_turns: u64,
     detected_poll_only_turns: u64,
+    detected_empty_stdin_calls: u64,
+    detected_polling_calls_with_explicit_yield: u64,
+    detected_polling_explicit_yield_ms: u64,
     turns_with_usage: u64,
     turns_without_usage: u64,
     usage: ApiTokenUsageSummary,
@@ -792,6 +795,8 @@ struct ApiEventLoopArmSummary {
     detected_poll_only_turns: u64,
     max_consecutive_detected_poll_only_turns: u64,
     detected_empty_stdin_calls: u64,
+    detected_polling_calls_with_explicit_yield: u64,
+    detected_polling_explicit_yield_ms: u64,
     detected_poll_only_input_tokens: u64,
     detected_poll_only_cached_tokens: u64,
     detected_poll_only_output_tokens: u64,
@@ -823,12 +828,21 @@ struct ApiInputTextSectionSummary {
     text_sha256: String,
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct DetectedPollingTurn {
     empty_stdin_calls: u64,
+    calls_with_explicit_yield: u64,
+    explicit_requested_yield_ms: u64,
     input_tokens: u64,
     cached_tokens: u64,
     output_tokens: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DetectedEmptyStdinCalls {
+    calls: u64,
+    calls_with_explicit_yield: u64,
+    explicit_requested_yield_ms: u64,
 }
 
 impl ApiEventLoopArmSummary {
@@ -869,9 +883,18 @@ impl ApiEventLoopTailSummary {
             if turn.tool_calls > 0 {
                 summary.tool_call_turns = summary.tool_call_turns.saturating_add(1);
             }
-            if turn.detected_poll_only {
+            if let Some(polling) = &turn.detected_polling {
                 summary.detected_poll_only_turns =
                     summary.detected_poll_only_turns.saturating_add(1);
+                summary.detected_empty_stdin_calls = summary
+                    .detected_empty_stdin_calls
+                    .saturating_add(polling.empty_stdin_calls);
+                summary.detected_polling_calls_with_explicit_yield = summary
+                    .detected_polling_calls_with_explicit_yield
+                    .saturating_add(polling.calls_with_explicit_yield);
+                summary.detected_polling_explicit_yield_ms = summary
+                    .detected_polling_explicit_yield_ms
+                    .saturating_add(polling.explicit_requested_yield_ms);
             }
             if let Some(usage) = &turn.usage {
                 summary.turns_with_usage = summary.turns_with_usage.saturating_add(1);
@@ -946,7 +969,7 @@ struct ApiEventLoopTrace {
 struct ApiEventLoopTurnMetrics {
     generation: bool,
     tool_calls: u64,
-    detected_poll_only: bool,
+    detected_polling: Option<DetectedPollingTurn>,
     usage: Option<ApiTokenUsageSummary>,
 }
 
@@ -1336,7 +1359,29 @@ impl LiveApiDiff {
                 detected_polling_turn(&nanocodex.requests[offset].response_events);
             let codex_polling = detected_polling_turn(&codex.requests[offset].response_events);
             if nanocodex_polling.is_some() || codex_polling.is_some() {
-                let matches = nanocodex_polling.is_some() == codex_polling.is_some();
+                let shape = |polling: Option<&DetectedPollingTurn>| {
+                    polling.map(|polling| {
+                        (
+                            polling.empty_stdin_calls,
+                            polling.calls_with_explicit_yield,
+                            polling.explicit_requested_yield_ms,
+                        )
+                    })
+                };
+                let format_polling = |polling: Option<&DetectedPollingTurn>| {
+                    polling.map_or_else(
+                        || "none".to_owned(),
+                        |polling| {
+                            format!(
+                                "{} calls/{} explicit/{}ms",
+                                polling.empty_stdin_calls,
+                                polling.calls_with_explicit_yield,
+                                polling.explicit_requested_yield_ms,
+                            )
+                        },
+                    )
+                };
+                let matches = shape(nanocodex_polling.as_ref()) == shape(codex_polling.as_ref());
                 notices.push(LiveApiNotice {
                     kind: if matches {
                         "api.polling.match"
@@ -1345,12 +1390,8 @@ impl LiveApiDiff {
                     },
                     summary: format!(
                         "turn {request_number} poll-only response · nanocodex={} · codex={}",
-                        nanocodex_polling
-                            .as_ref()
-                            .map_or(0, |polling| { polling.empty_stdin_calls }),
-                        codex_polling
-                            .as_ref()
-                            .map_or(0, |polling| polling.empty_stdin_calls),
+                        format_polling(nanocodex_polling.as_ref()),
+                        format_polling(codex_polling.as_ref()),
                     ),
                 });
             }
@@ -4285,7 +4326,7 @@ fn append_event_loop_arm_summary(
     };
     let _ = writeln!(
         output,
-        "{name} event loop: {}/{} terminal · {} generation turns · model-visible calls {} [{}] · captured usage {} total tokens ({} cached + {} uncached input, {} output, {} reasoning) on {}/{} turns · profile {}/{}/summary={} · visible tools [{}] · {} detected poll-only · previous links {} direct/{} replay ({} after nonterminal)/{} broken · tool-result links {} valid/{} replayed/{} broken · cache stable {}",
+        "{name} event loop: {}/{} terminal · {} generation turns · model-visible calls {} [{}] · captured usage {} total tokens ({} cached + {} uncached input, {} output, {} reasoning) on {}/{} turns · profile {}/{}/summary={} · visible tools [{}] · {} detected poll-only ({} empty stdin calls; {} explicit yields totaling {}ms) · previous links {} direct/{} replay ({} after nonterminal)/{} broken · tool-result links {} valid/{} replayed/{} broken · cache stable {}",
         summary.terminal_turns,
         summary.turns,
         summary.generation_turns,
@@ -4309,6 +4350,9 @@ fn append_event_loop_arm_summary(
             .unwrap_or("unobserved"),
         summary.initial_visible_tools.join(", "),
         summary.detected_poll_only_turns,
+        summary.detected_empty_stdin_calls,
+        summary.detected_polling_calls_with_explicit_yield,
+        summary.detected_polling_explicit_yield_ms,
         summary.previous_response_links,
         summary.full_history_replays,
         summary.full_history_replays_after_nonterminal_turn,
@@ -4410,10 +4454,13 @@ fn append_unpaired_tail_summary(output: &mut String, comparison: &ApiEventLoopCo
     }
     let format = |tail: &ApiEventLoopTailSummary| {
         format!(
-            "{} turns/{} generation/{} poll-only · {} total tokens ({} cached + {} uncached input, {} output, {} reasoning) · usage {}/{}",
+            "{} turns/{} generation/{} poll-only ({} calls; {} explicit yields totaling {}ms) · {} total tokens ({} cached + {} uncached input, {} output, {} reasoning) · usage {}/{}",
             tail.turns,
             tail.generation_turns,
             tail.detected_poll_only_turns,
+            tail.detected_empty_stdin_calls,
+            tail.detected_polling_calls_with_explicit_yield,
+            tail.detected_polling_explicit_yield_ms,
             tail.usage.total_tokens,
             tail.usage.cached_input_tokens,
             tail.usage.uncached_input_tokens,
@@ -4997,6 +5044,8 @@ fn build_event_loop_trace(requests: &[ApiRequestPayload]) -> ApiEventLoopTrace {
     let mut consecutive_detected_poll_only_turns = 0_u64;
     let mut max_consecutive_detected_poll_only_turns = 0_u64;
     let mut detected_empty_stdin_calls = 0_u64;
+    let mut detected_polling_calls_with_explicit_yield = 0_u64;
+    let mut detected_polling_explicit_yield_ms = 0_u64;
     let mut detected_poll_only_input_tokens = 0_u64;
     let mut detected_poll_only_cached_tokens = 0_u64;
     let mut detected_poll_only_output_tokens = 0_u64;
@@ -5082,29 +5131,30 @@ fn build_event_loop_trace(requests: &[ApiRequestPayload]) -> ApiEventLoopTrace {
             tool_call_turns = tool_call_turns.saturating_add(1);
         }
         model_visible_tool_sequence.extend(response_tools);
-        let detected_poll_only = if generation {
-            if let Some(polling) = detected_polling_turn(&request.response_events) {
-                detected_poll_only_turns = detected_poll_only_turns.saturating_add(1);
-                consecutive_detected_poll_only_turns =
-                    consecutive_detected_poll_only_turns.saturating_add(1);
-                max_consecutive_detected_poll_only_turns = max_consecutive_detected_poll_only_turns
-                    .max(consecutive_detected_poll_only_turns);
-                detected_empty_stdin_calls =
-                    detected_empty_stdin_calls.saturating_add(polling.empty_stdin_calls);
-                detected_poll_only_input_tokens =
-                    detected_poll_only_input_tokens.saturating_add(polling.input_tokens);
-                detected_poll_only_cached_tokens =
-                    detected_poll_only_cached_tokens.saturating_add(polling.cached_tokens);
-                detected_poll_only_output_tokens =
-                    detected_poll_only_output_tokens.saturating_add(polling.output_tokens);
-                true
-            } else {
-                consecutive_detected_poll_only_turns = 0;
-                false
-            }
+        let detected_polling = generation
+            .then(|| detected_polling_turn(&request.response_events))
+            .flatten();
+        if let Some(polling) = &detected_polling {
+            detected_poll_only_turns = detected_poll_only_turns.saturating_add(1);
+            consecutive_detected_poll_only_turns =
+                consecutive_detected_poll_only_turns.saturating_add(1);
+            max_consecutive_detected_poll_only_turns =
+                max_consecutive_detected_poll_only_turns.max(consecutive_detected_poll_only_turns);
+            detected_empty_stdin_calls =
+                detected_empty_stdin_calls.saturating_add(polling.empty_stdin_calls);
+            detected_polling_calls_with_explicit_yield = detected_polling_calls_with_explicit_yield
+                .saturating_add(polling.calls_with_explicit_yield);
+            detected_polling_explicit_yield_ms = detected_polling_explicit_yield_ms
+                .saturating_add(polling.explicit_requested_yield_ms);
+            detected_poll_only_input_tokens =
+                detected_poll_only_input_tokens.saturating_add(polling.input_tokens);
+            detected_poll_only_cached_tokens =
+                detected_poll_only_cached_tokens.saturating_add(polling.cached_tokens);
+            detected_poll_only_output_tokens =
+                detected_poll_only_output_tokens.saturating_add(polling.output_tokens);
         } else {
-            false
-        };
+            consecutive_detected_poll_only_turns = 0;
+        }
         let turn_terminal = request
             .response_events
             .iter()
@@ -5127,7 +5177,7 @@ fn build_event_loop_trace(requests: &[ApiRequestPayload]) -> ApiEventLoopTrace {
         turn_metrics.push(ApiEventLoopTurnMetrics {
             generation,
             tool_calls: response_tool_count,
-            detected_poll_only,
+            detected_polling,
             usage: turn_usage,
         });
 
@@ -5161,6 +5211,8 @@ fn build_event_loop_trace(requests: &[ApiRequestPayload]) -> ApiEventLoopTrace {
             detected_poll_only_turns,
             max_consecutive_detected_poll_only_turns,
             detected_empty_stdin_calls,
+            detected_polling_calls_with_explicit_yield,
+            detected_polling_explicit_yield_ms,
             detected_poll_only_input_tokens,
             detected_poll_only_cached_tokens,
             detected_poll_only_output_tokens,
@@ -5371,19 +5423,32 @@ fn detected_polling_turn(events: &[serde_json::Value]) -> Option<DetectedPolling
     if tool_items.is_empty() {
         return None;
     }
-    let empty_stdin_calls = tool_items.iter().try_fold(0_u64, |total, item| {
-        detected_empty_stdin_calls(item).map(|calls| total.saturating_add(calls))
-    })?;
+    let empty_stdin_calls =
+        tool_items
+            .iter()
+            .try_fold(DetectedEmptyStdinCalls::default(), |mut total, item| {
+                let calls = detected_empty_stdin_calls(item)?;
+                total.calls = total.calls.saturating_add(calls.calls);
+                total.calls_with_explicit_yield = total
+                    .calls_with_explicit_yield
+                    .saturating_add(calls.calls_with_explicit_yield);
+                total.explicit_requested_yield_ms = total
+                    .explicit_requested_yield_ms
+                    .saturating_add(calls.explicit_requested_yield_ms);
+                Some(total)
+            })?;
     let usage = api_response_usage(events).unwrap_or_default();
     Some(DetectedPollingTurn {
-        empty_stdin_calls,
+        empty_stdin_calls: empty_stdin_calls.calls,
+        calls_with_explicit_yield: empty_stdin_calls.calls_with_explicit_yield,
+        explicit_requested_yield_ms: empty_stdin_calls.explicit_requested_yield_ms,
         input_tokens: usage.input_tokens,
         cached_tokens: usage.cached_input_tokens,
         output_tokens: usage.output_tokens,
     })
 }
 
-fn detected_empty_stdin_calls(item: &serde_json::Value) -> Option<u64> {
+fn detected_empty_stdin_calls(item: &serde_json::Value) -> Option<DetectedEmptyStdinCalls> {
     let name = item.get("name").and_then(serde_json::Value::as_str)?;
     let kind = item.get("type").and_then(serde_json::Value::as_str)?;
     if kind == "function_call" && name == "write_stdin" {
@@ -5394,8 +5459,10 @@ fn detected_empty_stdin_calls(item: &serde_json::Value) -> Option<u64> {
             arguments.clone()
         };
         return match arguments.get("chars") {
-            None => Some(1),
-            Some(serde_json::Value::String(chars)) if chars.is_empty() => Some(1),
+            None => Some(detected_direct_stdin_call(&arguments)),
+            Some(serde_json::Value::String(chars)) if chars.is_empty() => {
+                Some(detected_direct_stdin_call(&arguments))
+            }
             _ => None,
         };
     }
@@ -5406,9 +5473,23 @@ fn detected_empty_stdin_calls(item: &serde_json::Value) -> Option<u64> {
     detected_code_mode_empty_stdin_calls(source)
 }
 
-fn detected_code_mode_empty_stdin_calls(source: &str) -> Option<u64> {
-    let write_stdin_calls = source.matches("tools.write_stdin").count();
-    if write_stdin_calls == 0 || source.matches("tools.").count() != write_stdin_calls {
+fn detected_direct_stdin_call(arguments: &serde_json::Value) -> DetectedEmptyStdinCalls {
+    let explicit_requested_yield_ms = arguments
+        .get("yield_time_ms")
+        .and_then(serde_json::Value::as_u64);
+    DetectedEmptyStdinCalls {
+        calls: 1,
+        calls_with_explicit_yield: u64::from(explicit_requested_yield_ms.is_some()),
+        explicit_requested_yield_ms: explicit_requested_yield_ms.unwrap_or_default(),
+    }
+}
+
+fn detected_code_mode_empty_stdin_calls(source: &str) -> Option<DetectedEmptyStdinCalls> {
+    let call_offsets = source
+        .match_indices("tools.write_stdin")
+        .map(|(offset, _)| offset)
+        .collect::<Vec<_>>();
+    if call_offsets.is_empty() || source.matches("tools.").count() != call_offsets.len() {
         return None;
     }
     let compact = source
@@ -5423,7 +5504,40 @@ fn detected_code_mode_empty_stdin_calls(source: &str) -> Option<u64> {
     {
         return None;
     }
-    Some(u64::try_from(write_stdin_calls).unwrap_or(u64::MAX))
+    let mut detected = DetectedEmptyStdinCalls {
+        calls: u64::try_from(call_offsets.len()).unwrap_or(u64::MAX),
+        ..DetectedEmptyStdinCalls::default()
+    };
+    for (index, offset) in call_offsets.iter().copied().enumerate() {
+        let end = call_offsets.get(index + 1).copied().unwrap_or(source.len());
+        if let Some(yield_ms) =
+            explicit_u64_object_field(&source[offset..end], concat!("yield", "_", "time_ms"))
+        {
+            detected.calls_with_explicit_yield =
+                detected.calls_with_explicit_yield.saturating_add(1);
+            detected.explicit_requested_yield_ms = detected
+                .explicit_requested_yield_ms
+                .saturating_add(yield_ms);
+        }
+    }
+    Some(detected)
+}
+
+fn explicit_u64_object_field(source: &str, field: &str) -> Option<u64> {
+    let (_, after_field) = source.split_once(field)?;
+    let after_field = after_field.trim_start();
+    let after_field = after_field
+        .strip_prefix('"')
+        .or_else(|| after_field.strip_prefix('\''))
+        .unwrap_or(after_field)
+        .trim_start();
+    let digits = after_field
+        .strip_prefix(':')?
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
 }
 
 fn request_tool_result_call_ids(request: &serde_json::Value) -> Vec<&str> {
@@ -5917,10 +6031,11 @@ mod tests {
         ApiEventLoopTailSummary, ApiRequestPayload, ApiTokenUsageSummary, ArmStatus, CodexExec,
         CodexToolMode, CodexVersion, DIFF_CODEX_CA_BUNDLE_FILENAME,
         DIFF_CODEX_CLOUD_CONFIG_CACHE_FILENAME, DIFF_CODEX_SSL_CERT_FILE_ENVIRONMENT,
-        DiffCodexCaSource, DiffProgress, DifferentialBuildError, DifferentialEvaluator, Evaluator,
-        LaneProgressState, ShellPollingSummary, Task, TrajectoryProjection, build_event_loop_trace,
-        compare_api_exchanges, detected_code_mode_empty_stdin_calls, detected_polling_turn,
-        diff_json, differential_comparison_name, differential_pair_memory_mb,
+        DetectedEmptyStdinCalls, DiffCodexCaSource, DiffProgress, DifferentialBuildError,
+        DifferentialEvaluator, Evaluator, LaneProgressState, ShellPollingSummary, Task,
+        TrajectoryProjection, build_event_loop_trace, compare_api_exchanges,
+        detected_code_mode_empty_stdin_calls, detected_polling_turn, diff_json,
+        differential_comparison_name, differential_pair_memory_mb,
         event_loop_difference_categories, heartbeat_needed, heartbeat_summary,
         inspect_api_exchanges, join_differential_arms, newly_completed_lines,
         read_api_request_payloads, read_optional_codex_cloud_config_cache, reanalyze,
@@ -6688,7 +6803,7 @@ mod tests {
 
         let report: serde_json::Value =
             serde_json::from_reader(fs::File::open(report_path).unwrap()).unwrap();
-        assert_eq!(report["schema_version"], 12);
+        assert_eq!(report["schema_version"], 13);
         assert_eq!(report["aligned_requests"], 1);
         assert_eq!(report["codex_unpaired_requests"], 1);
         assert_eq!(report["equal_requests"], 1);
@@ -7101,6 +7216,8 @@ mod tests {
         let polling = detected_polling_turn(&events).unwrap();
 
         assert_eq!(polling.empty_stdin_calls, 1);
+        assert_eq!(polling.calls_with_explicit_yield, 1);
+        assert_eq!(polling.explicit_requested_yield_ms, 1_000);
         assert_eq!(polling.input_tokens, 100);
         assert_eq!(polling.cached_tokens, 80);
         assert_eq!(polling.output_tokens, 4);
@@ -7110,11 +7227,37 @@ mod tests {
                 "type": "function_call",
                 "name": "write_stdin",
                 "call_id": "call-2",
-                "arguments": "{\"session_id\":2}"
+                "arguments": "{\"session_id\":2,\"yield_time_ms\":30000}"
             }
         })])
         .unwrap();
         assert_eq!(direct.empty_stdin_calls, 1);
+        assert_eq!(direct.calls_with_explicit_yield, 1);
+        assert_eq!(direct.explicit_requested_yield_ms, 30_000);
+        assert_eq!(
+            detected_code_mode_empty_stdin_calls(concat!(
+                "await tools.write_stdin({session_id: 2, chars: \"\", yield",
+                "_",
+                "time_ms: 1000});"
+            )),
+            Some(DetectedEmptyStdinCalls {
+                calls: 1,
+                calls_with_explicit_yield: 1,
+                explicit_requested_yield_ms: 1_000,
+            })
+        );
+        assert_eq!(
+            detected_code_mode_empty_stdin_calls(concat!(
+                "await tools.write_stdin({session_id: 2}); await tools.write_stdin({session_id: 3, \"yield",
+                "_",
+                "time_ms\": 30000});"
+            )),
+            Some(DetectedEmptyStdinCalls {
+                calls: 2,
+                calls_with_explicit_yield: 1,
+                explicit_requested_yield_ms: 30_000,
+            })
+        );
         assert_eq!(
             detected_code_mode_empty_stdin_calls(
                 "await tools.write_stdin({session_id: 2, chars: \"q\"});"
@@ -7204,6 +7347,9 @@ mod tests {
                 generation_turns: 2,
                 tool_call_turns: 1,
                 detected_poll_only_turns: 1,
+                detected_empty_stdin_calls: 1,
+                detected_polling_calls_with_explicit_yield: 0,
+                detected_polling_explicit_yield_ms: 0,
                 turns_with_usage: 2,
                 turns_without_usage: 0,
                 usage: ApiTokenUsageSummary {
