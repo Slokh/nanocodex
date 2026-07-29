@@ -180,7 +180,7 @@ impl ToolRuntime {
             .iter()
             .cloned()
             .partition(|definition| matches!(definition, ToolDefinition::ToolSearch { .. }));
-        code_mode::description::sort_definitions(&mut nested);
+        crate::code_mode_order::sort_definitions(&mut nested);
         native.extend([
             code_mode::exec_spec(&nested, has_deferred_search),
             code_mode::wait_spec(),

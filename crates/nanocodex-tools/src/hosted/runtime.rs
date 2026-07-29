@@ -163,7 +163,7 @@ impl HostedToolRuntime {
                 }
             }
         });
-        crate::code_mode::description::sort_definitions(&mut definitions);
+        crate::code_mode_order::sort_definitions(&mut definitions);
         if mode == HostedToolMode::Direct {
             if let Ok(mut names) = self.direct_tool_names.write() {
                 names.clear();
