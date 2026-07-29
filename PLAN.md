@@ -267,14 +267,21 @@ UID-0 account, and the date/timezone must come from the guest rootfs rather
 than the host-resident agent process. The shell-corrected `0c135a8` cohorts
 have profile-valid k=5 cells for `pytorch-model-recovery`, `raman-fitting`, and
 `dna-insert` in both stock tool modes. The guest-time-corrected `e8a4593`
-cohorts are filling `extract-elf` to k=5; every older ELF sample is excluded
-from mode comparison.
+cohorts completed profile-valid `extract-elf` cells in both modes; every older
+pre-correction ELF sample remains excluded from mode comparison.
 
 The current per-attempt VM adapter has sustained a 48 GiB declared guest
 budget. The eval-owned multi-task differential scheduler now defaults to k=5,
 preserves task/trial and queue coordinates, charges both arms when a pair
 starts, releases each arm's memory charge after evaluator and VM cleanup, and
-stages the stock release once per sweep. The initial retained production run
+stages the stock release once per sweep. Here k=5 means five valid independent
+matched pairs per task, not five launches regardless of evaluator health.
+Comparison schema v10 and the evaluator builder now retain infrastructure-
+broken pairs, schedule bounded replacements at fresh trial coordinates, and
+link every replacement to the failed trial it supersedes. The CLI budgets up
+to one extra k-sized cell per task and fails after writing all evidence if it
+still cannot obtain k valid pairs; verifier failures, timeouts, refusals, and
+ordinary model losses are never retried. The initial retained production run
 demonstrated that pair-lifetime charging stranded capacity during long
 unpaired tails; the per-arm release closes that gap without weakening paired
 starts or VM isolation. The pinned remote release and a deterministic
@@ -284,6 +291,15 @@ three-task backfill smoke validate the new admission behavior on
 their original comparisons remained live. The lower-overhead task-worker
 allocation described above is not implemented, so no final reduced-VM-overhead
 claim is complete.
+The largest measured host-utilization loss is currently before admission, not
+inside the pair scheduler: a cold 33-task process took about 6.5 minutes to
+eagerly prepare every selected image before its first comparison, while the
+same queue with warm semantic image keys resolved all images in under two
+seconds. Image preparation must become lazy or overlap with admitted work so a
+large mixed queue can start from its first ready task without weakening
+content-addressed isolation. Cross-process host packing is also still manual,
+so several independently correct 8/16 GiB process ceilings can collectively
+over-admit the machine.
 The CLI now treats `--max-memory-mb` as a hard per-process safety boundary:
 it rejects a task whose two declared arms exceed that value instead of relying
 on the library scheduler's work-conserving oversized-task exception. It also
@@ -301,9 +317,9 @@ arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
 active; across the latest valid cells for 50 controlled tasks Nanocodex is
-199/250 in the normal-stock cohort and 192/250 in the Code-Mode-Only-stock
-cohort, normal stock Codex is 204/250, and Code-Mode-Only stock Codex is
-211/250.
+200/250 in the normal-stock cohort and 192/250 in the Code-Mode-Only-stock
+cohort, normal stock Codex is 205/250, and Code-Mode-Only stock Codex is
+208/250.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in

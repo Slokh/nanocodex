@@ -833,7 +833,7 @@ Snapshot: 2026-07-29 18:02 UTC.
   | `pytorch-model-recovery` | 1/5 | 0/5 | 1/5 | 2/5 |
   | `raman-fitting` | 0/5 | 1/5 | 0/5 | 2/5 |
   | `dna-insert` | 1/5 | 2/5 | 1/5 | 2/5 |
-  | `extract-elf` | 1/5 | 3/5 | 2/5 | 5/5 |
+  | `extract-elf` | 2/5 | 4/5 | 2/5 | 2/5 |
   | `torch-pipeline-parallelism` | 2/5 | 2/5 | 1/5 | 1/5 |
   | `filter-js-from-html` | 0/5 | 0/5 | 1/5 | 1/5 |
   | `video-processing` | 2/5 | 1/5 | 1/5 | 3/5 |
@@ -881,12 +881,12 @@ Snapshot: 2026-07-29 18:02 UTC.
   | `financial-document-processor` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `merge-diff-arc-agi-task` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 50 latest controlled task cells, Nanocodex is 199/250 in the
+  Across these 50 latest controlled task cells, Nanocodex is 200/250 in the
   normal-stock cohort and 192/250 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 204/250 in normal Code Mode and 211/250 in `code_mode_only`.
+  Codex is 205/250 in normal Code Mode and 208/250 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
-  cohorts, so its six-score spread is sampling variance. Stock
-  `code_mode_only` is numerically seven scores higher than normal Code
+  cohorts, so its eight-score spread is sampling variance. Stock
+  `code_mode_only` is numerically three scores higher than normal Code
   Mode, but these are not paired model samples; the fresh DNA repetition
   alone moves Nanocodex by three normal-mode passes and one Code-Mode-Only
   pass and moves normal stock by two passes without a runtime change. The
@@ -2196,6 +2196,50 @@ Snapshot: 2026-07-29 18:02 UTC.
   `ed1f0db14790a16e9f9a9d1a23d58fc75037bcadd5c82ffbaaa883ccf6d49be4`
   at
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/target-cdf36035/release/nanocodex`.
+- The retained normal-Video root demonstrates that five launches are not
+  necessarily a valid k=5 cell: two stock arms lost their guest network route,
+  leaving only three scored pairs and requiring a manually managed fresh
+  root. Comparison schema v10 therefore makes infrastructure replacement an
+  explicit evaluator policy. `DifferentialEvaluatorBuilder` defaults to no
+  replacement for library callers; `nanocodex eval diff` budgets up to k
+  replacements per task, retains every broken pair, immediately queues a new
+  pair at a fresh coordinate, and records the failed trial in the
+  replacement's typed schedule. It returns every report in task/trial order
+  and fails after rendering retained evidence if the bounded budget still
+  yields fewer than k valid pairs. Only semantic `infrastructure_error`
+  outcomes trigger this path: verifier failures, safety refusals, agent
+  timeouts, and scored failures remain independent samples. A deterministic
+  coordinate/budget regression and the complete 165-test eval suite pass.
+  The implementation is exact commit
+  `2bb86561a2c06998d165f791c6fa50f2212ce2eb`.
+- Exact broad-start timing quantifies the eager preparation bottleneck. The
+  cold normal queue resolved its first image at 17:28:25 UTC but did not admit
+  its first pair until 17:35:00, after the last selected image finished at
+  17:34:54. The matched warm queue resolved all selected images in under two
+  seconds. The in-process admission scheduler is work-conserving once tasks
+  are ready; the lost 6.5 minutes are wholly before admission. Lazy or
+  overlapped image preparation is therefore the next direct time-to-first-
+  result improvement.
+- Fresh `b069eaa5` `extract-elf` repetitions supersede the older k5n row.
+  Nanocodex/stock score 2/5 versus 4/5 with normal stock Code Mode and 2/5
+  versus 2/5 with stock Code-Mode-Only. Normal medians are 148.5/126.4
+  seconds and 132,396/134,536 tokens; five-trial totals are 708.9/721.2
+  seconds and 681,860/656,346 tokens. Code-Mode-Only medians are 135.0/134.1
+  seconds and 146,929/105,782 tokens; totals are 668.3/643.5 seconds and
+  654,320/545,160 tokens. Every profile guard passes and no attempt is an
+  infrastructure failure.
+- Reading all twenty final `/app/extract.js` artifacts from their retained
+  ext4 disks reproduces the established causal split exactly: every one of
+  the ten failures adds the fixed `0x400000` PIE base, while every one of the
+  ten passes preserves raw virtual addresses. The unchanged Nanocodex
+  control moves from 1/5 to 2/5 in normal mode and stays at 2/5 in
+  Code-Mode-Only; stock moves from 3/5 to 4/5 and from 5/5 to 2/5. That
+  three-pass stock swing without a runner behavior change is stronger
+  variance evidence, not a Code-Mode-Only advantage or an event-loop defect.
+  Roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5y-extract-elf-stock-code-mode-b069eaa5-20260729T180448Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5z-extract-elf-code-mode-only-b069eaa5-20260729T181321Z`.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
