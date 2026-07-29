@@ -797,13 +797,16 @@ Snapshot: 2026-07-29 10:40 UTC.
   | `gcode-to-text` | 3/5 | 2/5 | 4/5 | 5/5 |
   | `sparql-university` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `configure-git-webserver` | 2/5 | 2/5 | 1/5 | 3/5 |
+  | `regex-chess` | 4/5 | 5/5 | 4/5 | 3/5 |
+  | `sanitize-git-repo` | 3/5 | 4/5 | 1/5 | 3/5 |
 
-  Across these 15 controlled tasks, Nanocodex is 38/75 in both independent
-  cohorts. Stock Codex is 37/75 in normal Code Mode and 49/75 in
-  `code_mode_only`. Nanocodex has the same Code-Mode-Only configuration in
-  both cohorts, so its exact tie is a useful stochastic control. Stock
-  `code_mode_only` now has the materially stronger directional result; normal
-  Code Mode has not demonstrated a score advantage.
+  Across these 17 controlled tasks, Nanocodex is 45/85 in the normal-stock
+  cohort and 43/85 in the Code-Mode-Only-stock cohort. Stock Codex is 46/85
+  in normal Code Mode and 55/85 in `code_mode_only`. Nanocodex has the same
+  Code-Mode-Only configuration in both independent cohorts, so its two-score
+  spread is a useful estimate of sampling noise. Stock `code_mode_only`
+  retains the stronger aggregate result, although `regex-chess` is a real
+  task-level counterexample.
 - Every failed `torch-pipeline-parallelism` arm passes the two structural tests
   and fails both world-size correctness tests. The common signature is a
   backward-activation mismatch on microbatch 0, usually at `lm_head.bwd`.
@@ -938,6 +941,31 @@ Snapshot: 2026-07-29 10:40 UTC.
   killed nor retried. This is a candidate-service strategy failure and a
   bounded canonical-verifier timeout, not model-loop drift or infrastructure
   loss.
+- `regex-chess` finishes 4/5 versus 5/5 in the normal-stock cohort and 4/5
+  versus 3/5 in Code-Mode-Only. Normal Code Mode therefore improves stock by
+  two scores on this task, while Nanocodex remains 4/5 in both independent
+  controls. Failed implementations emit an empty or invalid move set at one
+  or more later-game positions; the hidden verifier then observes one blank
+  candidate or a partial legal-move set instead of the complete set. Every
+  initial text section matches within each pair and the first meaningful
+  difference is generated model output. Median Nanocodex/stock duration is
+  469.8/709.7 seconds in the normal-stock cohort and 456.4/475.1 seconds in
+  Code-Mode-Only; median token use is 388,742/538,444 and
+  496,584/477,172, respectively. Direct tools improved stock's success rate
+  here but also increased its median wall time.
+- `sanitize-git-repo` finishes 3/5 versus 4/5 in the normal-stock cohort and
+  1/5 versus 3/5 in Code-Mode-Only. Eight of the nine failed arms rewrite Git
+  history to remove the secrets and thereby remove the verifier's expected
+  base commit `d6987af002b122fef54bc0be402062c76488a4d9`; the remaining
+  Nanocodex failure changes the expected JSON's final newline. One failed
+  stock arm has both defects. The instruction says sensitive values must not
+  remain “in the repository,” which makes history rewriting a plausible but
+  verifier-incompatible interpretation. Both agents choose it, with
+  Nanocodex doing so more often in these samples. All Code-Mode-Only initial
+  text and nested tool definitions match exactly; normal-mode initial text
+  also matches, and every pair first diverges in generated model output. This
+  is a stochastic strategy disadvantage for Nanocodex, not evidence of
+  context, response-chain, cache, or tool-result drift.
 - Three retained Filter attempts exposed a real measurement defect without a
   response-chain defect: normal trials 1 and 2 and Code-Mode-Only trial 3
   received `response.created` plus nonterminal output before the WebSocket
@@ -1083,6 +1111,14 @@ Snapshot: 2026-07-29 10:40 UTC.
   interrupt still forces cancellation. The limit remains per process, so the
   operator must partition the 48 GiB host budget across concurrent stock-mode
   processes.
+- Commit `b0714f63c3d48d70810ad9174bc071dff2cb45c9` contains those
+  safeguards. The deployed release binary has SHA-256
+  `1901a39b11e0857a44bf0758bc4cb54a482fbad17eaf8fe93621596b2e6ff40f`.
+  A live strict-ceiling smoke loaded `caffe-cifar-10`, calculated its
+  16,384 MiB pair declaration, and rejected a 12,288 MiB ceiling before
+  authorization, VM preparation, output-directory creation, or model work.
+  The single-interrupt drain path still requires a live k=1 infrastructure
+  smoke when campaign capacity is available.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |
