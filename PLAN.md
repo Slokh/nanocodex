@@ -300,9 +300,9 @@ that over-admission structurally impossible rather than relying on manual
 arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the latest cells for 42 controlled tasks Nanocodex is 156/210
-in the normal-stock cohort and 153/210 in the Code-Mode-Only-stock cohort,
-normal stock Codex is 164/210, and Code-Mode-Only stock Codex is 173/210.
+active; across the latest cells for 42 controlled tasks Nanocodex is 159/210
+in the normal-stock cohort and 152/210 in the Code-Mode-Only-stock cohort,
+normal stock Codex is 162/210, and Code-Mode-Only stock Codex is 173/210.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
@@ -329,6 +329,10 @@ all-axis stock-efficiency win for Code-Mode-Only.
 `adaptive-rejection-sampler` also remains 5/5 everywhere. Its repeated
 post-verifier-validation tails expose a stopping-policy difference rather than
 a Nanocodex loop regression, and direct outer tools add no score.
+Fresh `dna-assembly` k=5 cells reverse the prior normal-mode winner from
+0/5-versus-2/5 to 3/5-versus-0/5 without a runtime change; every failure is
+the same generated-primer Tm/annealing strategy boundary, with healthy
+context, cache, chains, and polling.
 That is directional evidence for Code-Mode-Only, not yet a broad causal
 winner: each mode uses independent model samples, and repeated tasks continue
 to show substantial within-configuration variance.
