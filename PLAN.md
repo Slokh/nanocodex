@@ -298,7 +298,9 @@ counterparts remain live. Task images are prepared lazily through bounded
 single-flight cells: each task enters admission as its image resolves while
 other image work continues, and a failed image blocks only its task coordinates.
 The immutable image is shared by matched arms while writable disks, sessions,
-and verifier state remain private.
+and verifier state remain private. Successful arm root disks are removed after
+the verifier artifacts are committed, while failed roots remain available for
+diagnosis, so a saturated sweep does not retain disk space for every pass.
 
 Differential VM arms now start from a low eval-only guest allocation, sample
 guest peak use and OOM counters plus VMM host RSS, and persist task-content-
