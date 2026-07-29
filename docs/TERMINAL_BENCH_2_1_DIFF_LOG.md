@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 18:02 UTC.
+Snapshot: 2026-07-29 18:43 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -836,9 +836,9 @@ Snapshot: 2026-07-29 18:02 UTC.
   | `extract-elf` | 2/5 | 4/5 | 2/5 | 2/5 |
   | `torch-pipeline-parallelism` | 2/5 | 2/5 | 1/5 | 1/5 |
   | `filter-js-from-html` | 0/5 | 0/5 | 1/5 | 1/5 |
-  | `video-processing` | 2/5 | 1/5 | 1/5 | 3/5 |
+  | `video-processing` | 0/5 | 2/5 | 1/5 | 3/5 |
   | `dna-assembly` | 3/5 | 0/5 | 0/5 | 1/5 |
-  | `build-pov-ray` | 2/5 | 5/5 | 4/5 | 4/5 |
+  | `build-pov-ray` | 3/5 | 4/5 | 5/5 | 3/5 |
   | `largest-eigenval` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `llm-inference-batching-scheduler` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `qemu-startup` | 5/5 | 4/5 | 5/5 | 5/5 |
@@ -880,13 +880,16 @@ Snapshot: 2026-07-29 18:02 UTC.
   | `reshard-c4-data` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `financial-document-processor` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `merge-diff-arc-agi-task` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `crack-7z-hash` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `install-windows-3.11` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `path-tracing` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 50 latest controlled task cells, Nanocodex is 200/250 in the
-  normal-stock cohort and 194/250 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 205/250 in normal Code Mode and 207/250 in `code_mode_only`.
+  Across these 53 latest controlled task cells, Nanocodex is 214/265 in the
+  normal-stock cohort and 210/265 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 220/265 in normal Code Mode and 221/265 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
-  cohorts, so its six-score spread is sampling variance. Stock
-  `code_mode_only` is numerically two scores higher than normal Code
+  cohorts, so its four-score spread is sampling variance. Stock
+  `code_mode_only` is numerically one score higher than normal Code
   Mode, but these are not paired model samples; the fresh DNA repetition
   alone moves Nanocodex by three normal-mode passes and one Code-Mode-Only
   pass and moves normal stock by two passes without a runtime change. The
@@ -2340,6 +2343,36 @@ Snapshot: 2026-07-29 18:02 UTC.
   cache keys are stable, and no response or tool-result link is broken. A
   fresh independent k=5 repetition is required before using this task to
   judge outer-tool exposure.
+- Three complete cells that had not yet been carried into the rolling
+  aggregate are all-pass controls: `crack-7z-hash`,
+  `install-windows-3.11`, and `path-tracing` are 5/5 for both agents in both
+  stock modes. Their retained roots are the matched `k5l` and `k5m`
+  `b2dff4be` cohorts under
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output`.
+- A fresh infrastructure-clean normal-Code-Mode `video-processing` repetition
+  closes 0/5 for Nanocodex versus 2/5 for stock. Stock passes trials 1 and 2;
+  trials 3 through 5 are shared failures. It supersedes the earlier normal
+  cell in the current table and, alongside the already-complete
+  Code-Mode-Only 1/5-versus-3/5 cell, strengthens the task-level stock
+  advantage without identifying a loop or cache failure. Evidence:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5aa-video-stock-code-mode-b069eaa5-20260729T182116Z`.
+- Fresh `build-pov-ray` repetitions close 3/5 versus 4/5 with normal stock
+  Code Mode and 5/5 versus 3/5 with stock Code-Mode-Only. Every one of the
+  twenty arms is scored and no pair is an infrastructure failure. The
+  unchanged Nanocodex control moves by two passes across independent samples
+  while stock moves by one in the opposite direction, so the mode reversal
+  remains sampling-sensitive rather than a causal outer-tool result. Roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5ab-build-pov-ray-stock-code-mode-b069eaa5-20260729T182422Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5ac-build-pov-ray-code-mode-only-5142c288-20260729T183419Z`.
+- At 2026-07-29 18:43 UTC the completed Video and POV-Ray partitions were
+  backfilled with fresh matched `train-fasttext` cells on exact runner
+  `5142c288`. Each process admits one 8,192 MiB pair at a time; together with
+  the two broad queues and the normal heavy queue, configured maxima remain
+  exactly 48 GiB. Roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5ad-train-fasttext-normal-5142c288-20260729T184307Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5ad-train-fasttext-only-5142c288-20260729T184307Z`.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |

@@ -320,10 +320,10 @@ that over-admission structurally impossible rather than relying on manual
 arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the latest valid cells for 50 controlled tasks Nanocodex is
-200/250 in the normal-stock cohort and 194/250 in the Code-Mode-Only-stock
-cohort, normal stock Codex is 205/250, and Code-Mode-Only stock Codex is
-207/250.
+active; across the latest valid cells for 53 controlled tasks Nanocodex is
+214/265 in the normal-stock cohort and 210/265 in the Code-Mode-Only-stock
+cohort, normal stock Codex is 220/265, and Code-Mode-Only stock Codex is
+221/265.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
@@ -383,12 +383,14 @@ drain, preserving its partial evidence. Fresh `75bc9fac` broad queues and
 matched normal/Code-Mode-Only Video repetitions are now running from new
 roots.
 
-The first controlled cells for seven more tasks have closed, bringing the
-latest valid table to 50 tasks. Thirty-three of the 37 previously queued tasks
-are running as one large k=5 work-conserving queue per stock mode. The
-remaining four each declare 8,192 MiB per arm and require a whole 16 GiB pair
-partition. At 2026-07-29 17:36 UTC, six live processes again summed to the
-exact 48 GiB configured future ceiling.
+The latest valid table now covers 53 tasks. Thirty-three of the previously
+queued tasks are running as one large k=5 work-conserving queue per stock
+mode. Four tasks each declare 8,192 MiB per arm and require a whole 16 GiB
+pair partition; their normal-mode queue is active and the matched
+Code-Mode-Only queue is pending that partition. Fresh matched
+`train-fasttext` mode cells use the remaining two 8 GiB partitions. At
+2026-07-29 18:43 UTC, five live processes again sum to the exact 48 GiB
+configured future ceiling.
 
 The broad launch exposed two separate image-startup costs. First,
 `VmResources::prepare` eagerly materializes every selected task image before
