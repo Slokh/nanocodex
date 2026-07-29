@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 15:08 UTC.
+Snapshot: 2026-07-29 15:14 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -1369,6 +1369,16 @@ Snapshot: 2026-07-29 15:08 UTC.
   tests, warnings-denied all-feature Clippy, rustfmt, and crate-boundary checks
   pass. Existing cohorts remain immutable; any performance claim requires a
   newly pinned k=5 rerun plus unchanged controls.
+- The corresponding commit-pinned remote release was built from detached,
+  clean source
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/source-d3d01b7`
+  without replacing any live runner. It reports commit
+  `d3d01b7dcd31fab2b3466a9fd88b8e8f96ac8aec`, build timestamp
+  `2026-07-29T15:11:49.411755509Z`, and binary SHA-256
+  `9b937825b875fa17865b7e3c9b25c549ba94021eb81e24649a345947f4298452`.
+  Its first live eval remains gated on a whole-process memory release because
+  the eight active processes already sum to the exact 48 GiB configured
+  future ceiling.
 - Both `sam-cell-seg` k=5 cells are complete. Nanocodex/stock score 2/5 versus
   5/5 with normal stock Code Mode and 2/5 versus 4/5 with stock
   Code-Mode-Only. Normal-mode Nanocodex/stock medians are 268.1/242.0
@@ -1637,6 +1647,25 @@ Snapshot: 2026-07-29 15:08 UTC.
   policy difference, not a Nanocodex regression. It remains outside the
   two-mode aggregate until its Code-Mode-Only k=5 counterpart can be admitted
   under the host-wide memory ceiling.
+- The normal-Code-Mode `extract-moves-from-video` cell in k5l also closes 5/5
+  for both agents. Nanocodex/stock medians are 960.6/1,237.2 seconds,
+  2,140,021/3,484,629 observed API tokens, 70/82 generation turns, and
+  17/14 poll-only turns. Five-trial totals are
+  13,503,519/22,717,388 observed tokens, 384/494 generation turns, 160/139
+  polls, and 5,631.9/6,785.6 agent-seconds.
+- Stock trial 4 alone reaches the 1,800-second agent deadline after 189
+  generation turns, 76 poll-only turns, and at least 10,278,912 API tokens.
+  The capture is incomplete only because the runner cancels the still-live
+  final request; its already-written solution nevertheless passes the
+  verifier. Nanocodex completes that paired trial in 593.9 seconds with 33
+  generation turns, six polls, and 1,094,879 tokens. Nanocodex itself has a
+  high-variance trial-5 tail of 152 generations, 92 polls, and 6,109,502
+  tokens, but still terminates before the deadline. Initial task text matches
+  on every trial, all first-generation divergences are model output, cache
+  keys remain stable, and no response or tool-result link is broken. The
+  complete cell therefore shows equal score but a materially better
+  Nanocodex stopping/efficiency tail under normal stock Code Mode; the
+  independent Code-Mode-Only cell is still running.
 - Both `large-scale-text-editing` cells close 5/5 for both agents. With normal
   stock Code Mode, Nanocodex/stock medians are 119.7/96.6 seconds,
   46,857/78,096 tokens, and 5/8 generation turns; five-trial totals are
