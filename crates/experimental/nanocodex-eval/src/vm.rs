@@ -93,6 +93,8 @@ const CACHED_VERIFIER_SCRIPT: &str = "/tmp/nanoeval-verifier.sh";
 const VERIFIER_CACHE_PREPARE_SCRIPT: &str = "/tmp/nanoeval-prepare-verifier.sh";
 const GUEST_PUBLIC_RESOLV_CONF: &str =
     "nameserver 192.168.127.1\\nnameserver 1.1.1.1\\noptions timeout:2 attempts:5\\n";
+const DEFAULT_IMAGE_NETWORK_RETRIES: usize = 2;
+const IMAGE_NETWORK_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 const VERIFIER_NETWORK_RETRIES: usize = 4;
 const VERIFIER_NETWORK_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 const BYTES_PER_MIB: u64 = 1024 * 1024;
@@ -132,6 +134,7 @@ pub struct VmResourcesBuilder {
     rootfs: Option<PathBuf>,
     cache: PathBuf,
     cache_policy: CachePolicy,
+    image_network_retries: usize,
     gvproxy: Option<PathBuf>,
 }
 
@@ -149,6 +152,7 @@ impl VmResources {
             rootfs: None,
             cache: PathBuf::from(DEFAULT_VM_CACHE),
             cache_policy: CachePolicy::Reuse,
+            image_network_retries: DEFAULT_IMAGE_NETWORK_RETRIES,
             gvproxy: None,
         }
     }
@@ -264,6 +268,17 @@ impl VmResourcesBuilder {
         self
     }
 
+    /// Sets whole-image retries after a recognized transient build-network failure.
+    ///
+    /// Each retry starts again from the immutable task inputs and content
+    /// cache. Deterministic Dockerfile failures are never retried. The default
+    /// is two retries.
+    #[must_use]
+    pub const fn image_network_retries(mut self, retries: usize) -> Self {
+        self.image_network_retries = retries;
+        self
+    }
+
     /// Pins the gvproxy executable used by tasks that request public network.
     ///
     /// When omitted, preparation discovers an installed executable or fetches
@@ -305,8 +320,14 @@ impl VmResourcesBuilder {
                 .collect()
         } else {
             let image_builder = image_builder(&self.vmm, &self.runtime_image);
-            prepare_vm_environments(&self.tasks, &self.cache, self.cache_policy, &image_builder)
-                .await?
+            prepare_vm_environments(
+                &self.tasks,
+                &self.cache,
+                self.cache_policy,
+                &image_builder,
+                self.image_network_retries,
+            )
+            .await?
         };
         let public_network = self
             .tasks
@@ -421,6 +442,7 @@ async fn prepare_vm_environments(
     cache: &Path,
     policy: CachePolicy,
     builder: &VmImageBuilder,
+    image_network_retries: usize,
 ) -> Result<BTreeMap<PathBuf, VmEnvironment>, VmResourcesError> {
     let mut environments = BTreeMap::new();
     for task in tasks {
@@ -428,10 +450,24 @@ async fn prepare_vm_environments(
             continue;
         }
         task.validate_package()?;
-        let prepared = prepare_task_image(builder, task, cache, policy).await?;
+        let prepared = prepare_image_with_network_retries(
+            task.name(),
+            "task",
+            image_network_retries,
+            || prepare_task_image(builder, task, cache, policy),
+            tokio::time::sleep,
+        )
+        .await?;
         task.validate_package()?;
         let verifier = if task.verifier().environment_mode() == VerifierEnvironmentMode::Separate {
-            let verifier = prepare_verifier_image(builder, task, cache, policy).await?;
+            let verifier = prepare_image_with_network_retries(
+                task.name(),
+                "verifier",
+                image_network_retries,
+                || prepare_verifier_image(builder, task, cache, policy),
+                tokio::time::sleep,
+            )
+            .await?;
             task.validate_package()?;
             info!(
                 target: "nanocodex_eval",
@@ -469,6 +505,62 @@ async fn prepare_vm_environments(
         );
     }
     Ok(environments)
+}
+
+async fn prepare_image_with_network_retries<T, F, Fut, S, Sleep>(
+    task_name: &str,
+    image_kind: &'static str,
+    max_retries: usize,
+    mut prepare: F,
+    mut sleep: S,
+) -> Result<T, ImageError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, ImageError>>,
+    S: FnMut(Duration) -> Sleep,
+    Sleep: Future<Output = ()>,
+{
+    let mut retry = 0;
+    loop {
+        match prepare().await {
+            Ok(prepared) => return Ok(prepared),
+            Err(error) if retry < max_retries && image_build_network_failed(&error) => {
+                let delay = image_network_retry_delay(retry);
+                warn!(
+                    target: "nanocodex_eval",
+                    task_name,
+                    image_kind,
+                    retry = retry + 1,
+                    max_retries,
+                    retry_delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                    error = %error,
+                    "VM image preparation hit a transient network failure; retrying"
+                );
+                sleep(delay).await;
+                retry += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn image_build_network_failed(error: &ImageError) -> bool {
+    let ImageError::BuildStep { stdout, stderr, .. } = error else {
+        return false;
+    };
+    let contains = |needle: &str| stdout.contains(needle) || stderr.contains(needle);
+    contains("Could not resolve host")
+        || contains("Temporary failure resolving")
+        || contains("failed to lookup address information")
+        || contains("Name or service not known")
+        || contains("Network is unreachable")
+        || contains("No route to host")
+        || contains("Host is unreachable")
+}
+
+const fn image_network_retry_delay(retry: usize) -> Duration {
+    let exponent = if retry > 8 { 8 } else { retry };
+    IMAGE_NETWORK_RETRY_BASE_DELAY.saturating_mul(1_u32 << exponent)
 }
 
 fn guest_timezone(rootfs: &Path) -> String {
@@ -2758,7 +2850,10 @@ fn copy_root_entries(source: &Path, destination: &Path, root: bool) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command as StdCommand;
+    use std::{
+        process::Command as StdCommand,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use nanocodex_agent::{Nanocodex, OpenAi};
     use nanocodex_vm::tools::{VmCommandOutput, VmCommandPartialOutput};
@@ -2780,6 +2875,65 @@ mod tests {
             .unwrap();
 
         assert_eq!(evaluator.attempt_environment(), EvalEnvironment::MicroVm);
+    }
+
+    #[tokio::test]
+    async fn image_preparation_retries_only_recognized_network_failures() {
+        let network_attempts = Arc::new(AtomicUsize::new(0));
+        let attempts = Arc::clone(&network_attempts);
+        let prepared = prepare_image_with_network_retries(
+            "task",
+            "task",
+            2,
+            move || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if attempt == 0 {
+                        Err(ImageError::BuildStep {
+                            stage: 0,
+                            instruction: 1,
+                            exit_code: 6,
+                            stdout: String::new(),
+                            stderr: "curl: (6) Could not resolve host: example.com".to_owned(),
+                        })
+                    } else {
+                        Ok(7_u8)
+                    }
+                }
+            },
+            |_| std::future::ready(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared, 7);
+        assert_eq!(network_attempts.load(Ordering::SeqCst), 2);
+
+        let deterministic_attempts = Arc::new(AtomicUsize::new(0));
+        let attempts = Arc::clone(&deterministic_attempts);
+        let error = prepare_image_with_network_retries(
+            "task",
+            "task",
+            2,
+            move || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Err::<u8, _>(ImageError::BuildStep {
+                    stage: 0,
+                    instruction: 1,
+                    exit_code: 1,
+                    stdout: String::new(),
+                    stderr: "compiler rejected invalid source".to_owned(),
+                }))
+            },
+            |_| std::future::ready(()),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, ImageError::BuildStep { .. }));
+        assert_eq!(deterministic_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            (0..=2).map(image_network_retry_delay).collect::<Vec<_>>(),
+            [2, 4, 8].map(Duration::from_secs)
+        );
     }
 
     #[test]
