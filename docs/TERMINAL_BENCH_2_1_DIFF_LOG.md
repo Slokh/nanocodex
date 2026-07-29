@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 14:38 UTC.
+Snapshot: 2026-07-29 14:43 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -825,10 +825,11 @@ Snapshot: 2026-07-29 14:38 UTC.
   | `fix-git` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `large-scale-text-editing` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `query-optimize` | 5/5 | 4/5 | 5/5 | 4/5 |
+  | `custom-memory-heap-crash` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 39 latest controlled task cells, Nanocodex is 144/195 in the
-  normal-stock cohort and 140/195 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 149/195 in normal Code Mode and 157/195 in `code_mode_only`.
+  Across these 40 latest controlled task cells, Nanocodex is 149/200 in the
+  normal-stock cohort and 145/200 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 154/200 in normal Code Mode and 162/200 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
   cohorts, so its four-score spread is sampling variance. Stock
   `code_mode_only` is numerically eight scores higher than normal Code Mode,
@@ -1635,6 +1636,20 @@ Snapshot: 2026-07-29 14:38 UTC.
   a healthy complete-history replay after a typed transport retry and still
   passes. The score split is generated SQL strategy, not a loop defect, and
   direct outer tools provide no score benefit.
+- Both `custom-memory-heap-crash` cells close 5/5 for both agents. With
+  normal stock Code Mode, Nanocodex/stock medians are 130.1/167.3 seconds,
+  272,179/363,254 tokens, and 18/20 generation turns; five-trial totals are
+  1,295,361/1,806,247 tokens and 707.6/847.3 agent-seconds. With stock
+  Code-Mode-Only, medians are 135.4/139.4 seconds, 288,467/256,854 tokens,
+  and 18/18 generation turns; totals are 1,399,418/1,367,004 tokens and
+  706.4/703.9 agent-seconds. No arm polls.
+- Relative to the independent Nanocodex shift, Code-Mode-Only saves stock
+  543,300 tokens, 142.3 agent-seconds, and seven generation turns. All exact
+  Code-Mode-Only context and nested definitions match, every first generation
+  divergence is model output, cache keys remain stable, no response or
+  tool-result link is broken, and neither agent replays history. Direct outer
+  tools therefore add no score and materially degrade stock efficiency,
+  while the complete cell exposes no Nanocodex loop defect.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
