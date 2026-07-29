@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 14:24 UTC.
+Snapshot: 2026-07-29 14:38 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -824,10 +824,11 @@ Snapshot: 2026-07-29 14:24 UTC.
   | `polyglot-c-py` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `fix-git` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `large-scale-text-editing` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `query-optimize` | 5/5 | 4/5 | 5/5 | 4/5 |
 
-  Across these 38 latest controlled task cells, Nanocodex is 139/190 in the
-  normal-stock cohort and 135/190 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 145/190 in normal Code Mode and 153/190 in `code_mode_only`.
+  Across these 39 latest controlled task cells, Nanocodex is 144/195 in the
+  normal-stock cohort and 140/195 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 149/195 in normal Code Mode and 157/195 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
   cohorts, so its four-score spread is sampling variance. Stock
   `code_mode_only` is numerically eight scores higher than normal Code Mode,
@@ -1607,6 +1608,33 @@ Snapshot: 2026-07-29 14:24 UTC.
   replays history. Direct outer tools therefore add no score and are a modest
   stock-efficiency regression on this task, with no Nanocodex loop fix
   indicated.
+- `query-optimize` closes 5/5 versus 4/5 in both the normal-Code-Mode and
+  Code-Mode-Only cohorts. Normal-mode Nanocodex/stock medians are
+  226.8/277.5 seconds, 188,000/237,420 tokens, 16/17 generation turns, and
+  1/2 poll-only turns; totals are 905,692/1,299,538 tokens and
+  1,106.5/1,620.1 agent-seconds. Code-Mode-Only medians are 316.9/258.1
+  seconds, 232,728/215,959 tokens, 19/18 generation turns, and 4/1 poll-only
+  turns; totals are 1,241,850/1,288,761 tokens and
+  1,570.9/1,380.1 agent-seconds.
+- Both stock failures return the exact expected rows and fail only the
+  verifier's runtime gate. The normal trial-5 query takes 0.744 seconds
+  against the golden query's 0.634 seconds; the Code-Mode-Only trial-4 query
+  takes 0.701 seconds against 0.647 seconds. Both exceed the allowed 1.05
+  ratio because they aggregate or rank all candidate rows before limiting to
+  500. Their paired Nanocodex queries limit/materialize earlier and pass at
+  0.496 versus 0.641 seconds and 0.675 versus 0.671 seconds.
+- Raw Code-Mode-Only stock saves 10,777 tokens, 240.0 agent-seconds, and two
+  poll turns but uses seven more generation turns. The formal
+  difference-in-differences is larger—346,935 tokens, 704.4 agent-seconds,
+  14 generation turns, and 11 poll turns in favor of Code-Mode-Only—but is
+  dominated by the unchanged Nanocodex control moving substantially between
+  independent samples. It is not a causal all-axis mode claim. All
+  Code-Mode-Only initial context and nested definitions match, every first
+  generation divergence is model output, cache keys remain stable, and no
+  response or tool-result link is broken. One normal Nanocodex trial performs
+  a healthy complete-history replay after a typed transport retry and still
+  passes. The score split is generated SQL strategy, not a loop defect, and
+  direct outer tools provide no score benefit.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
