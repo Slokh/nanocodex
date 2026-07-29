@@ -109,7 +109,7 @@ where
 
 const DEFAULT_OUTPUT_DIRECTORY: &str = ".nanocodex/eval-diff";
 const COMPARISON_FILE: &str = "comparison.json";
-const COMPARISON_SCHEMA_VERSION: u32 = 8;
+const COMPARISON_SCHEMA_VERSION: u32 = 9;
 const PROGRESS_FILE: &str = "progress.jsonl";
 const PROGRESS_SCHEMA_VERSION: u32 = 1;
 const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -119,7 +119,7 @@ const TRAJECTORY_FILE: &str = "agent/trajectory.json";
 const API_EXCHANGES_FILE: &str = "agent/api-exchanges.jsonl";
 const API_COMPARISON_FILE: &str = "api-comparison.json";
 const API_CAPTURE_SCHEMA_VERSION: u32 = 1;
-const API_COMPARISON_SCHEMA_VERSION: u32 = 13;
+const API_COMPARISON_SCHEMA_VERSION: u32 = 14;
 const DIFF_CODEX_SHARE_TAG: &str = "nanoeval-codex";
 const DIFF_CODEX_SHARE_MOUNT: &str = "/run/nanoeval-codex";
 const DIFF_CODEX_GUEST_BINARY: &str = "/run/nanoeval-codex/codex";
@@ -725,6 +725,8 @@ struct ApiEventLoopComparison {
     request_count_equal: Option<bool>,
     chain_invariants_equal: Option<bool>,
     model_visible_tool_sequence_equal: Option<bool>,
+    initial_client_metadata_shape_equal: Option<bool>,
+    initial_generation_client_metadata_shape_equal: Option<bool>,
     initial_input_text_sections_equal: Option<bool>,
     initial_generation_input_text_sections_equal: Option<bool>,
     initial_code_mode_tool_names_equal: Option<bool>,
@@ -788,6 +790,8 @@ struct ApiEventLoopArmSummary {
     initial_reasoning_effort: Option<String>,
     initial_reasoning_summary: Option<String>,
     initial_visible_tools: Vec<String>,
+    initial_client_metadata: ApiClientMetadataSummary,
+    initial_generation_client_metadata: ApiClientMetadataSummary,
     initial_input_text_sections: Vec<ApiInputTextSectionSummary>,
     initial_generation_input_text_sections: Vec<ApiInputTextSectionSummary>,
     initial_code_mode_tools: Option<Vec<String>>,
@@ -808,6 +812,45 @@ struct ApiEventLoopArmSummary {
     tool_result_links: u64,
     replayed_tool_result_links: u64,
     broken_tool_result_links: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ApiClientMetadataSummary {
+    status: ApiMetadataStatus,
+    fields: Vec<String>,
+    turn_metadata: ApiTurnMetadataSummary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ApiTurnMetadataSummary {
+    status: ApiMetadataStatus,
+    fields: Vec<String>,
+    request_kind: Option<String>,
+    thread_source: Option<String>,
+    sandbox: Option<String>,
+    code_mode_tool_names: Option<Vec<String>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ApiMetadataStatus {
+    Missing,
+    Object,
+    NonObject,
+    Parsed,
+    InvalidJson,
+}
+
+impl ApiMetadataStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Object => "object",
+            Self::NonObject => "non_object",
+            Self::Parsed => "parsed",
+            Self::InvalidJson => "invalid_json",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1331,6 +1374,11 @@ impl LiveApiDiff {
                 &mut differences,
             );
             notices.push(live_api_notice(request_number, "request", &differences));
+            notices.push(live_client_metadata_notice(
+                request_number,
+                &summarize_client_metadata(&nanocodex.requests[offset].payload),
+                &summarize_client_metadata(&codex.requests[offset].payload),
+            ));
             self.compared_requests = self.compared_requests.saturating_add(1);
         }
         while self.compared_responses < aligned {
@@ -1472,6 +1520,73 @@ fn live_api_notice(
             "turn {request_number} {stage} drift · {} · {pointer}",
             categories.join(",")
         ),
+    }
+}
+
+fn live_client_metadata_notice(
+    request_number: usize,
+    nanocodex: &ApiClientMetadataSummary,
+    codex: &ApiClientMetadataSummary,
+) -> LiveApiNotice {
+    let difference = first_client_metadata_difference(nanocodex, codex);
+    let format = |summary: &ApiClientMetadataSummary| {
+        let turn = &summary.turn_metadata;
+        format!(
+            "{}/{} keys · turn {}/{} fields · kind={} · source={} · sandbox={} · code-tools={}",
+            summary.status.as_str(),
+            summary.fields.len(),
+            turn.status.as_str(),
+            turn.fields.len(),
+            turn.request_kind.as_deref().unwrap_or("-"),
+            turn.thread_source.as_deref().unwrap_or("-"),
+            turn.sandbox.as_deref().unwrap_or("-"),
+            turn.code_mode_tool_names.as_ref().map_or(0, Vec::len),
+        )
+    };
+    LiveApiNotice {
+        kind: if difference.is_none() {
+            "api.client_metadata.match"
+        } else {
+            "api.client_metadata.diff"
+        },
+        summary: format!(
+            "turn {request_number} Responses client metadata semantic shape {}{} · nanocodex={} · codex={}",
+            if difference.is_none() {
+                "match"
+            } else {
+                "drift"
+            },
+            difference.map_or_else(String::new, |pointer| format!(" · {pointer}")),
+            format(nanocodex),
+            format(codex),
+        ),
+    }
+}
+
+fn first_client_metadata_difference(
+    nanocodex: &ApiClientMetadataSummary,
+    codex: &ApiClientMetadataSummary,
+) -> Option<&'static str> {
+    if nanocodex.status != codex.status {
+        Some("/status")
+    } else if nanocodex.fields != codex.fields {
+        Some("/fields")
+    } else if nanocodex.turn_metadata.status != codex.turn_metadata.status {
+        Some("/turn_metadata/status")
+    } else if nanocodex.turn_metadata.fields != codex.turn_metadata.fields {
+        Some("/turn_metadata/fields")
+    } else if nanocodex.turn_metadata.request_kind != codex.turn_metadata.request_kind {
+        Some("/turn_metadata/request_kind")
+    } else if nanocodex.turn_metadata.thread_source != codex.turn_metadata.thread_source {
+        Some("/turn_metadata/thread_source")
+    } else if nanocodex.turn_metadata.sandbox != codex.turn_metadata.sandbox {
+        Some("/turn_metadata/sandbox")
+    } else if nanocodex.turn_metadata.code_mode_tool_names
+        != codex.turn_metadata.code_mode_tool_names
+    {
+        Some("/turn_metadata/code_mode_tool_names")
+    } else {
+        None
     }
 }
 
@@ -4398,6 +4513,24 @@ fn append_model_visible_tool_summary(output: &mut String, comparison: &ApiEventL
     );
     let _ = writeln!(
         output,
+        "initial Responses client metadata shape: nanocodex {} · codex {} · match {}",
+        format_client_metadata_summary(&nanocodex.initial_client_metadata),
+        format_client_metadata_summary(&codex.initial_client_metadata),
+        comparison
+            .initial_client_metadata_shape_equal
+            .map_or("unavailable", |equal| if equal { "yes" } else { "no" }),
+    );
+    let _ = writeln!(
+        output,
+        "initial generation Responses client metadata shape: nanocodex {} · codex {} · match {}",
+        format_client_metadata_summary(&nanocodex.initial_generation_client_metadata),
+        format_client_metadata_summary(&codex.initial_generation_client_metadata),
+        comparison
+            .initial_generation_client_metadata_shape_equal
+            .map_or("unavailable", |equal| if equal { "yes" } else { "no" }),
+    );
+    let _ = writeln!(
+        output,
         "model-visible tool sequence: nanocodex [{}] · codex [{}] · match {}",
         nanocodex.model_visible_tool_sequence.join(", "),
         codex.model_visible_tool_sequence.join(", "),
@@ -4427,6 +4560,24 @@ fn append_model_visible_tool_summary(output: &mut String, comparison: &ApiEventL
             .initial_code_mode_tool_definitions_equal
             .map_or("unavailable", |equal| if equal { "yes" } else { "no" }),
     );
+}
+
+fn format_client_metadata_summary(summary: &ApiClientMetadataSummary) -> String {
+    let turn = &summary.turn_metadata;
+    format!(
+        "{} keys=[{}] turn={} fields=[{}] kind={} source={} sandbox={} code-tools={}",
+        summary.status.as_str(),
+        summary.fields.join(","),
+        turn.status.as_str(),
+        turn.fields.join(","),
+        turn.request_kind.as_deref().unwrap_or("unobserved"),
+        turn.thread_source.as_deref().unwrap_or("unobserved"),
+        turn.sandbox.as_deref().unwrap_or("unobserved"),
+        turn.code_mode_tool_names.as_deref().map_or_else(
+            || "unobserved".to_owned(),
+            |tools| format!("[{}]", tools.join(","))
+        ),
+    )
 }
 
 fn append_first_generation_divergence(output: &mut String, comparison: &ApiEventLoopComparison) {
@@ -4744,6 +4895,19 @@ fn compare_api_exchanges(
             nanocodex.summary.model_visible_tool_sequence
                 == codex.summary.model_visible_tool_sequence
         });
+    let initial_client_metadata_shape_equal = nanocodex_event_loop
+        .as_ref()
+        .zip(codex_event_loop.as_ref())
+        .map(|(nanocodex, codex)| {
+            nanocodex.summary.initial_client_metadata == codex.summary.initial_client_metadata
+        });
+    let initial_generation_client_metadata_shape_equal = nanocodex_event_loop
+        .as_ref()
+        .zip(codex_event_loop.as_ref())
+        .map(|(nanocodex, codex)| {
+            nanocodex.summary.initial_generation_client_metadata
+                == codex.summary.initial_generation_client_metadata
+        });
     let initial_input_text_sections_equal = nanocodex_event_loop
         .as_ref()
         .zip(codex_event_loop.as_ref())
@@ -4791,6 +4955,8 @@ fn compare_api_exchanges(
         request_count_equal,
         chain_invariants_equal,
         model_visible_tool_sequence_equal,
+        initial_client_metadata_shape_equal,
+        initial_generation_client_metadata_shape_equal,
         initial_input_text_sections_equal,
         initial_generation_input_text_sections_equal,
         initial_code_mode_tool_names_equal,
@@ -4862,6 +5028,8 @@ impl ApiEventLoopComparison {
             request_count_equal: None,
             chain_invariants_equal: None,
             model_visible_tool_sequence_equal: None,
+            initial_client_metadata_shape_equal: None,
+            initial_generation_client_metadata_shape_equal: None,
             initial_input_text_sections_equal: None,
             initial_generation_input_text_sections_equal: None,
             initial_code_mode_tool_names_equal: None,
@@ -4973,10 +5141,7 @@ struct EventLoopNormalizeContext<'a> {
 }
 
 fn build_event_loop_trace(requests: &[ApiRequestPayload]) -> ApiEventLoopTrace {
-    let initial_input_text_sections = requests
-        .first()
-        .map_or_else(Vec::new, |request| input_text_sections(&request.payload));
-    let initial_generation_input_text_sections = requests
+    let initial_generation_request = requests
         .iter()
         .find(|request| request.phase.as_deref() == Some("generation"))
         .or_else(|| {
@@ -4987,8 +5152,21 @@ fn build_event_loop_trace(requests: &[ApiRequestPayload]) -> ApiEventLoopTrace {
                     .and_then(serde_json::Value::as_bool)
                     != Some(false)
             })
-        })
+        });
+    let initial_input_text_sections = requests
+        .first()
         .map_or_else(Vec::new, |request| input_text_sections(&request.payload));
+    let initial_generation_input_text_sections = initial_generation_request
+        .map_or_else(Vec::new, |request| input_text_sections(&request.payload));
+    let initial_client_metadata = requests
+        .first()
+        .map_or_else(ApiClientMetadataSummary::missing, |request| {
+            summarize_client_metadata(&request.payload)
+        });
+    let initial_generation_client_metadata = initial_generation_request
+        .map_or_else(ApiClientMetadataSummary::missing, |request| {
+            summarize_client_metadata(&request.payload)
+        });
     let initial_model = requests
         .first()
         .and_then(|request| request.payload.get("model"))
@@ -5204,6 +5382,8 @@ fn build_event_loop_trace(requests: &[ApiRequestPayload]) -> ApiEventLoopTrace {
             initial_reasoning_effort,
             initial_reasoning_summary,
             initial_visible_tools,
+            initial_client_metadata,
+            initial_generation_client_metadata,
             initial_input_text_sections,
             initial_generation_input_text_sections,
             initial_code_mode_tools,
@@ -5776,6 +5956,124 @@ fn normalize_client_metadata(value: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(normalized)
 }
 
+impl ApiClientMetadataSummary {
+    const fn missing() -> Self {
+        Self {
+            status: ApiMetadataStatus::Missing,
+            fields: Vec::new(),
+            turn_metadata: ApiTurnMetadataSummary::missing(),
+        }
+    }
+}
+
+impl ApiTurnMetadataSummary {
+    const fn missing() -> Self {
+        Self {
+            status: ApiMetadataStatus::Missing,
+            fields: Vec::new(),
+            request_kind: None,
+            thread_source: None,
+            sandbox: None,
+            code_mode_tool_names: None,
+        }
+    }
+}
+
+fn summarize_client_metadata(request: &serde_json::Value) -> ApiClientMetadataSummary {
+    let Some(value) = request.get("client_metadata") else {
+        return ApiClientMetadataSummary::missing();
+    };
+    let Some(metadata) = value.as_object() else {
+        return ApiClientMetadataSummary {
+            status: ApiMetadataStatus::NonObject,
+            ..ApiClientMetadataSummary::missing()
+        };
+    };
+    ApiClientMetadataSummary {
+        status: ApiMetadataStatus::Object,
+        fields: metadata
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        turn_metadata: metadata
+            .get("x-codex-turn-metadata")
+            .map_or_else(ApiTurnMetadataSummary::missing, summarize_turn_metadata),
+    }
+}
+
+fn summarize_turn_metadata(value: &serde_json::Value) -> ApiTurnMetadataSummary {
+    let parsed;
+    let value = if let Some(encoded) = value.as_str() {
+        let Ok(decoded) = serde_json::from_str::<serde_json::Value>(encoded) else {
+            return ApiTurnMetadataSummary {
+                status: ApiMetadataStatus::InvalidJson,
+                ..ApiTurnMetadataSummary::missing()
+            };
+        };
+        parsed = decoded;
+        &parsed
+    } else {
+        value
+    };
+    let Some(metadata) = value.as_object() else {
+        return ApiTurnMetadataSummary {
+            status: ApiMetadataStatus::NonObject,
+            ..ApiTurnMetadataSummary::missing()
+        };
+    };
+    ApiTurnMetadataSummary {
+        status: ApiMetadataStatus::Parsed,
+        fields: metadata
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        request_kind: metadata
+            .get("request_kind")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        thread_source: metadata
+            .get("thread_source")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        sandbox: metadata
+            .get("sandbox")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        code_mode_tool_names: metadata
+            .get("code_mode_tool_names")
+            .and_then(code_mode_tool_names_from_metadata),
+    }
+}
+
+fn code_mode_tool_names_from_metadata(value: &serde_json::Value) -> Option<Vec<String>> {
+    if let Some(tools) = value.as_object() {
+        return Some(
+            tools
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        );
+    }
+    value.as_array().map(|tools| {
+        tools
+            .iter()
+            .filter_map(|tool| {
+                tool.as_str()
+                    .or_else(|| tool.get("name").and_then(serde_json::Value::as_str))
+            })
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    })
+}
+
 fn string_fingerprint(value: &str) -> serde_json::Value {
     serde_json::json!({
         "bytes": value.len(),
@@ -6036,11 +6334,11 @@ mod tests {
         TrajectoryProjection, build_event_loop_trace, compare_api_exchanges,
         detected_code_mode_empty_stdin_calls, detected_polling_turn, diff_json,
         differential_comparison_name, differential_pair_memory_mb,
-        event_loop_difference_categories, heartbeat_needed, heartbeat_summary,
-        inspect_api_exchanges, join_differential_arms, newly_completed_lines,
+        event_loop_difference_categories, first_client_metadata_difference, heartbeat_needed,
+        heartbeat_summary, inspect_api_exchanges, join_differential_arms, newly_completed_lines,
         read_api_request_payloads, read_optional_codex_cloud_config_cache, reanalyze,
         releasable_differential_arm_memory_mb, run_arm, stage_diff_codex_ca_bundle,
-        summarize_nanocodex, validate_differential_profile,
+        summarize_client_metadata, summarize_nanocodex, validate_differential_profile,
     };
 
     #[test]
@@ -6502,6 +6800,11 @@ mod tests {
                 .iter()
                 .any(|record| record["kind"] == "api.response.match")
         );
+        assert!(
+            records
+                .iter()
+                .any(|record| record["kind"] == "api.client_metadata.match")
+        );
     }
 
     #[test]
@@ -6706,6 +7009,16 @@ mod tests {
             Some(true)
         );
         assert_eq!(
+            summary.event_loop.initial_client_metadata_shape_equal,
+            Some(true)
+        );
+        assert_eq!(
+            summary
+                .event_loop
+                .initial_generation_client_metadata_shape_equal,
+            Some(true)
+        );
+        assert_eq!(
             summary
                 .event_loop
                 .nanocodex
@@ -6803,7 +7116,7 @@ mod tests {
 
         let report: serde_json::Value =
             serde_json::from_reader(fs::File::open(report_path).unwrap()).unwrap();
-        assert_eq!(report["schema_version"], 13);
+        assert_eq!(report["schema_version"], 14);
         assert_eq!(report["aligned_requests"], 1);
         assert_eq!(report["codex_unpaired_requests"], 1);
         assert_eq!(report["equal_requests"], 1);
@@ -6826,6 +7139,46 @@ mod tests {
         assert_eq!(right.summary.broken_previous_response_links, 0);
         assert_eq!(left.summary.prompt_cache_key_stable, Some(true));
         assert_eq!(right.summary.prompt_cache_key_stable, Some(true));
+    }
+
+    #[test]
+    fn client_metadata_summary_ignores_identity_values_but_preserves_semantic_shape() {
+        let request = |session: &str, request_kind: &str| {
+            serde_json::json!({
+                "client_metadata": {
+                    "session_id": session,
+                    "thread_id": format!("{session}-thread"),
+                    "x-codex-installation-id": format!("{session}-installation"),
+                    "x-codex-turn-metadata": serde_json::json!({
+                        "installation_id": format!("{session}-installation"),
+                        "session_id": session,
+                        "thread_id": format!("{session}-thread"),
+                        "request_kind": request_kind,
+                        "thread_source": "user",
+                        "sandbox": "none",
+                        "code_mode_tool_names": {
+                            "write_stdin": {"name": "write_stdin", "namespace": null},
+                            "exec_command": {"name": "exec_command", "namespace": null}
+                        }
+                    })
+                    .to_string()
+                }
+            })
+        };
+        let left = summarize_client_metadata(&request("left", "turn"));
+        let right = summarize_client_metadata(&request("right", "turn"));
+        assert_eq!(left, right);
+        assert_eq!(
+            left.turn_metadata.code_mode_tool_names.as_deref(),
+            Some(["exec_command".to_owned(), "write_stdin".to_owned()].as_slice())
+        );
+        assert_eq!(first_client_metadata_difference(&left, &right), None);
+
+        let prewarm = summarize_client_metadata(&request("right", "prewarm"));
+        assert_eq!(
+            first_client_metadata_difference(&left, &prewarm),
+            Some("/turn_metadata/request_kind")
+        );
     }
 
     #[test]
