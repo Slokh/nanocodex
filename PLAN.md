@@ -300,9 +300,9 @@ that over-admission structurally impossible rather than relying on manual
 arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the latest cells for 37 controlled tasks Nanocodex is 134/185
-in the normal-stock cohort and 130/185 in the Code-Mode-Only-stock cohort,
-normal stock Codex is 140/185, and Code-Mode-Only stock Codex is 148/185.
+active; across the latest cells for 38 controlled tasks Nanocodex is 139/190
+in the normal-stock cohort and 135/190 in the Code-Mode-Only-stock cohort,
+normal stock Codex is 145/190, and Code-Mode-Only stock Codex is 153/190.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
@@ -319,7 +319,9 @@ Code-Mode-Only, while `pytorch-model-cli` reverses its original k=1
 Nanocodex latency regression and has mixed mode-efficiency deltas.
 `git-leak-recovery` and `distribution-search` both remain 5/5 everywhere and
 add large all-axis stock-efficiency wins for Code-Mode-Only;
-`polyglot-c-py` and `fix-git` do the same.
+`polyglot-c-py` and `fix-git` do the same. `large-scale-text-editing` also
+remains 5/5 everywhere and adds a smaller all-axis stock-efficiency win for
+Code-Mode-Only.
 That is directional evidence for Code-Mode-Only, not yet a broad causal
 winner: each mode uses independent model samples, and repeated tasks continue
 to show substantial within-configuration variance.
