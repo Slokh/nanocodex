@@ -320,10 +320,10 @@ that over-admission structurally impossible rather than relying on manual
 arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the latest valid cells for 53 controlled tasks Nanocodex is
-214/265 in the normal-stock cohort and 210/265 in the Code-Mode-Only-stock
-cohort, normal stock Codex is 220/265, and Code-Mode-Only stock Codex is
-221/265.
+active; across the latest valid cells for 64 controlled tasks Nanocodex is
+260/320 in the normal-stock cohort and 257/320 in the Code-Mode-Only-stock
+cohort, normal stock Codex is 267/320, and Code-Mode-Only stock Codex is
+268/320.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
