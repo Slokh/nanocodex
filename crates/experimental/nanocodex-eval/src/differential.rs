@@ -2441,7 +2441,10 @@ async fn prepare_diff_vm_resources(
     let environment = vm.environment(task).await?;
     let nanocodex = vm
         .backend_for_task_with_guest_memory(
-            VmBackend::builder().web_search(web_search),
+            VmBackend::builder()
+                .retain_passed_rootfs(false)
+                .retain_failed_rootfs(false)
+                .web_search(web_search),
             task,
             guest_memory_mb,
         )
@@ -2449,6 +2452,8 @@ async fn prepare_diff_vm_resources(
     let codex = vm
         .backend_for_task_with_guest_memory(
             VmBackend::builder()
+                .retain_passed_rootfs(false)
+                .retain_failed_rootfs(false)
                 .web_search(web_search)
                 .shared_directory(SharedDirectory::read_only(
                     DIFF_CODEX_SHARE_TAG,

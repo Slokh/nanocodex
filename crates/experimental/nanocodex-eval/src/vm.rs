@@ -1099,16 +1099,28 @@ impl VmBackendConfigurationBuilder {
 pub struct VmBackend {
     configuration: Arc<OnceLock<VmBackendConfiguration>>,
     retain_passed_rootfs: bool,
+    retain_failed_rootfs: bool,
     web_search: bool,
     shared_directories: Arc<[SharedDirectory]>,
 }
 
 /// Deliberate policy for a [`VmBackend`].
-#[derive(Default)]
 pub struct VmBackendBuilder {
     retain_passed_rootfs: bool,
+    retain_failed_rootfs: bool,
     web_search: bool,
     shared_directories: Vec<SharedDirectory>,
+}
+
+impl Default for VmBackendBuilder {
+    fn default() -> Self {
+        Self {
+            retain_passed_rootfs: false,
+            retain_failed_rootfs: true,
+            web_search: false,
+            shared_directories: Vec::new(),
+        }
+    }
 }
 
 impl VmBackend {
@@ -1194,6 +1206,7 @@ impl VmBackend {
                 gvproxy: configuration.gvproxy.as_deref(),
                 verifier_cache: &configuration.verifier_cache,
                 retain_passed_rootfs: self.retain_passed_rootfs,
+                retain_failed_rootfs: self.retain_failed_rootfs,
                 web_search: self.web_search,
                 shared_directories: &self.shared_directories,
             },
@@ -1213,6 +1226,13 @@ impl VmBackendBuilder {
     #[must_use]
     pub const fn retain_passed_rootfs(mut self, retain: bool) -> Self {
         self.retain_passed_rootfs = retain;
+        self
+    }
+
+    /// Keeps writable root disks for failed or interrupted attempts.
+    #[must_use]
+    pub const fn retain_failed_rootfs(mut self, retain: bool) -> Self {
+        self.retain_failed_rootfs = retain;
         self
     }
 
@@ -1236,6 +1256,7 @@ impl VmBackendBuilder {
         VmBackend {
             configuration: Arc::new(OnceLock::new()),
             retain_passed_rootfs: self.retain_passed_rootfs,
+            retain_failed_rootfs: self.retain_failed_rootfs,
             web_search: self.web_search,
             shared_directories: self.shared_directories.into(),
         }
@@ -1299,6 +1320,7 @@ struct VmAttemptHost<'a> {
     gvproxy: Option<&'a Path>,
     verifier_cache: &'a Path,
     retain_passed_rootfs: bool,
+    retain_failed_rootfs: bool,
     web_search: bool,
     shared_directories: &'a [SharedDirectory],
 }
@@ -1530,6 +1552,7 @@ struct VmVerifier {
     cache: Option<VerifierCache>,
     attempt_cache: Option<AttemptVerifierCache>,
     retain_passed_rootfs: bool,
+    retain_failed_rootfs: bool,
     memory: VmAttemptMemory,
     _network: Option<AttemptGvproxy>,
 }
@@ -1673,6 +1696,7 @@ fn vm_attempt_inner(
             cache: verifier_cache,
             attempt_cache,
             retain_passed_rootfs: host.retain_passed_rootfs,
+            retain_failed_rootfs: host.retain_failed_rootfs,
             memory,
             _network: network,
         },
@@ -2464,11 +2488,7 @@ impl VmVerifier {
         let cleanup = match shutdown {
             Ok(()) => {
                 let cache_cleanup = self.finish_verifier_cache();
-                let disk_cleanup = if reward > 0.0 && !self.retain_passed_rootfs {
-                    self.remove_passed_root_disks()
-                } else {
-                    Ok(())
-                };
+                let disk_cleanup = self.remove_disposable_root_disks(reward > 0.0);
                 match cache_cleanup.and(disk_cleanup) {
                     Ok(()) => CleanupPhase::completed(cleanup_started),
                     Err(error) => CleanupPhase::failed(cleanup_started, &error),
@@ -2481,6 +2501,14 @@ impl VmVerifier {
                         error = %cache_error,
                         primary_error = %error,
                         "verifier cache cleanup also failed after VM shutdown failure"
+                    );
+                }
+                if let Err(disk_error) = self.remove_disposable_root_disks(reward > 0.0) {
+                    warn!(
+                        target: "nanocodex_eval",
+                        error = %disk_error,
+                        primary_error = %error,
+                        "VM root disk cleanup also failed after VM shutdown failure"
                     );
                 }
                 CleanupPhase::failed(cleanup_started, &error)
@@ -2545,6 +2573,14 @@ impl VmVerifier {
                         error = %cache_error,
                         primary_error = %primary,
                         "verifier cache cleanup also failed after VM shutdown failure"
+                    );
+                }
+                if let Err(disk_error) = self.remove_disposable_root_disks(false) {
+                    warn!(
+                        target: "nanocodex_eval",
+                        error = %disk_error,
+                        primary_error = %primary,
+                        "VM root disk cleanup also failed after VM shutdown failure"
                     );
                 }
                 let cleanup = CleanupPhase::failed(cleanup_started, &primary);
@@ -2629,7 +2665,7 @@ impl VmVerifier {
     }
 
     async fn cleanup_session(&mut self, session: Option<&VmToolSession>) -> CleanupPhase {
-        if session.is_none() && self.attempt_cache.is_none() {
+        if session.is_none() && self.attempt_cache.is_none() && self.retain_failed_rootfs {
             return CleanupPhase::not_required();
         }
         let cleanup_started = Utc::now();
@@ -2660,7 +2696,9 @@ impl VmVerifier {
         } else {
             self.try_remove_attempt_cache()
         };
-        match (shutdown, cache_cleanup) {
+        let disk_cleanup = self.remove_disposable_root_disks(false);
+        let resource_cleanup = cache_cleanup.and(disk_cleanup);
+        match (shutdown, resource_cleanup) {
             (Ok(()), Ok(())) => CleanupPhase::completed(cleanup_started),
             (Err(primary), secondary) => {
                 if let Err(secondary) = secondary {
@@ -2723,25 +2761,36 @@ impl VmVerifier {
         }
     }
 
-    fn remove_passed_root_disks(&self) -> Result<(), VmAttemptError> {
+    fn remove_disposable_root_disks(&self, passed: bool) -> Result<(), VmAttemptError> {
+        let retain = if passed {
+            self.retain_passed_rootfs
+        } else {
+            self.retain_failed_rootfs
+        };
+        if retain {
+            return Ok(());
+        }
+
         let mut failures = Vec::new();
         for launch in std::iter::once(&self.launch).chain(self.separate_launch.as_ref()) {
             if !launch.ext4 {
                 continue;
             }
-            match remove_passed_rootfs(&launch.root) {
+            match remove_rootfs(&launch.root) {
                 Ok(true) => info!(
                     target: "nanocodex_eval",
                     vm_rootfs_path = %launch.root.display(),
-                    "removed passed attempt VM root disk"
+                    vm_attempt_passed = passed,
+                    "removed disposable attempt VM root disk"
                 ),
                 Ok(false) => {}
                 Err(error) => {
                     warn!(
                         target: "nanocodex_eval",
                         vm_rootfs_path = %launch.root.display(),
+                        vm_attempt_passed = passed,
                         %error,
-                        "failed to remove passed attempt VM root disk"
+                        "failed to remove disposable attempt VM root disk"
                     );
                     failures.push(format!("{}: {error}", launch.root.display()));
                 }
@@ -2751,7 +2800,7 @@ impl VmVerifier {
             Ok(())
         } else {
             Err(io::Error::other(format!(
-                "failed to remove passed attempt VM root disks: {}",
+                "failed to remove disposable attempt VM root disks: {}",
                 failures.join("; ")
             ))
             .into())
@@ -2968,7 +3017,7 @@ async fn mount_verifier_cache(session: &VmToolSession) -> Result<(), VmAttemptEr
     Ok(())
 }
 
-fn remove_passed_rootfs(rootfs: &Path) -> io::Result<bool> {
+fn remove_rootfs(rootfs: &Path) -> io::Result<bool> {
     if !rootfs.is_file() {
         return Ok(false);
     }
@@ -3326,14 +3375,59 @@ mod tests {
     }
 
     #[test]
-    fn passed_rootfs_cleanup_removes_only_a_disk_file() {
+    fn rootfs_cleanup_removes_only_a_disk_file() {
         let directory = tempfile::tempdir().unwrap();
         let rootfs = directory.path().join("rootfs.ext4");
         fs::write(&rootfs, b"guest disk").unwrap();
 
-        assert!(remove_passed_rootfs(&rootfs).unwrap());
+        assert!(remove_rootfs(&rootfs).unwrap());
         assert!(!rootfs.exists());
-        assert!(!remove_passed_rootfs(directory.path()).unwrap());
+        assert!(!remove_rootfs(directory.path()).unwrap());
+    }
+
+    #[test]
+    fn backend_retains_only_failed_rootfs_by_default() {
+        let backend = VmBackend::builder().build();
+        assert!(!backend.retain_passed_rootfs);
+        assert!(backend.retain_failed_rootfs);
+
+        let trace_only = VmBackend::builder().retain_failed_rootfs(false).build();
+        assert!(!trace_only.retain_passed_rootfs);
+        assert!(!trace_only.retain_failed_rootfs);
+    }
+
+    #[test]
+    fn trace_only_cleanup_removes_a_failed_attempt_rootfs() {
+        let directory = tempfile::tempdir().unwrap();
+        let rootfs = directory.path().join("rootfs.ext4");
+        fs::write(&rootfs, b"failed guest disk").unwrap();
+        let verifier = VmVerifier {
+            agent_session: None,
+            launch: VmLaunch {
+                root: rootfs.clone(),
+                workspace: "/workspace".to_owned(),
+                shell: "/bin/sh".to_owned(),
+                runtime_image: directory.path().join("runtime"),
+                vmm: directory.path().join("vmm"),
+                cpus: 1,
+                memory_mib: 256,
+                ext4: true,
+                resolver_configuration: String::new(),
+                environment: BTreeMap::new(),
+                network_socket: None,
+                shared_directories: Vec::new(),
+            },
+            separate_launch: None,
+            cache: None,
+            attempt_cache: None,
+            retain_passed_rootfs: false,
+            retain_failed_rootfs: false,
+            memory: VmAttemptMemory::default(),
+            _network: None,
+        };
+
+        verifier.remove_disposable_root_disks(false).unwrap();
+        assert!(!rootfs.exists());
     }
 
     #[test]
@@ -3641,6 +3735,7 @@ done
             cache: None,
             attempt_cache: None,
             retain_passed_rootfs: false,
+            retain_failed_rootfs: true,
             memory: VmAttemptMemory::default(),
             _network: None,
         };
