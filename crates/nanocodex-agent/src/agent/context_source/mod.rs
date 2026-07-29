@@ -9,5 +9,11 @@ mod platform;
 #[path = "web.rs"]
 mod platform;
 
+#[derive(Clone)]
+pub(crate) struct LocalTimeContext {
+    pub(crate) current_date: std::sync::Arc<str>,
+    pub(crate) timezone: std::sync::Arc<str>,
+}
+
 pub(crate) use platform::ContextSource;
 pub(super) use platform::ContextSourceConfig;

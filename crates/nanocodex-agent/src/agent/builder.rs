@@ -98,6 +98,24 @@ impl<F> NanocodexBuilder<F> {
         self
     }
 
+    /// Overrides the date and timezone described to the model.
+    ///
+    /// Use this when the configured tools execute in a remote environment
+    /// rather than the embedding process. The values remain fixed for this
+    /// agent lifecycle.
+    #[must_use]
+    pub fn local_time_context(
+        mut self,
+        current_date: impl Into<Arc<str>>,
+        timezone: impl Into<Arc<str>>,
+    ) -> Self {
+        self.codex.context.set_local_time_context(LocalTimeContext {
+            current_date: current_date.into(),
+            timezone: timezone.into(),
+        });
+        self
+    }
+
     /// Sets the root agent's `UUIDv7` session identity.
     ///
     /// The root identity also seeds its checkpoint lineage. Spawned siblings
@@ -224,6 +242,7 @@ where
     <F::Service as Service<ResponsesAttempt>>::Future: AgentSend,
 {
     validate(&builder.config, builder.prompt_cache.key.as_deref())?;
+    validate_local_time_context(builder.codex.context.local_time_context())?;
     let config = Arc::new(builder.config);
     let factory = builder.factory;
     let service_factory: ServiceFactory<F::Service> = Arc::new({
@@ -240,4 +259,21 @@ where
         builder.resume,
         service_factory,
     )
+}
+
+fn validate_local_time_context(local_time_context: Option<&LocalTimeContext>) -> Result<()> {
+    let Some(local_time_context) = local_time_context else {
+        return Ok(());
+    };
+    if local_time_context.current_date.trim().is_empty() {
+        return Err(NanocodexError::InvalidRequest(
+            "local-time current date must not be empty".to_owned(),
+        ));
+    }
+    if local_time_context.timezone.trim().is_empty() {
+        return Err(NanocodexError::InvalidRequest(
+            "local-time timezone must not be empty".to_owned(),
+        ));
+    }
+    Ok(())
 }

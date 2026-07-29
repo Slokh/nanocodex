@@ -3,6 +3,8 @@ use std::sync::Arc;
 use chrono::{Local, Utc};
 use nanocodex_oai_api::responses::{ContentItem, MessageRole, ResponseItem};
 
+use crate::agent::LocalTimeContext;
+
 const REPLACEMENT_NOTICE: &str =
     "These AGENTS.md instructions replace all previously provided AGENTS.md instructions.";
 const REMOVAL_NOTICE: &str = "The previously provided AGENTS.md instructions no longer apply.";
@@ -67,8 +69,18 @@ impl ContextState {
         }
     }
 
-    pub(crate) fn capture(&self, cwd: &str, shell: &str) -> ContextSnapshot {
-        ContextSnapshot::capture(cwd, shell, self.selected_agents_md.as_deref())
+    pub(crate) fn capture(
+        &self,
+        cwd: &str,
+        shell: &str,
+        local_time_context: Option<&LocalTimeContext>,
+    ) -> ContextSnapshot {
+        ContextSnapshot::capture(
+            cwd,
+            shell,
+            self.selected_agents_md.as_deref(),
+            local_time_context,
+        )
     }
 
     pub(crate) fn update(&mut self, current: ContextSnapshot) -> Option<ContextUpdate> {
@@ -103,9 +115,26 @@ impl ContextState {
 }
 
 impl ContextSnapshot {
-    pub(crate) fn capture(cwd: &str, shell: &str, agents_md: Option<&str>) -> Self {
-        let (current_date, timezone) = local_time_context();
-        Self::capture_at(cwd, shell, agents_md, &current_date, &timezone)
+    pub(crate) fn capture(
+        cwd: &str,
+        shell: &str,
+        agents_md: Option<&str>,
+        configured_local_time: Option<&LocalTimeContext>,
+    ) -> Self {
+        let detected;
+        let local_time = if let Some(configured) = configured_local_time {
+            configured
+        } else {
+            detected = local_time_context();
+            &detected
+        };
+        Self::capture_at(
+            cwd,
+            shell,
+            agents_md,
+            &local_time.current_date,
+            &local_time.timezone,
+        )
     }
 
     pub(super) fn capture_at(
@@ -369,13 +398,16 @@ fn between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
     Some(&text[start..end])
 }
 
-fn local_time_context() -> (String, String) {
+fn local_time_context() -> LocalTimeContext {
     match iana_time_zone::get_timezone() {
-        Ok(timezone) => (Local::now().format("%Y-%m-%d").to_string(), timezone),
-        Err(_) => (
-            Utc::now().format("%Y-%m-%d").to_string(),
-            "Etc/UTC".to_owned(),
-        ),
+        Ok(timezone) => LocalTimeContext {
+            current_date: Local::now().format("%Y-%m-%d").to_string().into(),
+            timezone: timezone.into(),
+        },
+        Err(_) => LocalTimeContext {
+            current_date: Utc::now().format("%Y-%m-%d").to_string().into(),
+            timezone: Arc::from("Etc/UTC"),
+        },
     }
 }
 
@@ -385,6 +417,19 @@ mod tests {
 
     fn text(item: &ResponseItem) -> String {
         serde_json::to_string(item).expect("context item serializes")
+    }
+
+    #[test]
+    fn configured_local_time_replaces_the_embedding_host_context() {
+        let configured = LocalTimeContext {
+            current_date: Arc::from("2026-07-29"),
+            timezone: Arc::from("/UTC"),
+        };
+        let snapshot = ContextSnapshot::capture("/app", "bash", None, Some(&configured));
+        let rendered = text(&snapshot.full_item());
+
+        assert!(rendered.contains("<current_date>2026-07-29</current_date>"));
+        assert!(rendered.contains("<timezone>/UTC</timezone>"));
     }
 
     #[test]

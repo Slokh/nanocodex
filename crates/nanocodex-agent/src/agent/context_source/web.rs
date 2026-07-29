@@ -3,16 +3,30 @@ use std::sync::Arc;
 use crate::Result;
 
 #[derive(Clone, Default)]
-pub(crate) struct ContextSourceConfig;
+pub(crate) struct ContextSourceConfig {
+    local_time_context: Option<super::LocalTimeContext>,
+}
 
 impl ContextSourceConfig {
-    pub(crate) const fn build(&self) -> ContextSource {
-        ContextSource
+    pub(crate) fn set_local_time_context(&mut self, context: super::LocalTimeContext) {
+        self.local_time_context = Some(context);
+    }
+
+    pub(crate) const fn local_time_context(&self) -> Option<&super::LocalTimeContext> {
+        self.local_time_context.as_ref()
+    }
+
+    pub(crate) fn build(&self) -> ContextSource {
+        ContextSource {
+            local_time_context: self.local_time_context.clone(),
+        }
     }
 }
 
 #[derive(Clone)]
-pub(crate) struct ContextSource;
+pub(crate) struct ContextSource {
+    local_time_context: Option<super::LocalTimeContext>,
+}
 
 impl ContextSource {
     pub(crate) fn resolve_workspace(&self, requested: Option<&str>) -> Result<String> {
@@ -25,6 +39,10 @@ impl ContextSource {
 
     pub(crate) const fn global_instructions(&self) -> Option<Arc<str>> {
         None
+    }
+
+    pub(crate) const fn local_time_context(&self) -> Option<&super::LocalTimeContext> {
+        self.local_time_context.as_ref()
     }
 
     pub(crate) fn with_fallback_global(self, _fallback: Option<Arc<str>>) -> Self {
