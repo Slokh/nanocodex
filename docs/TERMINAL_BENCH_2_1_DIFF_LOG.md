@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 15:14 UTC.
+Snapshot: 2026-07-29 15:18 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -782,6 +782,27 @@ Snapshot: 2026-07-29 15:14 UTC.
   response chaining, tool-result pairing, cache use, and polling remain
   healthy. This is sampling-sensitive task interpretation, not evidence of a
   Nanocodex event-loop defect.
+- Fresh independent k5n repetitions make the variance explicit. With normal
+  stock Code Mode, Nanocodex/stock now pass 1/5 versus 3/5; with stock
+  Code-Mode-Only they pass 2/5 versus 5/5. Normal-mode medians are
+  164.6/166.6 seconds, 141,666/141,676 tokens, and 10/10 generation turns.
+  Code-Mode-Only medians are 163.2/132.3 seconds, 138,151/134,460 tokens, and
+  9/9 generations. No arm polls. Five-trial token totals are
+  682,254/695,358 and 699,152/668,470 respectively.
+- Direct inspection of every retained `extract.js` reproduces the earlier
+  causal split exactly: all nine new failures add a fixed `0x400000` PIE load
+  base, while all eleven passes retain the ELF's raw virtual addresses. Every
+  initial input section matches, all first-generation divergences are model
+  output, cache keys and response/tool-result links are healthy, and no
+  replay explains a score. Relative to the earlier e8 k=5 cells, unchanged
+  Nanocodex moves from 4/5 to 1/5 and 2/5 across independent modes, while
+  stock moves from 3/5 to 3/5 and from 4/5 to 5/5. The latest stock result
+  again favors Code-Mode-Only, but the large control swing means a single
+  k=5 cell cannot turn this task's interpretation choice into a loop or
+  metadata claim. Retained roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5n-stock-code-mode-b2dff4be-20260729T145959Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5n-code-mode-only-b2dff4be-20260729T145455Z`.
 - The current profile-valid k=5 score cells are:
 
   | task | Nanocodex with stock normal | stock normal | Nanocodex with stock only | stock only |
@@ -789,7 +810,7 @@ Snapshot: 2026-07-29 15:14 UTC.
   | `pytorch-model-recovery` | 1/5 | 0/5 | 1/5 | 2/5 |
   | `raman-fitting` | 0/5 | 1/5 | 0/5 | 2/5 |
   | `dna-insert` | 1/5 | 2/5 | 1/5 | 2/5 |
-  | `extract-elf` | 4/5 | 3/5 | 4/5 | 4/5 |
+  | `extract-elf` | 1/5 | 3/5 | 2/5 | 5/5 |
   | `torch-pipeline-parallelism` | 2/5 | 2/5 | 1/5 | 1/5 |
   | `filter-js-from-html` | 0/5 | 0/5 | 1/5 | 1/5 |
   | `video-processing` | 2/5 | 1/5 | 0/5 | 3/5 |
@@ -828,12 +849,12 @@ Snapshot: 2026-07-29 15:14 UTC.
   | `query-optimize` | 5/5 | 4/5 | 5/5 | 4/5 |
   | `custom-memory-heap-crash` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 41 latest controlled task cells, Nanocodex is 154/205 in the
-  normal-stock cohort and 150/205 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 159/205 in normal Code Mode and 167/205 in `code_mode_only`.
+  Across these 41 latest controlled task cells, Nanocodex is 151/205 in the
+  normal-stock cohort and 148/205 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 159/205 in normal Code Mode and 168/205 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
-  cohorts, so its four-score spread is sampling variance. Stock
-  `code_mode_only` is numerically eight scores higher than normal Code Mode,
+  cohorts, so its three-score spread is sampling variance. Stock
+  `code_mode_only` is numerically nine scores higher than normal Code Mode,
   but these are not paired model samples and the fresh Overfull repetition
   alone moves Nanocodex by three normal-mode passes and two Code-Mode-Only
   passes without a runtime change. The aggregate therefore does not yet
