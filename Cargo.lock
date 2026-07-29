@@ -5155,6 +5155,7 @@ dependencies = [
  "http",
  "nanocodex",
  "nanocodex-browser",
+ "nanocodex-eval",
  "nanocodex-vm",
  "nanocodex-voice",
  "reflink-copy",

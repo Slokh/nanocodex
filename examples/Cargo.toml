@@ -18,6 +18,7 @@ http.workspace = true
 nanocodex = { workspace = true, features = ["realtime"] }
 nanocodex-browser.workspace = true
 nanocodex-voice.workspace = true
+nanocodex-eval.workspace = true
 nanocodex-vm.workspace = true
 reqwest.workspace = true
 reflink-copy.workspace = true
