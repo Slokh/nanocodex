@@ -19,7 +19,7 @@ pub use event::{
 };
 pub use item::{ResponseItem, ResponseItemId};
 #[cfg(feature = "client")]
-pub(crate) use request::{CreatePolicy, ResponseCreate};
+pub(crate) use request::{CreatePolicy, RequestTurnMetadata, ResponseCreate};
 #[cfg(feature = "client")]
 pub use request::{RequestProfile, ResponseHistory, ResponsesInput};
 pub use tool::{CustomToolFormat, JsonSchema, JsonValue, ToolDefinition};

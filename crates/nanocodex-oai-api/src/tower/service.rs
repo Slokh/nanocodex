@@ -495,6 +495,7 @@ impl ResponsesService {
                     request.input(),
                     request.previous_response_id(),
                     &request.profile,
+                    &request.turn_metadata,
                     connection.turn_state.as_deref(),
                 ))
             }

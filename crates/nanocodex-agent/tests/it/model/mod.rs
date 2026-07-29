@@ -115,10 +115,41 @@ fn assert_warmup_with_store(warmup: &Value, store: bool) {
         warmup["client_metadata"]["ws_request_header_x_openai_internal_codex_responses_lite"],
         "true"
     );
+    assert_eq!(warmup["client_metadata"]["session_id"], TEST_SESSION_ID);
+    assert_eq!(warmup["client_metadata"]["thread_id"], TEST_SESSION_ID);
+    assert_eq!(warmup["client_metadata"]["turn_id"], "");
+    assert_eq!(
+        warmup["client_metadata"]["x-codex-window-id"],
+        format!("{TEST_SESSION_ID}:0")
+    );
+    let installation_id = warmup["client_metadata"]["x-codex-installation-id"]
+        .as_str()
+        .expect("Responses metadata should include an installation identity");
+    assert_eq!(
+        uuid::Uuid::parse_str(installation_id)
+            .expect("installation identity should be a UUID")
+            .get_version_num(),
+        4
+    );
+    assert!(
+        warmup["client_metadata"]["x-codex-ws-stream-request-start-ms"]
+            .as_str()
+            .and_then(|millis| millis.parse::<u64>().ok())
+            .is_some()
+    );
     let turn_metadata = warmup["client_metadata"]["x-codex-turn-metadata"]
         .as_str()
         .and_then(|metadata| serde_json::from_str::<Value>(metadata).ok())
         .expect("Responses Lite requests include typed Code Mode tool metadata");
+    assert_eq!(turn_metadata["installation_id"], installation_id);
+    assert_eq!(turn_metadata["session_id"], TEST_SESSION_ID);
+    assert_eq!(turn_metadata["thread_id"], TEST_SESSION_ID);
+    assert_eq!(turn_metadata["turn_id"], "");
+    assert_eq!(turn_metadata["window_id"], format!("{TEST_SESSION_ID}:0"));
+    assert_eq!(turn_metadata["request_kind"], "prewarm");
+    assert_eq!(turn_metadata["thread_source"], "user");
+    assert_eq!(turn_metadata["sandbox"], "none");
+    assert!(turn_metadata.get("turn_started_at_unix_ms").is_none());
     assert_eq!(
         turn_metadata["code_mode_tool_names"]["view_image"],
         json!({

@@ -9,7 +9,9 @@ use std::{
 use crate::{
     AgentEventKind, EventError, EventSink, ResponseEvent, ResponseItem, ResponsesTransport,
     Thinking,
-    responses::{RequestProfile, ResponseHistory, ResponsesInput, WarmupResponse},
+    responses::{
+        RequestProfile, RequestTurnMetadata, ResponseHistory, ResponsesInput, WarmupResponse,
+    },
     tower::transport_policy::SessionTransport,
 };
 use serde::Serialize;
@@ -168,6 +170,7 @@ pub struct ResponsesAttempt {
     thinking: Thinking,
     fast_mode: bool,
     pub(crate) profile: Arc<RequestProfile>,
+    pub(crate) turn_metadata: Arc<RequestTurnMetadata>,
     pub(crate) observer: ResponsesObserver,
     pub(crate) attempt: u32,
     pub(crate) max_attempts: u32,
@@ -181,6 +184,7 @@ impl ResponsesAttempt {
         thinking: Thinking,
         fast_mode: bool,
         profile: Arc<RequestProfile>,
+        turn_metadata: Arc<RequestTurnMetadata>,
         observer: ResponsesObserver,
         session_transport: Arc<SessionTransport>,
     ) -> Self {
@@ -195,6 +199,7 @@ impl ResponsesAttempt {
             thinking,
             fast_mode,
             profile,
+            turn_metadata,
             observer,
             attempt: 1,
             max_attempts: 1,
@@ -214,6 +219,7 @@ impl ResponsesAttempt {
         thinking: Thinking,
         fast_mode: bool,
         profile: Arc<RequestProfile>,
+        turn_metadata: Arc<RequestTurnMetadata>,
         observer: ResponsesObserver,
         session_transport: Arc<SessionTransport>,
     ) -> Self {
@@ -228,6 +234,7 @@ impl ResponsesAttempt {
             thinking,
             fast_mode,
             profile,
+            turn_metadata,
             observer,
             attempt: 1,
             max_attempts: RESPONSE_MAX_ATTEMPTS.get(),
@@ -248,6 +255,7 @@ impl ResponsesAttempt {
         thinking: Thinking,
         fast_mode: bool,
         profile: Arc<RequestProfile>,
+        turn_metadata: Arc<RequestTurnMetadata>,
         observer: ResponsesObserver,
         session_transport: Arc<SessionTransport>,
     ) -> Self {
@@ -262,6 +270,7 @@ impl ResponsesAttempt {
             thinking,
             fast_mode,
             profile,
+            turn_metadata,
             observer,
             attempt: 1,
             max_attempts: RESPONSE_MAX_ATTEMPTS.get(),
@@ -477,6 +486,7 @@ impl ResponsesServiceResponse {
 #[must_use]
 pub struct ResponsesAttemptFactory {
     profile: Arc<RequestProfile>,
+    turn_metadata: Arc<RequestTurnMetadata>,
     observer: ResponsesObserver,
     logical_turn: u64,
     session_transport: Arc<SessionTransport>,
@@ -487,6 +497,7 @@ impl ResponsesAttemptFactory {
     pub fn new(profile: RequestProfile, events: EventSink, stats: Arc<TransportStats>) -> Self {
         Self {
             profile: Arc::new(profile),
+            turn_metadata: Arc::new(RequestTurnMetadata::new()),
             observer: ResponsesObserver {
                 events,
                 stats,
@@ -514,6 +525,11 @@ impl ResponsesAttemptFactory {
     pub fn for_logical_turn(&self, logical_turn: u64) -> Self {
         Self {
             profile: Arc::clone(&self.profile),
+            turn_metadata: if self.logical_turn == logical_turn {
+                Arc::clone(&self.turn_metadata)
+            } else {
+                Arc::new(RequestTurnMetadata::new())
+            },
             observer: self.observer.clone(),
             logical_turn,
             session_transport: Arc::clone(&self.session_transport),
@@ -533,6 +549,7 @@ impl ResponsesAttemptFactory {
             thinking,
             fast_mode,
             Arc::clone(&self.profile),
+            Arc::clone(&self.turn_metadata),
             self.observer.clone(),
             Arc::clone(&self.session_transport),
         );
@@ -562,6 +579,7 @@ impl ResponsesAttemptFactory {
             thinking,
             fast_mode,
             Arc::clone(&self.profile),
+            Arc::clone(&self.turn_metadata),
             self.observer.clone(),
             Arc::clone(&self.session_transport),
         );
@@ -593,6 +611,7 @@ impl ResponsesAttemptFactory {
             thinking,
             fast_mode,
             Arc::clone(&self.profile),
+            Arc::clone(&self.turn_metadata),
             self.observer.clone(),
             Arc::clone(&self.session_transport),
         );
@@ -628,12 +647,36 @@ mod tests {
             Thinking::High,
             true,
         );
+        let turn_metadata = Arc::clone(&attempt.turn_metadata);
 
         assert_eq!(attempt.thinking(), Thinking::High);
         assert!(attempt.fast_mode());
         assert!(attempt.prepare_retry());
+        assert!(Arc::ptr_eq(&turn_metadata, &attempt.turn_metadata));
         assert_eq!(attempt.thinking(), Thinking::High);
         assert!(attempt.fast_mode());
+
+        let same_turn = factory.for_logical_turn(0).generation(
+            2,
+            ResponseHistory::default(),
+            ResponseHistory::default(),
+            0,
+            None,
+            Thinking::High,
+            true,
+        );
+        assert!(Arc::ptr_eq(&turn_metadata, &same_turn.turn_metadata));
+
+        let next_turn = factory.for_logical_turn(1).generation(
+            3,
+            ResponseHistory::default(),
+            ResponseHistory::default(),
+            0,
+            None,
+            Thinking::High,
+            true,
+        );
+        assert!(!Arc::ptr_eq(&turn_metadata, &next_turn.turn_metadata));
     }
 
     #[test]
