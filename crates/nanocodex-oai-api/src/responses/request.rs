@@ -1,6 +1,10 @@
 //! Byte-stable request profiles, persistent history, and wire serialization.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 
@@ -10,7 +14,9 @@ use crate::{ModelConfig, Thinking};
 /// Stable request metadata and prefix shared by every operation in a session.
 #[derive(Clone)]
 pub struct RequestProfile {
+    installation_id: String,
     session_id: String,
+    window_id: String,
     prompt_cache_key: String,
     prefix: Arc<[ResponseItem]>,
     code_mode_tool_names: Arc<BTreeMap<String, CodeModeToolName>>,
@@ -24,8 +30,11 @@ impl RequestProfile {
         prompt_cache_key: impl Into<String>,
         prefix: Arc<[ResponseItem]>,
     ) -> Self {
+        let session_id = session_id.into();
         Self {
-            session_id: session_id.into(),
+            installation_id: uuid::Uuid::new_v4().to_string(),
+            window_id: format!("{session_id}:0"),
+            session_id,
             prompt_cache_key: prompt_cache_key.into(),
             prefix,
             code_mode_tool_names: Arc::default(),
@@ -68,6 +77,22 @@ impl RequestProfile {
                 .collect(),
         );
         self
+    }
+}
+
+/// Stable identity and start time shared by every request in one logical turn.
+#[derive(Clone)]
+pub(crate) struct RequestTurnMetadata {
+    turn_id: String,
+    started_at_unix_ms: Option<u64>,
+}
+
+impl RequestTurnMetadata {
+    pub(crate) fn new() -> Self {
+        Self {
+            turn_id: uuid::Uuid::now_v7().to_string(),
+            started_at_unix_ms: unix_time_ms(),
+        }
     }
 }
 
@@ -558,7 +583,7 @@ impl<'a> ResponseCreate<'a> {
             None,
             Some(false),
             profile,
-            turn_state,
+            RequestMetadataContext::prewarm(turn_state),
         )
     }
 
@@ -568,6 +593,7 @@ impl<'a> ResponseCreate<'a> {
         input: ResponsesInput<'a>,
         previous_response_id: Option<&'a str>,
         profile: &'a RequestProfile,
+        turn_metadata: &'a RequestTurnMetadata,
         turn_state: Option<&'a str>,
     ) -> Self {
         Self::new(
@@ -577,7 +603,7 @@ impl<'a> ResponseCreate<'a> {
             previous_response_id,
             None,
             profile,
-            turn_state,
+            RequestMetadataContext::turn(turn_metadata, turn_state),
         )
     }
 
@@ -588,9 +614,12 @@ impl<'a> ResponseCreate<'a> {
         previous_response_id: Option<&'a str>,
         generate: Option<bool>,
         profile: &'a RequestProfile,
-        turn_state: Option<&'a str>,
+        metadata: RequestMetadataContext<'a>,
     ) -> Self {
         let websocket = matches!(policy.transport, crate::ResponsesTransport::WebSocket);
+        let turn_id = metadata
+            .turn
+            .map_or("", |metadata| metadata.turn_id.as_str());
         Self {
             kind: websocket.then_some("response.create"),
             model: policy.model.as_str(),
@@ -615,14 +644,64 @@ impl<'a> ResponseCreate<'a> {
             service_tier: policy.fast_mode.then_some("priority"),
             generate,
             client_metadata: ClientMetadata {
+                installation_id: &profile.installation_id,
                 session_id: profile.session_id(),
                 thread_id: profile.session_id(),
+                turn_id,
+                window_id: &profile.window_id,
+                request_started_at_unix_ms: websocket
+                    .then(unix_time_ms)
+                    .flatten()
+                    .map(|millis| millis.to_string()),
                 responses_lite: websocket.then_some("true"),
-                turn_state: websocket.then_some(turn_state).flatten(),
-                turn_metadata: (!profile.code_mode_tool_names.is_empty()).then_some(
-                    SerializedCodeModeTurnMetadata(&profile.code_mode_tool_names),
-                ),
+                turn_state: websocket.then_some(metadata.turn_state).flatten(),
+                turn_metadata: SerializedTurnMetadata {
+                    profile,
+                    request_kind: metadata.kind,
+                    turn_metadata: metadata.turn,
+                    include_code_mode_tool_names: websocket,
+                },
             },
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RequestMetadataContext<'a> {
+    kind: ClientRequestKind,
+    turn: Option<&'a RequestTurnMetadata>,
+    turn_state: Option<&'a str>,
+}
+
+impl<'a> RequestMetadataContext<'a> {
+    const fn prewarm(turn_state: Option<&'a str>) -> Self {
+        Self {
+            kind: ClientRequestKind::Prewarm,
+            turn: None,
+            turn_state,
+        }
+    }
+
+    const fn turn(turn: &'a RequestTurnMetadata, turn_state: Option<&'a str>) -> Self {
+        Self {
+            kind: ClientRequestKind::Turn,
+            turn: Some(turn),
+            turn_state,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ClientRequestKind {
+    Prewarm,
+    Turn,
+}
+
+impl ClientRequestKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Prewarm => "prewarm",
+            Self::Turn => "turn",
         }
     }
 }
@@ -666,40 +745,88 @@ struct TextControls {
     verbosity: &'static str,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Serialize)]
 struct ClientMetadata<'a> {
+    #[serde(rename = "x-codex-installation-id")]
+    installation_id: &'a str,
     session_id: &'a str,
     thread_id: &'a str,
+    turn_id: &'a str,
+    #[serde(rename = "x-codex-window-id")]
+    window_id: &'a str,
+    #[serde(rename = "x-codex-ws-stream-request-start-ms")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_started_at_unix_ms: Option<String>,
     #[serde(rename = "ws_request_header_x_openai_internal_codex_responses_lite")]
     #[serde(skip_serializing_if = "Option::is_none")]
     responses_lite: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "x-codex-turn-state")]
     turn_state: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "x-codex-turn-metadata")]
-    turn_metadata: Option<SerializedCodeModeTurnMetadata<'a>>,
+    turn_metadata: SerializedTurnMetadata<'a>,
 }
 
 #[derive(Clone, Copy)]
-struct SerializedCodeModeTurnMetadata<'a>(&'a BTreeMap<String, CodeModeToolName>);
+struct SerializedTurnMetadata<'a> {
+    profile: &'a RequestProfile,
+    request_kind: ClientRequestKind,
+    turn_metadata: Option<&'a RequestTurnMetadata>,
+    include_code_mode_tool_names: bool,
+}
 
-impl Serialize for SerializedCodeModeTurnMetadata<'_> {
+impl Serialize for SerializedTurnMetadata<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         #[derive(Serialize)]
         struct TurnMetadata<'a> {
-            code_mode_tool_names: &'a BTreeMap<String, CodeModeToolName>,
+            installation_id: &'a str,
+            session_id: &'a str,
+            thread_id: &'a str,
+            turn_id: &'a str,
+            window_id: &'a str,
+            request_kind: &'static str,
+            thread_source: &'static str,
+            sandbox: &'static str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            code_mode_tool_names: Option<&'a BTreeMap<String, CodeModeToolName>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            turn_started_at_unix_ms: Option<u64>,
         }
 
+        let turn_id = self
+            .turn_metadata
+            .map_or("", |metadata| metadata.turn_id.as_str());
+        let code_mode_tool_names = (self.include_code_mode_tool_names
+            && !self.profile.code_mode_tool_names.is_empty())
+        .then_some(self.profile.code_mode_tool_names.as_ref());
         let value = serde_json::to_string(&TurnMetadata {
-            code_mode_tool_names: self.0,
+            installation_id: &self.profile.installation_id,
+            session_id: self.profile.session_id(),
+            thread_id: self.profile.session_id(),
+            turn_id,
+            window_id: &self.profile.window_id,
+            request_kind: self.request_kind.as_str(),
+            thread_source: "user",
+            sandbox: "none",
+            code_mode_tool_names,
+            turn_started_at_unix_ms: self
+                .turn_metadata
+                .and_then(|metadata| metadata.started_at_unix_ms),
         })
         .map_err(serde::ser::Error::custom)?;
         serializer.serialize_str(&value)
     }
+}
+
+fn unix_time_ms() -> Option<u64> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    u64::try_from(millis).ok()
 }
 
 #[cfg(test)]
@@ -707,6 +834,13 @@ mod tests {
     use super::*;
     use crate::{ContentItem, MessageRole, Model, ReasoningMode, Thinking};
     use serde_json::json;
+
+    fn decoded_turn_metadata(request: &serde_json::Value) -> serde_json::Value {
+        request["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .and_then(|metadata| serde_json::from_str(metadata).ok())
+            .expect("turn metadata should be encoded as JSON")
+    }
 
     #[test]
     fn prompt_cache_key_is_stable_across_the_session() {
@@ -729,6 +863,33 @@ mod tests {
         assert_eq!(request["prompt_cache_key"], json!("lineage-a"));
         assert_eq!(request["client_metadata"]["session_id"], json!("branch-a"));
         assert_eq!(request["client_metadata"]["thread_id"], json!("branch-a"));
+        assert_eq!(request["client_metadata"]["turn_id"], "");
+        assert_eq!(
+            request["client_metadata"]["x-codex-window-id"],
+            "branch-a:0"
+        );
+        let installation_id = uuid::Uuid::parse_str(
+            request["client_metadata"]["x-codex-installation-id"]
+                .as_str()
+                .expect("installation identity should be a string"),
+        )
+        .expect("installation identity should be a UUID");
+        assert_eq!(installation_id.get_version_num(), 4);
+        assert!(
+            request["client_metadata"]["x-codex-ws-stream-request-start-ms"]
+                .as_str()
+                .and_then(|millis| millis.parse::<u64>().ok())
+                .is_some()
+        );
+        let metadata = decoded_turn_metadata(&request);
+        assert_eq!(metadata["session_id"], "branch-a");
+        assert_eq!(metadata["thread_id"], "branch-a");
+        assert_eq!(metadata["turn_id"], "");
+        assert_eq!(metadata["window_id"], "branch-a:0");
+        assert_eq!(metadata["request_kind"], "prewarm");
+        assert_eq!(metadata["thread_source"], "user");
+        assert_eq!(metadata["sandbox"], "none");
+        assert!(metadata.get("turn_started_at_unix_ms").is_none());
         assert_eq!(request["store"], false);
         assert_eq!(request["generate"], false);
         assert_eq!(request["parallel_tool_calls"], false);
@@ -743,7 +904,7 @@ mod tests {
     fn responses_lite_metadata_maps_plain_and_namespaced_code_mode_tools() {
         let config = ModelConfig {
             auth: crate::OpenAiAuth::api_key("test-key"),
-            responses_transport: crate::ResponsesTransport::Https,
+            responses_transport: crate::ResponsesTransport::WebSocket,
             ..ModelConfig::default()
         };
         let profile = RequestProfile::new("branch-a", "lineage-a", Arc::from([]))
@@ -763,10 +924,7 @@ mod tests {
             None,
         ))
         .expect("request should serialize");
-        let metadata = request["client_metadata"]["x-codex-turn-metadata"]
-            .as_str()
-            .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
-            .expect("turn metadata should be encoded as JSON");
+        let metadata = decoded_turn_metadata(&request);
 
         assert_eq!(
             metadata["code_mode_tool_names"]["exec_command"],
@@ -776,10 +934,88 @@ mod tests {
             metadata["code_mode_tool_names"]["mcp__calendar__lookup"],
             json!({"name": "lookup", "namespace": "mcp__calendar"})
         );
+        assert_eq!(
+            request["client_metadata"]["ws_request_header_x_openai_internal_codex_responses_lite"],
+            "true"
+        );
+    }
+
+    #[test]
+    fn https_metadata_keeps_the_base_turn_envelope_without_responses_lite_extensions() {
+        let config = ModelConfig {
+            responses_transport: crate::ResponsesTransport::Https,
+            ..ModelConfig::default()
+        };
+        let profile = RequestProfile::new("branch-a", "lineage-a", Arc::from([]))
+            .with_code_mode_tool_names([("exec_command".to_owned(), "exec_command".to_owned())]);
+        let turn_metadata = RequestTurnMetadata::new();
+        let request = serde_json::to_value(ResponseCreate::generation_with_policy(
+            &config,
+            CreatePolicy::new(config.responses_transport, Thinking::Medium, false),
+            ResponsesInput::new(&[], &[], None),
+            None,
+            &profile,
+            &turn_metadata,
+            None,
+        ))
+        .expect("request should serialize");
+        let metadata = decoded_turn_metadata(&request);
+
+        assert_eq!(metadata["request_kind"], "turn");
+        assert_eq!(metadata["turn_id"], request["client_metadata"]["turn_id"]);
+        assert!(metadata.get("code_mode_tool_names").is_none());
         assert!(
             request["client_metadata"]
                 .get("ws_request_header_x_openai_internal_codex_responses_lite")
                 .is_none()
+        );
+        assert!(
+            request["client_metadata"]
+                .get("x-codex-ws-stream-request-start-ms")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn generation_metadata_reuses_one_turn_identity() {
+        let config = ModelConfig::default();
+        let profile = RequestProfile::new("branch-a", "lineage-a", Arc::from([]));
+        let turn_metadata = RequestTurnMetadata::new();
+        let encode = || {
+            serde_json::to_value(ResponseCreate::generation_with_policy(
+                &config,
+                CreatePolicy::new(config.responses_transport, Thinking::Medium, false),
+                ResponsesInput::new(&[], &[], None),
+                None,
+                &profile,
+                &turn_metadata,
+                None,
+            ))
+            .expect("request should serialize")
+        };
+
+        let first = encode();
+        let second = encode();
+        let first_metadata = decoded_turn_metadata(&first);
+        let second_metadata = decoded_turn_metadata(&second);
+        let turn_id = first["client_metadata"]["turn_id"]
+            .as_str()
+            .expect("turn identity should be a string");
+
+        assert_eq!(
+            uuid::Uuid::parse_str(turn_id)
+                .expect("turn identity should be a UUID")
+                .get_version_num(),
+            7
+        );
+        assert_eq!(first_metadata["turn_id"], turn_id);
+        assert_eq!(second["client_metadata"]["turn_id"], turn_id);
+        assert_eq!(second_metadata["turn_id"], turn_id);
+        assert_eq!(first_metadata["request_kind"], "turn");
+        assert!(first_metadata["turn_started_at_unix_ms"].as_u64().is_some());
+        assert_eq!(
+            first_metadata["turn_started_at_unix_ms"],
+            second_metadata["turn_started_at_unix_ms"]
         );
     }
 
@@ -811,6 +1047,7 @@ mod tests {
             ..ModelConfig::default()
         };
         let profile = RequestProfile::new("agent", "lineage", Arc::from([]));
+        let turn_metadata = RequestTurnMetadata::new();
 
         let stored_request = serde_json::to_value(ResponseCreate::generation_with_policy(
             &stored_config,
@@ -823,6 +1060,7 @@ mod tests {
             ResponsesInput::history(&[], &history, None),
             None,
             &profile,
+            &turn_metadata,
             None,
         ))
         .expect("request should serialize");
@@ -845,6 +1083,7 @@ mod tests {
             ResponsesInput::history(&[], &history, None),
             None,
             &profile,
+            &turn_metadata,
             None,
         ))
         .expect("request should serialize");
