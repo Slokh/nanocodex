@@ -2002,6 +2002,25 @@ Snapshot: 2026-07-29 15:55 UTC.
   valid 2/5-versus-1/5 normal cell and uses the new valid 1/5-versus-0/5
   Code-Mode-Only cell. A fresh normal repetition is required before making
   another Video mode claim.
+- The exact normal-Video infrastructure cause is guest DNS, not capture-proxy
+  lifetime. In stock trials 2 and 5 the host proxy remains alive while Codex
+  repeatedly reports `failed to lookup address information` for
+  `host.containers.internal`; its reconnect loop eventually ends the turn.
+  Pinned gvproxy's default `192.168.127.0/24` topology already reserves
+  `192.168.127.254` as the guest-visible NAT route to host loopback. Commit
+  `75bc9fac2a52ab0345848d038d466ab61d08aa2b` makes that address an owned
+  `Gvproxy` contract and points the eval-owned Responses capture URL directly
+  at it, removing DNS from every stock API request without moving proxy logic
+  into the VM crate. All 163 eval tests, 102 VM tests, doc tests,
+  warnings-denied Clippy, rustfmt, and crate-boundary checks pass.
+- A detached, clean remote build of that fix reports the exact commit above,
+  build timestamp `2026-07-29T17:13:42.567474185Z`, and binary SHA-256
+  `d5505d6b47e68aaa9243417cc754f0112a6c62361f76aa38bfb0413cf10cee03`
+  at
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/target-75bc9fac/release/nanocodex`.
+  It does not replace any live d3 runner. A fresh excluded connectivity smoke
+  and then a new normal-Video k=5 repetition will use new retained roots when
+  a process releases configured capacity.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
