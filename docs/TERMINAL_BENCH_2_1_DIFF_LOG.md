@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 19:32 UTC.
+Snapshot: 2026-07-29 20:51 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -891,74 +891,111 @@ Snapshot: 2026-07-29 19:32 UTC.
   | `reshard-c4-data` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `financial-document-processor` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `merge-diff-arc-agi-task` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `git-multibranch` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `headless-terminal` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `hf-model-inference` | 5/5 | 2/5 | 5/5 | 2/5 |
+  | `kv-store-grpc` | 4/5 | 0/5 | 5/5 | 0/5 |
+  | `log-summary-date-ranges` | 4/5 | 5/5 | 5/5 | 5/5 |
+  | `model-extraction-relu-logits` | 4/5 | 4/5 | 4/5 | 3/5 |
+  | `modernize-scientific-stack` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `mteb-retrieve` | 4/5 | 5/5 | 3/5 | 4/5 |
+  | `multi-source-data-merger` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `nginx-request-logging` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `openssl-selfsigned-cert` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `polyglot-rust-c` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `prove-plus-comm` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `pypi-server` | 5/5 | 0/5 | 5/5 | 0/5 |
+  | `sqlite-db-truncate` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `sqlite-with-gcov` | 5/5 | 5/5 | 5/5 | 4/5 |
+  | `vulnerable-secret` | 0/5 | 0/5 | 0/5 | 0/5 |
   | `crack-7z-hash` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `install-windows-3.11` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `path-tracing` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 64 latest controlled task cells, Nanocodex is 260/320 in the
-  normal-stock cohort and 257/320 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 267/320 in normal Code Mode and 268/320 in `code_mode_only`.
+  Across these 81 latest controlled task cells, Nanocodex is 336/405 in the
+  normal-stock cohort and 334/405 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 333/405 in normal Code Mode and 331/405 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
-  cohorts, so its three-score spread is sampling variance. Stock
-  `code_mode_only` is numerically one score higher than normal Code
-  Mode, but these are not paired model samples; the fresh DNA repetition
+  cohorts, so its two-score spread is sampling variance. Stock
+  normal Code Mode is numerically two scores higher than `code_mode_only`,
+  but these are not paired model samples; the fresh DNA repetition
   alone moves Nanocodex by three normal-mode passes and one Code-Mode-Only
   pass and moves normal stock by two passes without a runtime change. The
   aggregate therefore does not yet causally identify a stock tool-mode
   effect; task-level results and repeated cells remain decisive.
 
-### Causal audit of the current 640-pair matrix
+### Causal audit of the current 810-pair matrix
 
-Snapshot: 2026-07-29 19:32 UTC.
+Snapshot: 2026-07-29 20:51 UTC.
 
-This audit freezes the 64-task table immediately above: two independent
-five-trial cohorts per task, or 640 scored Nanocodex/stock pairs and 1,280
-agent arms. All 640 pairs have a comparison, API capture, trajectory,
+This audit freezes the 81-task table immediately above: two independent
+five-trial cohorts per task, or 810 scored Nanocodex/stock pairs and 1,620
+agent arms. All 810 pairs have a comparison, API capture, trajectory,
 retained verifier output, and scored outcome; terminal replies are retained
 where the agent emitted one. No infrastructure error, missing arm, or
 incomplete replacement is included. The aggregate checks cover every arm;
-the verifier output, final reply, and task artifact or trajectory decision
-were inspected for every one of the 88 discordant pairs and for recurrent
+the verifier output and final reply were inspected for all 120 discordant
+pairs, with task artifacts and trajectory decisions inspected for every
+newly closed or repeated disagreement family and representative
 shared-failure families. This is the complete audit of the currently closed
-matrix, not a claim that the suite is finished: 64/89 tasks have both k=5
-mode cells, while 25 still lack at least one complete cell and remain outside
-the denominator.
+matrix, not a claim that the suite is finished: 81/89 tasks have both k=5
+mode cells, while eight still lack at least one complete cell and remain
+outside the denominator. They are `gpt2-codegolf`, `mcmc-sampling-stan`,
+`protein-assembly`, `qemu-alpine-ssh`, `rstan-to-pystan`,
+`torch-tensor-parallelism`, `train-fasttext`, and
+`winning-avg-corewars`.
 
-The result is more specific than either “stock is better” or “sampling
-noise.” Stock has a small, concentrated score edge, and each discordant score
-has a concrete artifact, generated choice, provider-policy outcome, or
-stopping decision behind it. The evidence does not show a Nanocodex
-request-loop, cache, replay, or tool-result defect. Some generated decisions
-recur enough to be credible model/stopping/validation-quality leads; many
-others visibly reverse between independent samples and are verifier-sensitive
-task interpretations.
+The result is more specific than either “Nanocodex is better” or “sampling
+noise.” Nanocodex has a six-score aggregate edge only after a 25-score service
+lifetime advantage offsets stock-favored generated decisions. Each
+discordant score has a concrete artifact, generated choice, provider-policy
+outcome, or stopping decision behind it. The evidence does not show a
+Nanocodex request-loop, cache, replay, or tool-result defect. Some generated
+decisions recur enough to be credible model/stopping/validation-quality
+leads; many others visibly reverse between independent samples and are
+verifier-sensitive task interpretations.
 
 | cohort | pairs | both pass | Nanocodex only | stock only | neither | Nanocodex | stock |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| stock normal Code Mode | 320 | 243 | 17 | 24 | 36 | 260/320 | 267/320 |
-| stock Code-Mode-Only | 320 | 239 | 18 | 29 | 34 | 257/320 | 268/320 |
-| exploratory pool | 640 | 482 | 35 | 53 | 70 | 517/640 | 535/640 |
+| stock normal Code Mode | 405 | 307 | 29 | 26 | 43 | 336/405 | 333/405 |
+| stock Code-Mode-Only | 405 | 300 | 34 | 31 | 40 | 334/405 | 331/405 |
+| exploratory pool | 810 | 607 | 63 | 57 | 83 | 670/810 | 664/810 |
 
-The exact paired sign test on discordant attempts is `p=0.3489` in normal
-Code Mode and `p=0.1439` in Code-Mode-Only. At the task-cell level, normal
-mode has 11 stock-favored tasks, six Nanocodex-favored tasks, and 47 ties
-(`p=0.3323`); Code-Mode-Only has 13, five, and 46 (`p=0.09625`,
-uncorrected). Pooling the two modes gives 53 versus 35 exclusive wins and
-`p=0.06935`, but that is exploratory rather than confirmatory: the stock
-treatment differs by mode, the 64-task freeze was assembled while inspecting
-results, several tasks have prior repetitions, and no multiplicity correction
-or preregistered stopping rule applies. The current evidence is directional,
-not a statistically clean 2.81-point product claim.
+The exact paired sign test on discordant attempts is `p=0.7877` in normal
+Code Mode and `p=0.8043` in Code-Mode-Only. At the task-cell level, normal
+mode has 13 stock-favored tasks, nine Nanocodex-favored tasks, and 59 ties
+(`p=0.5235`); Code-Mode-Only has 14, ten, and 57 (`p=0.5413`,
+uncorrected). Pooling by task gives 15 stock-favored tasks, ten
+Nanocodex-favored tasks, and 56 ties (`p=0.4244`). Pooling attempts gives 57
+stock versus 63 Nanocodex exclusive wins and `p=0.6483`. The point estimate
+is a 0.74 percentage-point Nanocodex edge; a rough attempt-level normal
+interval for stock minus Nanocodex is `[-3.39, +1.91]` points, and is
+optimistic because attempts within one task share a verifier and failure
+mechanism. All of this is exploratory rather
+than confirmatory: the stock treatment differs by mode, the 81-task freeze
+was assembled while inspecting results, several tasks have prior repetitions,
+and no multiplicity correction or preregistered stopping rule applies. The
+current six-score Nanocodex edge is not a statistically clean product claim.
+
+Increasing `k` estimates each implementation's outcome distribution more
+precisely; it does not couple the two model samples or make paired
+trajectories converge. Even with identical model-visible initial context,
+each arm receives an independent sample, and generated model output is part
+of the first divergence in 803/810 pairs. If the implementations induce the
+same distribution, the expected signature at larger `k` is balanced
+exclusive wins and shrinking rate uncertainty—not identical actions in each
+pair. The current 57/63 split has that balanced shape, while recurrent
+task-specific skews identify the mechanisms worth changing.
 
 #### Request, loop, cache, and replay audit
 
 | invariant | result |
 | --- | --- |
 | model and effort | `gpt-5.6-sol`, medium, on every arm |
-| scored/comparable pairs | 640/640 |
-| initial model-visible text | exact on 639/640 pairs |
-| Code-Mode-Only nested names, order, descriptions, and schemas | exact on 320/320 pairs |
-| stable prompt-cache identity within an arm | 640/640 for both agents |
+| scored/comparable pairs | 810/810 |
+| initial model-visible text | exact on 809/810 pairs |
+| Code-Mode-Only nested names, order, descriptions, and schemas | exact on 405/405 pairs |
+| stable prompt-cache identity within an arm | 810/810 for both agents |
 | broken `previous_response_id` links | 0 |
 | broken tool-call/result links | 0 |
 | compactions | 0 |
@@ -966,9 +1003,13 @@ not a statistically clean 2.81-point product claim.
 | pairs with any retry/replay | 45 |
 | outcome among replayed pairs | 32 both, three stock-only, three Nanocodex-only, seven neither |
 
-The first generation divergence includes generated model output in 639/640
-pairs. The exception is `break-filter-js-from-html` normal trial 5, where
-both agents safety-refuse and fail; only terminal event shape differs. The
+The first generation divergence includes generated model output in 803/810
+pairs. The seven exceptions are the existing `break-filter-js-from-html`
+normal trial 5 and six `vulnerable-secret` pairs where both agents
+safety-refuse before distinct model content; only terminal event shape
+differs. All twenty `vulnerable-secret` arms have the typed
+`agent_safety_refusal` outcome, including the four pairs where one arm first
+emits a small amount of model/tool activity. The
 one initial-text/alignment exception is `reshard-c4-data` normal trial 2:
 the capture cannot align a separate stock prewarm and stock has seven extra
 generated turns. Both artifacts pass, so it contributes neither side's edge.
@@ -982,15 +1023,20 @@ and tool-result chains. Replay outcomes are symmetric at three exclusive wins
 per agent, so reconnect handling does not track the score edge. No current
 attempt compacts context, which also rules out differential compaction or
 summary loss as an explanation. Reported cached input is likewise close:
-91.5% for Nanocodex versus 90.7% for stock in the normal cohort, and 91.3%
-versus 91.6% in Code-Mode-Only. Median per-arm cached shares are 81–83%.
+91.07% for Nanocodex versus 90.17% for stock in the normal cohort, and
+90.85% versus 91.16% in Code-Mode-Only. Among arms with finite provider
+input accounting, median per-arm cached shares are 80.79% versus 82.17%
+in normal mode and 81.00% versus 82.38% in Code-Mode-Only. The measured
+arm counts are 398/405 versus 391/405 and 400/405 versus 392/405,
+respectively; missing provider usage is not treated as a zero-percent cache
+hit.
 
 There is a weaker model-selected exploration/stopping signal. Stock uses more
-generation turns in 374/640 pairs. Inside that subset there are 33 stock-only
-and 15 Nanocodex-only outcomes. When Nanocodex uses more turns, the split is
-15 stock-only versus 18 Nanocodex-only. In stock-only pairs, the normal-mode
-median is 14.5 stock generations versus 12.5 Nanocodex generations;
-Code-Mode-Only is 17 versus 15.
+generation turns in 462/810 pairs. Inside that subset there are 37 stock-only
+and 32 Nanocodex-only outcomes. When Nanocodex uses more turns, the split is
+15 stock-only versus 26 Nanocodex-only. In stock-only pairs, the normal-mode
+median is 13 stock generations versus 11.5 Nanocodex generations;
+Code-Mode-Only is 16 versus 14.
 Stock also spends more median tokens and wall time in those pairs. Extra
 roundtrips are neither necessary nor sufficient—stock also has longer losing
 tails, and many tasks pass with Nanocodex's shorter loop—but premature
@@ -1001,23 +1047,25 @@ evaluator polling or a response-chain difference.
 #### Every task with a discordant pair
 
 The score column pools the two independent k=5 cells only to locate recurring
-task behavior. The exclusive-win column shows the 88 pairs whose verifier
+task behavior. The exclusive-win column shows the 120 pairs whose verifier
 outcomes differ.
 
 | task | score, stock / Nanocodex | exclusive wins, stock / Nanocodex | trajectory, artifact, and verifier finding |
 | --- | ---: | ---: | --- |
-| `video-processing` | 5/10 / 1/10 | 4 / 0 | The strongest current edge. Stock winners derive a foreground silhouette, contact threshold, airborne interval, and hurdle crossing. Nanocodex failures choose a wrong interval or miss a hidden takeoff bound by one frame after validating only the public example. |
+| `video-processing` | 5/10 / 1/10 | 4 / 0 | In the four exclusive pairs, stock returns hidden takeoff/landing `223/231`, `223/232`, `222/231`, and `223/232`. Nanocodex returns `110/111`, cannot find an athlete crossing, or twice returns `224/231`, one frame past the hidden upper bound. Stock winners use either a temporally reconstructed background with silhouette-contact intervals or calibrated spatial crossing zones; Nanocodex validates only the public clip and either selects a running stride, over-filters the hidden runner, or misses the boundary by one. |
 | `sanitize-git-repo` | 7/10 / 4/10 | 4 / 1 | Eight of nine failed arms plausibly rewrite history to remove secrets, deleting the verifier's required base commit; the other Nanocodex failure changes a final newline. Both agents make the choice, but Nanocodex samples it more often. |
-| `raman-fitting` | 3/10 / 0/10 | 3 / 0 | Stock winners infer that the raw axis is reciprocal, use `10^7/x`, and fit Lorentzians near 1580 and 2670. Nanocodex repeatedly fits raw peaks near 3745/6328 or uses another wrong transform. Stock failures show the insight is not deterministic, but no current Nanocodex sample completes it correctly. |
+| `raman-fitting` | 3/10 / 0/10 | 3 / 0 | Stock reaches the physically correct reciprocal-axis centers near 1580/2670 in 5/10 samples versus Nanocodex in 1/10. All three stock passes are in that subset; two more stock fits then miss baseline/width tolerances. Nanocodex sometimes derives `10^7/x` and then abandons it for raw peaks near 3745/6328. Its one correct-center fit misses only the 2D offset. The primary gap is retaining the domain-correct coordinate transform, followed by fit-window/baseline robustness. |
 | `configure-git-webserver` | 5/10 / 3/10 | 5 / 3 | There are no both-pass pairs: arms choose a live native Git/SSH/nginx service or an unstarted Docker/static scaffold. The latter returns HTTP 000; incomplete native services return 404 or hang. This is a high-variance deployment-strategy split with a small stock tilt. |
 | `dna-insert` | 4/10 / 2/10 | 3 / 1 | Failures choose a repeated-base insertion boundary or tail split that produces a paired-Tm gap over 5 °C or a reverse primer below 58 °C. Stock more often enumerates reconstructible boundaries and selects the verifier's canonical split. |
 | `extract-elf` | 6/10 / 4/10 | 3 / 1 | Every current failed artifact invents a fixed `0x400000` PIE base; every pass retains raw virtual addresses. Both agents make both choices, and earlier k=5 cells swing sharply without a runtime change. |
 | `mteb-leaderboard` | 9/10 / 7/10 | 3 / 1 | Failures select plausible but wrong leaderboard rows/models; passes identify the expected GritLM result. Stock spends more rounds checking the leaderboard and lands on the expected model more often in this freeze, but the normal cell contains a winner flip. |
+| `mteb-retrieve` | 9/10 / 7/10 | 3 / 1 | Every pass separately encodes the query and passages with MTEB retrieval `PromptType.query`/`passage`, yielding `MTEB: Massive Text Embedding Benchmark` at rank five. Every exclusive loser instead encodes query and documents together under an STS-like task and selects HumanEval. Stock makes the retrieval-semantic choice in three discordant samples and Nanocodex in one; normal text and the Code-Mode-Only catalog match exactly. |
 | `overfull-hbox` | 7/10 / 5/10 | 3 / 1 | Every failure removes the warning but substitutes across the verifier's comma-delimited synonym families, such as `traits` to `natures`. Both agents pass and fail with the same semantic mistake, and prior cells move substantially. |
-| `cancel-async-tasks` | 10/10 / 8/10 | 2 / 0 | Both Nanocodex failures pre-create every wrapper behind a semaphore and await `gather`; under real SIGINT above the concurrency limit, two tasks start and zero clean up. Both paired stock passes use bounded workers under `asyncio.TaskGroup`, instantiate only active jobs, and clean up. Nanocodex's ad-hoc tests miss the subprocess-SIGINT case and its reply still claims cancellation tests pass. |
+| `cancel-async-tasks` | 10/10 / 8/10 | 2 / 0 | Both Nanocodex failures pre-create every wrapper behind a semaphore and await `gather`. With three jobs at concurrency two, the queued wrapper cancels first; Nanocodex then calls `cancel()` again on the two active jobs while their `finally` blocks await, aborting both cleanups. The verifier sees two starts and zero cleanups. Stock uses bounded `TaskGroup` workers and explicitly tests five jobs at concurrency two; Nanocodex tests only one active job, misses the second-cancellation topology, and claims cancellation testing passed. |
 | `make-doom-for-mips` | 6/10 / 5/10 | 3 / 2 | Outcomes turn on WAD selection, render resolution, stale-frame races, and long stopping tails. Agent timeout and artifact score are separate: several timed-out stock arms already leave passing artifacts. Winner flips and nearly equal pooled score make this a stress case, not a stock-loop lead. |
 | `chess-best-move` | 8/10 / 7/10 | 2 / 1 | Winning artifacts contain both accepted moves, `e2e4` and `g2g4`; failures write only `e2e4`. Normal mode has one exclusive win each way, so the one-score pool edge is a sampled completeness choice. |
 | `sam-cell-seg` | 8/10 / 7/10 | 2 / 1 | Failures allocate the wrong mask, disconnect a cell, or miss the IoU threshold. Stock wins the normal cell 5/5 to 3/5, while Nanocodex wins Code-Mode-Only 4/5 to 3/5. The mode reversal rules out a stable loop explanation. |
+| `log-summary-date-ranges` | 10/10 / 9/10 | 1 / 0 | The lone Nanocodex failure counts any token equal to `ERROR`; a message saying “Next attempt will ERROR” raises the total from the expected 370 to 414. Stock first inspects a sample line and counts bracketed `[ERROR]` level markers. Nanocodex's structural/sum checks do not validate the log-level grammar. |
 | `caffe-cifar-10` | 10/10 / 9/10 | 1 / 0 | The lone Nanocodex failure builds Fast.ai class-sorted test LMDB data; the verifier reads the first per-batch `accuracy =` line. Stock uses the official interleaved archive. This is data-ordering plus brittle verifier observation, not its retry. |
 | `pytorch-model-recovery` | 2/10 / 2/10 | 2 / 2 | Sixteen of twenty arms save a TorchScript `forward(src)` while the hidden verifier calls `forward(src,tgt)`. The four passes split evenly. Final replies confidently report a successfully saved model even when the hidden arity is wrong. |
 | `torch-pipeline-parallelism` | 3/10 / 3/10 | 2 / 2 | All six passing arms drain backward work in forward microbatch order. Failures usually reverse it and fail hook ordering/numerical checks. The prompt requires forwards before backwards but does not specify within-backward order; the interpretation is shared and exactly score-balanced. |
@@ -1028,25 +1076,47 @@ outcomes differ.
 | `gcode-to-text` | 7/10 / 7/10 | 1 / 1 | Failures are literal visual transcription mistakes such as `gcode3` for `gc0d3`. Stock moves from 2/5 in normal mode to 5/5 in Code-Mode-Only, while the pooled agent scores tie. |
 | `extract-moves-from-video` | 9/10 / 9/10 | 1 / 1 | The two exclusive failures are mirrored long-tail stopping outcomes at the same 1,800-second deadline. Nanocodex times out and fails trial 3 while stock passes; stock times out and fails trial 5 while Nanocodex passes. Chains remain valid. |
 | `build-pov-ray` | 7/10 / 8/10 | 1 / 2 | Artifacts differ on archive layout, CRLF versus LF source bytes, and source-file choice. The normal cell favors stock 4/5 to 3/5 and Code-Mode-Only favors Nanocodex 5/5 to 3/5. |
+| `model-extraction-relu-logits` | 7/10 / 8/10 | 0 / 1 | In the Nanocodex-only pair, stock emits one deterministic probing line, validates against the visible 20-row matrix, and misses two rows when the verifier substitutes a 30-neuron model. Nanocodex uses 12 random-offset lines, repeated-direction clustering, and a wider search radius, recovering all 30. The two shared failures show both finite search strategies remain imperfect. |
 | `qemu-startup` | 9/10 / 10/10 | 0 / 1 | The stock failure moves QEMU to port 6666 and relays required port 6665 through a process that cleanup kills. A different stock arm times out at 900 seconds but leaves a passing artifact, illustrating why agent completion and verifier score must remain separate. |
 | `dna-assembly` | 1/10 / 3/10 | 1 / 3 | Arms reconstruct the assembly but interpret annealing overlap/Tm semantics differently. The two independent Nanocodex cells swing from 3/5 to 0/5 while stock moves 0/5 to 1/5, so this is high variance around a hidden primer calculation. |
 | `query-optimize` | 8/10 / 10/10 | 0 / 2 | Both stock failures return the expected rows but aggregate or rank all candidates before limiting to 500, exceeding the verifier's 1.05 runtime ratio. Paired Nanocodex queries limit/materialize earlier. |
+| `hf-model-inference` | 4/10 / 10/10 | 0 / 6 | Process lifetime perfectly separates stock outcomes: all four stock passes use `start-stop-daemon`, `setsid -f`, or `Popen(..., start_new_session=True)`; all six failures use plain `nohup`, after which port 5000 is refused. Nanocodex detects failed `nohup` starts and switches to `setsid`, or leaves the foreground server in a retained VM-tool session. |
+| `kv-store-grpc` | 0/10 / 9/10 | 0 / 9 | Nine Nanocodex passes leave `server.py` in an ongoing VM-tool command session; its only failure uses plain `nohup`. Every stock server is gone before verification, and three stock samples also use `SetValRequest.val` instead of required `value`. Raw API captures show stock did launch the foreground server inside Code Mode even where the current stock ATIF projection omits that nested command. |
+| `pypi-server` | 0/10 / 10/10 | 0 / 10 | Every arm builds a working `vectorops` wheel/index and proves a clean install while its server is live. Every stock sample finishes with a foreground TTY server session—even samples that first try `nohup`—and all ten verifier installs then fail because port 8080 is gone after stock exits. Nanocodex retains its foreground VM-tool session through verification in most samples; two also use `setsid`. All twenty final replies claim the server is running, so in-agent self-testing does not exercise the lifecycle boundary. |
+| `sqlite-with-gcov` | 9/10 / 10/10 | 0 / 1 | The exclusive stock arm correctly compiles and links with `--coverage`, proves gcov symbols, and generates valid `.gcno`/`.gcda` under `/app/sqlite-build-out`. It installs only the binaries under `/app/sqlite`; the verifier deliberately scans `/app/sqlite` for coverage files. Nanocodex builds in-tree under `/app/sqlite`, matching the requested layout. This is a workspace-path interpretation, not missing instrumentation or a loop failure. |
 
-The six cells that closed during this audit add 60 pairs. Five tasks—
-`cobol-modernization`, `code-from-image`, `constraints-scheduling`,
-`db-wal-recovery`, and `fix-code-vulnerability`—pass all twenty arms.
-`feal-differential-cryptanalysis` supplies all six new discordant pairs and
-reduces the apparent stock edge because four stock samples versus two
-Nanocodex samples receive the same provider-side cyber refusal. The new
-pairs add no replay, chain, cache-stability, or context-parity failure.
+The seventeen tasks that closed after the prior 64-task freeze add 170 pairs:
+125 shared passes, 28 Nanocodex-only passes, four stock-only passes, and three
+shared failures plus ten shared safety refusals. Nanocodex scores 153/170 and
+stock scores 129/170. All
+twenty arms pass for `git-multibranch`, `headless-terminal`,
+`modernize-scientific-stack`, `multi-source-data-merger`, and
+`nginx-request-logging`, plus the newly closed OpenSSL, Rust/C, and Plus
+proof tasks, and SQLite truncation. The other eight tasks are the HF, gRPC,
+PyPI, log, model extraction, MTEB, SQLite gcov, and shared-refusal mechanisms
+described above. These pairs add no replay, chain, cache-stability,
+context-parity, capture, or operational failure.
 
-Thirty-nine of the 64 tasks have no discordant pair in the current matrix.
-Ten of stock's net 18 exclusive-win surplus comes from only
-`video-processing`, `raman-fitting`, and `sanitize-git-repo`. The first two
-show the clearest recurring domain-reasoning/generalization gap. Sanitization
-instead exposes a plausible instruction interpretation that conflicts with a
-verifier-specific repository-history expectation. `cancel-async-tasks` adds
-a smaller but unusually repeatable implementation-and-validation gap.
+Forty-nine of the 81 tasks have no discordant pair in the current matrix.
+`video-processing`, `raman-fitting`, and `sanitize-git-repo` contribute ten
+of stock's gross exclusive-win advantage, while `hf-model-inference`,
+`kv-store-grpc`, and `pypi-server` contribute 25 Nanocodex net wins. This
+cancellation is why the full matrix is nearly tied, but the two sides are not
+evidence about the same mechanism. The service scores are real product
+behavior: Nanocodex can retain a foreground guest command in the
+evaluator-owned VM tool session through agent shutdown, whereas stock Codex
+runs inside the guest and its process exit tears down its command session
+unless the model explicitly daemonizes the server. They are not evidence that
+Nanocodex has better conversation context or event-loop policy.
+
+As a post-hoc mechanism stratum, excluding only those three service-lifetime
+tasks leaves 780 pairs: 57 stock-only versus 38 Nanocodex-only, with scores
+660/780 for stock and 641/780 for Nanocodex (`p=0.06421`, exact paired sign
+test). That number is descriptive, not confirmatory: the exclusion was chosen
+after reading outcomes, provider refusals remain mixed in, and no
+preregistered stratum or stopping rule exists. It does identify where to
+work: image/signal interpretation, cancellation topology, retrieval prompt
+semantics, and hidden-boundary validation.
 
 The strongest actionable reading is therefore:
 
@@ -1054,21 +1124,23 @@ The strongest actionable reading is therefore:
   than changing the transport loop;
 - make hidden-boundary thinking explicit—alternate coordinate systems,
   off-by-one frame bounds, signal-driven cancellation, public-interface
-  arity, and exact verifier-facing bytes;
+  arity, retrieval query/passage prompts, service detachment, and exact
+  verifier-facing bytes;
 - report provider safety refusals separately from completed-agent correctness;
 - retain winner-flip tasks as variance controls instead of optimizing the
   runtime toward whichever agent won the last k=5 cell.
 
 #### Final replies and self-verification
 
-Both arms in all 88 discordant pairs have nonempty final replies. Reply
+Both arms in all 120 discordant pairs have nonempty final replies. Reply
 verbosity does not predict the winner: in stock-only pairs the median losing
-Nanocodex reply is 343 bytes and the winning stock reply is 358; in
-Nanocodex-only pairs the median losing stock reply is 350 and the winning
-Nanocodex reply is 348. A simple screen for `pass`, `verified`, or `success`
-language is not agent-specific: both sides use it in 29/53 stock-only pairs,
-while it appears in 20/35 losing stock replies and 25/35 winning Nanocodex
-replies in Nanocodex-only pairs.
+Nanocodex reply is 314 characters and the winning stock reply is 346. In the
+63 Nanocodex-only pairs the median winning Nanocodex reply is 434 characters
+and the median losing stock reply is 446 characters. A simple screen for
+`pass`, `verified`, or `success` language is not agent-specific: in
+stock-only pairs it appears in 32 winning replies, 33 losing replies, and
+both replies 27 times; in Nanocodex-only pairs it appears in 51 winning
+replies, 47 losing replies, and both replies 42 times.
 
 The replies are useful diagnoses, not causes. They show both agents
 overgeneralizing from ad-hoc or public checks. The two Nanocodex cancellation
@@ -1097,6 +1169,15 @@ unruled-out confounders even in Code-Mode-Only:
   cache-hit shares are already equivalent, making this a lower-priority
   routing/cache experiment rather than evidence of context loss.
 
+The derived stock trajectory is not a complete substitute for the API
+capture. Its current `stock_cli_completed_items` projection can omit nested
+Code Mode commands. In gRPC Code-Mode-Only trials 1 and 3, the ATIF does not
+show the foreground `exec_command` launch, while the raw response payload
+does and the following response contains the successful live RPC test.
+Verifier-time connection refusal therefore reflects process lifetime, not a
+missing model action. Causal audits must consult the raw API exchanges when
+stock ATIF and the retained workspace appear inconsistent.
+
 For the representative stock-only Code-Mode-Only Chess trial, the warmup
 request is event-loop equal after normalization, the generation task text and
 all nested definitions are exact, and the first semantic divergence is model
@@ -1119,17 +1200,19 @@ evidence for a runtime patch.
 
 #### Stock normal Code Mode versus Code-Mode-Only
 
-Stock scores 267/320 with direct outer tools and 268/320 in
+Stock scores 333/405 with direct outer tools and 331/405 in
 Code-Mode-Only. Task movements go both ways: Code-Mode-Only gains three
 `gcode-to-text` scores and two PyTorch scores, while losing two each on SAM,
-ELF, and Regex Chess. The identically configured Nanocodex control also moves
-by as many as three scores on a task between independent cohorts. Stock
-usually takes more turns in normal mode and is not more accurate in aggregate.
+ELF, and Regex Chess and one each on several other tasks, including the newly
+closed MTEB retrieval cell. The identically configured Nanocodex control is
+336/405 versus 334/405 and also moves by as many as three scores on a task
+between independent cohorts. Stock usually takes more turns in normal mode;
+the two-score mode difference is not meaningful accuracy evidence.
 
 There is therefore no current reason to expose direct tools in Nanocodex for
 score parity. Stock Code-Mode-Only remains the clean baseline because its
 model-visible nested catalog matches Nanocodex exactly. The normal-mode arm is
-still valuable as a separate experiment, but the one-score aggregate
+still valuable as a separate experiment, but the two-score aggregate
 difference cannot identify a direct-tool benefit.
 
 Larger k should make each implementation's estimated task success rate more
