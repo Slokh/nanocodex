@@ -349,6 +349,14 @@ crate-boundary checks pass, and an exact remote binary is staged as a new
 cohort. Its VM smoke and k=5 affected-task reruns remain pending capacity; it
 will not be mixed into the active older cohorts.
 
+The exact all-task accounting is now 43 latest controlled tasks, nine
+additional tasks that will become controlled when the active k5g/k5l/k5m/k5n
+cells close, and 37 tasks queued for their first controlled k=5 cells. Those
+37 comprise twenty-eight 2,048 MiB-per-arm tasks, five 4,096 MiB-per-arm
+tasks, and four 8,192 MiB-per-arm tasks. The next broad launch should use one
+large work-conserving queue per stock mode instead of creating more
+five-task process-local memory partitions.
+
 ## Current execution order
 
 1. [x] Merge the stable agent/API refactor and retained VM foundation.

@@ -1855,6 +1855,30 @@ Snapshot: 2026-07-29 15:55 UTC.
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5n-code-mode-only-b2dff4be-20260729T145455Z`
   and
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5n-stock-code-mode-b2dff4be-20260729T145959Z`.
+- Exact inventory subtraction at 2026-07-29 15:58 UTC leaves 37 Terminal-
+  Bench 2.1 tasks outside both the 43-row latest-controlled table and every
+  active k5g/k5l/k5m/k5n process. The active task sets will add or refresh nine
+  tasks beyond that table, so the accounting is
+  `43 controlled + 9 active-new + 37 queued = 89`. The queue is:
+  `bn-fit-modify`, `break-filter-js-from-html`, `cancel-async-tasks`,
+  `chess-best-move`, `cobol-modernization`, `code-from-image`,
+  `constraints-scheduling`, `db-wal-recovery`,
+  `feal-differential-cryptanalysis`, `financial-document-processor`,
+  `fix-code-vulnerability`, `git-multibranch`, `gpt2-codegolf`,
+  `headless-terminal`, `hf-model-inference`, `kv-store-grpc`,
+  `log-summary-date-ranges`, `mcmc-sampling-stan`,
+  `merge-diff-arc-agi-task`, `model-extraction-relu-logits`,
+  `modernize-scientific-stack`, `mteb-retrieve`,
+  `multi-source-data-merger`, `nginx-request-logging`,
+  `openssl-selfsigned-cert`, `polyglot-rust-c`,
+  `portfolio-optimization`, `protein-assembly`, `prove-plus-comm`,
+  `pypi-server`, `qemu-alpine-ssh`, `rstan-to-pystan`,
+  `sqlite-db-truncate`, `sqlite-with-gcov`,
+  `torch-tensor-parallelism`, `vulnerable-secret`, and
+  `winning-avg-corewars`. Twenty-eight declare 2,048 MiB per arm, five
+  declare 4,096 MiB, and four declare 8,192 MiB. The next broad cohort should
+  schedule this as one large work-conserving queue per stock mode rather than
+  another collection of five-task process-local pools.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
