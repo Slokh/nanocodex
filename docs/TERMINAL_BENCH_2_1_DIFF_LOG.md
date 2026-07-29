@@ -2074,6 +2074,46 @@ Snapshot: 2026-07-29 15:55 UTC.
   including both crates' doc tests, pass. This intentionally creates one new
   namespace and then prevents unrelated evaluator releases from repeating the
   cold-image penalty.
+- Cache-stable commit `ef4e2bbfbbadaa8f5be1dd96ce4905a10d6371c9`
+  is staged separately on `dev-georgios`; it reports build timestamp
+  `2026-07-29T17:40:54.560229690Z` and binary SHA-256
+  `5e73cfd0b5e348e23e8f43bf61989f6a7e45073f820f20442d4d8a8642f54d9e`
+  at
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/target-ef4e2bbf/release/nanocodex`.
+  Existing `75bc9fac` cohorts remain pinned and unchanged.
+- Normal-Video trial 1 on the direct-IP runner exposed a second network
+  failure class. Stock initially reached
+  `http://192.168.127.254:46321`, completed useful model/tool work, and then
+  reported `Host is unreachable` on every WebSocket reconnect about six
+  minutes after attempt start. HTTPS fallback failed against the same direct
+  address, and the verifier subsequently lost ordinary DNS as well. This is
+  whole-attempt gvproxy-route loss, not the removed hostname lookup and not a
+  model failure. Trials 2 through 4 completed their agent and verifier paths,
+  so the event is transient; trial 1 remains excluded from the score cell.
+  Evidence:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5r-video-stock-code-mode-75bc9fac-20260729T172900Z/video-processing__001__019faeec348778f38568ac3ca23a344c`.
+- The retained gvproxy log contains only startup lines because the owned
+  process previously discarded its exit status during `Drop`. The follow-up
+  records an unexpected pre-cleanup exit, PID, status/signal, and lifetime in
+  tracing and appends the same operator diagnostic to the attempt's
+  `vm/gvproxy.log`; normal owner-initiated shutdown remains quiet. A focused
+  regression forces exit status 23 and proves the diagnostic survives in the
+  owned log; all 104 VM tests and doc tests pass. This makes the next
+  recurrence distinguish process exit from a live process with a broken
+  route before any restart policy is considered.
+- The first fresh normal-Code-Mode SAM trial again favors stock: Nanocodex
+  fails only mask alignment at IoU `0.4306454158` against the `0.5` threshold,
+  while stock passes all nine tests. Initial task text matches, cache keys and
+  response/tool-result chains are healthy, no arm polls, and the first
+  generation divergence is model output. Stock uses three additional
+  generation turns and writes a substantially more defensive mask allocator:
+  it scores rectangular prompts differently, assigns contested pixels by
+  normalized interior distance, guarantees unique cell seeds, opens internal
+  holes, and validates the final masks. Nanocodex's simpler greedy polygon
+  allocation preserves the structural tests but loses alignment. This is
+  another generated-algorithm sample, not evidence of a loop or cache defect;
+  the full fresh k=5 SAM cell is still running at
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5u-sam-stock-code-mode-75bc9fac-20260729T173919Z`.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
