@@ -66,36 +66,43 @@ differential paths do not assemble them.
 
 ## Differential runner
 
-`DifferentialEval` owns the matched two-arm lifecycle. The binary supplies the
-already configured Nanocodex recipe, shared auth selection, one prepared VM
-resource set, and executable identities:
+`DifferentialEvaluator` owns the reusable matched two-arm lifecycle and
+memory-weighted pair admission. The binary supplies the already configured
+Nanocodex recipe, shared auth selection, one prepared VM resource set, and
+executable identities:
 
 ```rust,ignore
 use nanocodex_eval::{
-    CodexAuth, DifferentialEval, ExecutableIdentity, Task, VmResources,
+    CodexAuth, DifferentialEvaluator, ExecutableIdentity, Task, VmResources,
 };
 
-let task = Task::load("terminal-bench/tasks/example")?;
+let tasks = vec![
+    Task::load("terminal-bench/tasks/example-a")?,
+    Task::load("terminal-bench/tasks/example-b")?,
+];
 let vm = VmResources::builder("nanocodex", "runtime.ext4")
-    .task(task.clone())
+    .tasks(tasks.clone())
     .prepare()
     .await?;
-let report = DifferentialEval::builder(task, nanocodex)
+let reports = DifferentialEvaluator::builder(nanocodex)
     .codex("codex-linux", CodexAuth::auth_file("~/.codex/auth.json"))
     .vm(vm)
     .thinking(thinking)
     .web_search(false)
     .nanocodex_executable(ExecutableIdentity::new("nanocodex", version))
+    .max_concurrency(8)
+    .max_memory_mb(49_152)
     .build()?
-    .run()
+    .tasks_n(tasks, 5)
     .await?;
 ```
 
-The library stages the Codex release, creates matched isolated backends, runs
+The library stages the Codex release once per evaluator, admits each pair
+against both arms' declared memory, creates matched isolated backends, runs
 both arms concurrently, streams the live divergence record, projects ATIF,
-compares API event loops, and returns one typed retained report. Clap,
-observability installation, process build metadata, terminal formatting, and
-exit-code policy stay in the binary.
+compares API event loops, and returns typed retained reports with explicit
+one-indexed trial coordinates. Clap, observability installation, process build
+metadata, terminal formatting, and exit-code policy stay in the binary.
 
 ## CLI
 
@@ -111,16 +118,21 @@ nanocodex eval \
   --web-search false
 ```
 
-Run one paired, concurrent `code_mode_only` comparison against a released
-Linux Codex binary:
+Run a k=5, paired, concurrent `code_mode_only` sweep against a released Linux
+Codex binary:
 
 ```sh
 nanocodex eval diff \
-  --task /data/terminal-bench-2.1/tasks/adaptive-rejection-sampler \
+  --suite /data/terminal-bench-2.1/tasks \
   --codex-bin /opt/codex/codex-x86_64-unknown-linux-musl \
+  --concurrency 24 \
+  --max-memory-mb 49152 \
   --thinking medium \
   --web-search false
 ```
+
+`eval diff` defaults to five independent matched pairs per task. Pass
+`--trials 1` only for a one-off diagnostic.
 
 Both commands use the same central CLI auth and model flags. Authentication
 selection is, in order: `--api-key`, `--auth-file`, the default Codex auth

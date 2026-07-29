@@ -57,7 +57,7 @@ enum EvalCommand {
     /// Compare a task or retained job with Harbor's public archive.
     Compare(compare::Compare),
 
-    /// Run one task through Nanocodex and a pinned stock-Codex binary.
+    /// Run matched Nanocodex and pinned stock-Codex task sweeps.
     Diff(diff::Diff),
 
     /// Remove disposable VM disks from completed retained trials.

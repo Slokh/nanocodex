@@ -744,9 +744,9 @@ Snapshot: 2026-07-29 08:05 UTC.
   commit `0c135a8`. The controlled medium-effort campaign then started with
   independent normal-Code-Mode and Code-Mode-Only cohorts, using the same
   `gpt-5.6-sol` model and one isolated VM per arm. `pytorch-model-recovery`
-  and `raman-fitting` now have five profile-valid samples in each stock mode;
-  `dna-insert` is being filled from three to five in each mode. The original
-  89-task baseline remains k=1 and must not be described as k=5.
+  `raman-fitting`, and `dna-insert` now have five profile-valid samples in
+  each stock mode. The original 89-task baseline remains k=1 and must not be
+  described as k=5.
 - Both `extract-elf` samples in each stock mode exposed one more real context
   mismatch and are excluded from the controlled counts. Its Ubuntu image
   links `/etc/localtime` through `/usr/share/zoneinfo//UTC`; stock Codex
@@ -756,8 +756,55 @@ Snapshot: 2026-07-29 08:05 UTC.
   directory, shell, model, effort, and visible tool surfaces matched.
   VM-backed Nanocodex attempts now derive the IANA timezone from the prepared
   guest rootfs and calculate the guest-local date before building the agent.
-  A new pinned cohort must rerun `extract-elf` to k=5 after this correction;
-  no pre-fix ELF score is valid mode-comparison evidence.
+  No pre-fix ELF score is valid mode-comparison evidence.
+- Commit `e8a4593` contains that guest-time correction. Fresh medium-effort
+  cohorts at
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/medium-stock-code-mode-guest-time-e8a4593-20260729T084021Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/medium-code-mode-only-guest-time-e8a4593-20260729T084021Z`
+  completed five valid `extract-elf` comparisons per stock mode. Every initial
+  model-input section matches and every profile guard is clean. Nanocodex
+  passed 4/5 in each independent cohort; stock Codex passed 3/5 in normal Code
+  Mode and 4/5 in `code_mode_only`. Normal Code Mode therefore has no
+  demonstrated score advantage on this task. Median Nanocodex/stock usage was
+  109,579/138,220 tokens and 152.4/166.3 seconds in the normal cohort, versus
+  128,258/150,490 tokens and 168.2/161.1 seconds in the Code-Mode-Only cohort.
+- All five corrected-cohort `extract-elf` failures have the same causal
+  signature, independent of agent or stock mode: the trajectory explicitly
+  rebases the PIE to `0x400000` (and sometimes omits relocation targets), then
+  the hidden verifier finds 0% of its expected raw virtual-address keys.
+  Every trajectory that retained the ELF's unshifted `PT_LOAD` addresses
+  passed. Both agents exhibit this tempting overengineering choice, while
+  response chaining, tool-result pairing, cache use, and polling remain
+  healthy. This is sampling-sensitive task interpretation, not evidence of a
+  Nanocodex event-loop defect.
+- The current profile-valid k=5 score cells are:
+
+  | task | Nanocodex with stock normal | stock normal | Nanocodex with stock only | stock only |
+  | --- | ---: | ---: | ---: | ---: |
+  | `pytorch-model-recovery` | 1/5 | 0/5 | 1/5 | 2/5 |
+  | `raman-fitting` | 0/5 | 1/5 | 0/5 | 2/5 |
+  | `dna-insert` | 1/5 | 2/5 | 1/5 | 2/5 |
+  | `extract-elf` | 4/5 | 3/5 | 4/5 | 4/5 |
+
+  Across these four high-signal tasks, Nanocodex is 6/20 in either independent
+  cohort; stock Codex is 6/20 in normal Code Mode and 10/20 in
+  `code_mode_only`. This is early directional evidence against normal Code
+  Mode, not a broad mode conclusion.
+- `filter-js-from-html` trial 1 and `torch-pipeline-parallelism` trials 1–3 are
+  now running in both modes under the same `e8a4593` cohorts. Admission is
+  held at the 48 GiB declared two-arm memory ceiling. The Filter lanes remain
+  healthy: one is still iterating after a failed local edge-case assertion and
+  the other is in the task's long Chromium verifier; neither is an unexplained
+  stall.
+- The next evaluator revision makes this operating pattern first-class:
+  `nanocodex eval diff` accepts tasks or suites, defaults to k=5, preserves
+  task/trial coordinates and queue timing, applies work-conserving
+  concurrency plus two-arm memory admission, prepares only the selected
+  task's verifier cache, and stages the 310 MiB stock-Codex release once per
+  sweep rather than once per pair. This automates the current paired-VM
+  schedule; it does not yet claim the lower-overhead task-worker isolation
+  design described in `PLAN.md`.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |

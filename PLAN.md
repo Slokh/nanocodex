@@ -96,8 +96,10 @@ one executable:
 - `nanocodex eval prepare`, `task`, `inspect`, `compare`, and `cleanup` manage
   task inputs and exact retained evidence.
 - `nanocodex eval vm ...` exposes the low-level image/VMM diagnostic boundary.
-- `nanocodex eval diff` starts paired Nanocodex and stock-Codex attempts for
-  the same task and configuration.
+- `nanocodex eval diff` accepts tasks or suites and starts paired Nanocodex
+  and stock-Codex attempts for every selected task, configuration, and trial.
+  Its ordinary differential default is k=5, with explicit concurrency and
+  pair-memory limits; a one-off k=1 run is an opt-in diagnostic.
 
 The evaluator must retain exact task and verifier revisions, executable
 digests, model metadata, tool mode, effort, prompts, tool definitions, ordered
@@ -135,6 +137,13 @@ The initial Terminal-Bench 2.1 program pins both implementations to
 `code_mode_only`. First establish a complete task inventory and work through it
 task by task, maintaining a running on-disk log of outcomes and diagnosed
 differences.
+
+The complete 89-task inventory may begin with k=1 to find failures and choose
+high-signal tasks, but it is discovery evidence rather than a performance
+conclusion. Score, mode, effort, and loop-policy decisions use at least k=5 for
+every selected `(task × implementation × tool mode × effort)` cell. The
+evaluator and CLI preserve those trial coordinates explicitly and default
+differential sweeps to five independent attempts.
 
 After that baseline:
 
@@ -247,16 +256,29 @@ evaluation through automatically built, commit-bound guest runtimes. The
 schema-v5 differ exposed both the first request drift and a one-turn outer-loop
 variance live while preserving exact API, ATIF, event, and verifier evidence.
 The first-sample medium-effort `code_mode_only` baseline is complete for all 89
-Terminal-Bench 2.1 tasks: Nanocodex scores 79/89 and stock Codex 67/89, before
-repetition-based confidence. API-comparison schema v11 now fingerprints every
-initial model-input text section and nested Code Mode definition. A fresh
-`2ba81983` smoke proves ordered SHA-256 equality for the base prompt,
-permissions, environment/task context, outer tools, and nested definitions.
-The current per-attempt VM adapter has sustained a 48 GiB work-conserving guest
-budget, but it is not yet the task-worker allocation described above, so no
-one-VM-per-task or final host-saturation claim is complete. The typed
-`CodexToolMode` policy and `--codex-tool-mode` CLI selector are implemented;
-the controlled normal-Code-Mode cohort remains pending.
+Terminal-Bench 2.1 tasks: Nanocodex scores 79/89 and stock Codex 67/89. That
+inventory is k=1 discovery evidence, not a repeated performance result.
+API-comparison schema v11 fingerprints every initial model-input text section
+and nested Code Mode definition. Subsequent parity gates found and corrected
+two model-visible VM context defects: the shell must come from the guest's
+UID-0 account, and the date/timezone must come from the guest rootfs rather
+than the host-resident agent process. The shell-corrected `0c135a8` cohorts
+have profile-valid k=5 cells for `pytorch-model-recovery`, `raman-fitting`, and
+`dna-insert` in both stock tool modes. The guest-time-corrected `e8a4593`
+cohorts are filling `extract-elf` to k=5; every older ELF sample is excluded
+from mode comparison.
+
+The current per-attempt VM adapter has sustained a 48 GiB declared guest
+budget. The eval-owned multi-task differential scheduler now defaults to k=5,
+preserves task/trial and queue coordinates, charges both arms against one
+work-conserving memory ceiling, and stages the stock release once per sweep;
+its deterministic tests and CLI gates pass. Deployment and a representative
+throughput run on `dev-georgios` remain, and the lower-overhead task-worker
+allocation described above is not implemented, so no final host-saturation or
+reduced-VM-overhead claim is complete. The typed `CodexToolMode` policy and
+`--codex-tool-mode` selector are implemented, and the normal-Code-Mode versus
+Code-Mode-Only experiment is active but not yet broad enough to select a
+winner.
 
 ## Current execution order
 

@@ -43,7 +43,8 @@ pub(crate) struct Diff {
         long,
         value_name = "COMPARISON_DIRECTORY",
         conflicts_with_all = [
-            "task",
+            "tasks",
+            "suites",
             "codex_bin",
             "vm_cache",
             "vm_guest_runtime",
@@ -52,14 +53,23 @@ pub(crate) struct Diff {
     )]
     reanalyze: Option<PathBuf>,
 
-    /// One evaluator task directory to run through both agents.
+    /// Evaluator task directory to run through both agents. Repeat for a batch.
     #[arg(
-        long,
+        long = "task",
         value_name = "DIRECTORY",
-        required_unless_present = "reanalyze",
+        required_unless_present_any = ["reanalyze", "suites"],
         conflicts_with = "reanalyze"
     )]
-    task: Option<PathBuf>,
+    tasks: Vec<PathBuf>,
+
+    /// Suite whose immediate task children should run through both agents.
+    #[arg(
+        long = "suite",
+        value_name = "DIRECTORY",
+        required_unless_present_any = ["reanalyze", "tasks"],
+        conflicts_with = "reanalyze"
+    )]
+    suites: Vec<PathBuf>,
 
     /// Exact stock-Codex executable to compare against Nanocodex.
     ///
@@ -79,6 +89,31 @@ pub(crate) struct Diff {
     /// Parent directory for paired evaluator artifacts.
     #[arg(long, default_value = DEFAULT_OUTPUT_DIRECTORY)]
     output: PathBuf,
+
+    /// Number of independent matched pairs per task.
+    #[arg(
+        long,
+        default_value_t = run::DEFAULT_TRIALS,
+        value_parser = clap::value_parser!(u16).range(1..)
+    )]
+    trials: u16,
+
+    /// Maximum number of matched pairs executing at once.
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+    concurrency: Option<u16>,
+
+    /// Maximum task-declared memory across both arms of admitted pairs.
+    #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u64).range(1..))]
+    max_memory_mb: Option<u64>,
+
+    /// Percentage of detected host CPU and memory used for omitted limits.
+    #[arg(
+        long,
+        default_value_t = run::DEFAULT_HOST_UTILIZATION_PERCENT,
+        value_name = "PERCENT",
+        value_parser = clap::value_parser!(u8).range(1..=100)
+    )]
+    host_utilization: u8,
 
     /// Use this prebuilt Nanocodex guest-runtime ELF.
     #[arg(long, value_name = "ELF")]
@@ -116,11 +151,21 @@ impl Diff {
             return Ok(());
         }
 
-        let task = Task::load(
-            self.task
-                .as_deref()
-                .ok_or_else(|| eyre!("--task is required unless --reanalyze is used"))?,
-        )?;
+        let tasks = run::load_tasks(self.tasks, self.suites)?;
+        let (automatic_concurrency, automatic_memory_mb) =
+            run::automatic_scheduling_defaults(self.host_utilization);
+        let concurrency = self.concurrency.unwrap_or(automatic_concurrency);
+        let max_memory_mb = self.max_memory_mb.or(automatic_memory_mb);
+        eprintln!(
+            "Differential sweep: {} task(s) × k={} · up to {} pair(s) · {}",
+            tasks.len(),
+            self.trials,
+            concurrency,
+            max_memory_mb.map_or_else(
+                || "unbounded declared memory".to_owned(),
+                |memory| format!("{memory} MiB pair-memory ceiling")
+            )
+        );
         let thinking = self.agent.thinking().unwrap_or(Thinking::Medium);
         let web_search = self.agent.web_search().unwrap_or(false);
         let (nanocodex, auth) = self.agent.shared_builder(thinking, web_search)?;
@@ -133,7 +178,7 @@ impl Diff {
             run::prepare_vm_guest_runtime_from(self.vm_guest_runtime.as_deref(), &self.vm_cache)
                 .await?;
         let vm = VmResources::builder(&current_executable, runtime_image)
-            .task(task.clone())
+            .tasks(tasks.clone())
             .cache_directory(&self.vm_cache)
             .cache_policy(if self.vm_refresh {
                 CachePolicy::Refresh
@@ -142,7 +187,7 @@ impl Diff {
             })
             .prepare()
             .await?;
-        let report = DifferentialEval::builder(task, nanocodex)
+        let mut evaluator = DifferentialEvaluator::builder(nanocodex)
             .codex(
                 self.codex_bin
                     .ok_or_else(|| eyre!("--codex-bin is required unless --reanalyze is used"))?,
@@ -158,19 +203,29 @@ impl Diff {
                     .git_sha(env!("VERGEN_GIT_SHA"))
                     .built_at(env!("VERGEN_BUILD_TIMESTAMP")),
             )
-            .build()?
-            .run()
-            .await?;
+            .max_concurrency(usize::from(concurrency));
+        if let Some(max_memory_mb) = max_memory_mb {
+            evaluator = evaluator.max_memory_mb(max_memory_mb);
+        }
+        let evaluator = evaluator.build()?;
+        let reports = evaluator.tasks_n(tasks, usize::from(self.trials)).await?;
 
         if self.json {
-            write_json(&report)?;
+            write_json(&reports)?;
         } else {
-            print!("{}", report.human_summary());
+            for report in &reports {
+                print!("{}", report.human_summary());
+            }
         }
-        if report.has_operational_error() {
+        let operational_errors = reports
+            .iter()
+            .filter(|report| report.has_operational_error())
+            .collect::<Vec<_>>();
+        if !operational_errors.is_empty() {
             return Err(eyre!(
-                "one or more comparison runners failed; evidence retained at {}",
-                report.comparison_path().display()
+                "{} comparison runner(s) failed; first evidence retained at {}",
+                operational_errors.len(),
+                operational_errors[0].comparison_path().display()
             ));
         }
         Ok(())
@@ -183,4 +238,82 @@ fn write_json(value: &impl serde::Serialize) -> Result<()> {
     serde_json::to_writer_pretty(&mut stdout, value)?;
     writeln!(stdout)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use clap::Parser;
+
+    use super::Diff;
+    use crate::eval::run::DEFAULT_TRIALS;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        diff: Diff,
+    }
+
+    #[test]
+    fn differential_cli_defaults_to_k_five() {
+        let cli = TestCli::try_parse_from([
+            "nanoeval",
+            "--task",
+            "tasks/first",
+            "--codex-bin",
+            "/opt/codex",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.diff.trials, DEFAULT_TRIALS);
+        assert_eq!(cli.diff.trials, 5);
+    }
+
+    #[test]
+    fn differential_cli_accepts_batched_tasks_and_explicit_scheduler_limits() {
+        let cli = TestCli::try_parse_from([
+            "nanoeval",
+            "--task",
+            "tasks/first",
+            "--task",
+            "tasks/second",
+            "--suite",
+            "tasks/suite",
+            "--codex-bin",
+            "/opt/codex",
+            "--trials",
+            "7",
+            "--concurrency",
+            "12",
+            "--max-memory-mb",
+            "49152",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.diff.tasks,
+            [
+                Path::new("tasks/first").to_path_buf(),
+                Path::new("tasks/second").to_path_buf()
+            ]
+        );
+        assert_eq!(cli.diff.suites, [Path::new("tasks/suite").to_path_buf()]);
+        assert_eq!(cli.diff.trials, 7);
+        assert_eq!(cli.diff.concurrency, Some(12));
+        assert_eq!(cli.diff.max_memory_mb, Some(49_152));
+    }
+
+    #[test]
+    fn differential_cli_keeps_reanalysis_agent_free() {
+        let cli =
+            TestCli::try_parse_from(["nanoeval", "--reanalyze", "retained/comparison"]).unwrap();
+
+        assert_eq!(
+            cli.diff.reanalyze.as_deref(),
+            Some(Path::new("retained/comparison"))
+        );
+        assert!(cli.diff.tasks.is_empty());
+        assert!(cli.diff.codex_bin.is_none());
+    }
 }
