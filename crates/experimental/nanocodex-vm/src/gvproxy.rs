@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::{self, Read, Write},
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     os::unix::{net::UnixStream, process::CommandExt as _},
     path::{Path, PathBuf},
     process::{Child, Stdio},
@@ -78,6 +78,14 @@ pub struct Gvproxy {
 }
 
 impl Gvproxy {
+    /// Guest-visible address that the default gvproxy network translates to
+    /// host loopback.
+    ///
+    /// [`Self::spawn`] deliberately starts the pinned gvproxy without a custom
+    /// configuration, whose `192.168.127.0/24` topology reserves the final
+    /// usable address for this host route.
+    pub const HOST_IPV4: Ipv4Addr = Ipv4Addr::new(192, 168, 127, 254);
+
     /// Starts gvproxy and waits for both of its local sockets to become ready.
     ///
     /// # Errors
@@ -298,6 +306,11 @@ mod tests {
     use nix::unistd::getpgrp;
 
     use super::*;
+
+    #[test]
+    fn default_network_exposes_host_loopback_at_a_stable_address() {
+        assert_eq!(Gvproxy::HOST_IPV4, Ipv4Addr::new(192, 168, 127, 254));
+    }
 
     #[test]
     fn caller_selects_inherited_or_isolated_process_group() {
