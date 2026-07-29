@@ -98,6 +98,10 @@ const VERIFIER_NETWORK_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 const GVPROXY_VERSION: &str = "v0.8.9";
 const EVAL_IMAGE_RUN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+// `vm-run-config` is a thin executor for `VmProcessConfig`. Bump this identity
+// whenever that execution boundary can change Dockerfile build output. Agent,
+// evaluator, capture, or reporting changes must not invalidate task images.
+const EVAL_VMM_BUILD_CACHE_IDENTITY: &str = "nanocodex-eval-vm-process-v1";
 const DEFAULT_GUEST_TIMEZONE: &str = "Etc/UTC";
 const ZONEINFO_PREFIXES: [&str; 4] = [
     "/usr/share/zoneinfo/",
@@ -401,6 +405,7 @@ pub enum VmResourcesError {
 pub fn image_builder(vmm: &Path, runtime_image: &Path) -> VmImageBuilder {
     let builder = VmImageBuilder::new(vmm, runtime_image)
         .vmm_args(["vm-run-config", "--config"])
+        .vmm_build_cache_identity(EVAL_VMM_BUILD_CACHE_IDENTITY)
         .prefer_ipv4()
         .run_timeout(EVAL_IMAGE_RUN_TIMEOUT);
     let firmware = Path::new(DEFAULT_KRUNFW_DIRECTORY);

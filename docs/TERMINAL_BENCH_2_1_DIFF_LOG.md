@@ -2021,6 +2021,59 @@ Snapshot: 2026-07-29 15:55 UTC.
   It does not replace any live d3 runner. A fresh excluded connectivity smoke
   and then a new normal-Video k=5 repetition will use new retained roots when
   a process releases configured capacity.
+- That direct-IP connectivity smoke completed successfully. The excluded k=1
+  `count-dataset-tokens` comparison started its stock proxy at
+  `http://192.168.127.254:40173`, retained the complete stock capture and
+  verifier result, and ended `both_passed`. Its root is
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/connectivity-smoke-direct-ip-75bc9fac-20260729T172537Z`.
+  This is infrastructure evidence only and does not enter a k=5 score cell.
+- Before that result was available, normal-mode Financial trial 5 in the
+  older d3 broad queue reproduced the known failure exactly: Nanocodex passed,
+  while stock ended `infrastructure_error` after repeated guest
+  `failed to lookup address information` errors against
+  `host.containers.internal`; the host proxy was still alive. One SIGINT was
+  sent to each d3 process, closing admission and draining already-admitted
+  pairs without deleting or cancelling their evidence. The incomplete normal
+  broad root retains four valid Financial pairs, the invalid fifth Financial
+  pair, and two valid Merge pairs. The incomplete Code-Mode-Only broad root
+  retains five valid Financial pairs and four Merge pairs. They remain
+  diagnostic evidence and are not silently completed or substituted into the
+  controlled table. Roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5p-broad-stock-code-mode-d3d01b7-20260729T165645Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5p-broad-code-mode-only-d3d01b7-20260729T165615Z`.
+- Fresh `75bc9fac` queues now replace those incomplete cohorts from new
+  roots. The 33-task normal-Code-Mode broad queue is
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5q-broad-stock-code-mode-75bc9fac-20260729T172830Z`;
+  the matched Code-Mode-Only queue is
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5s-broad-code-mode-only-75bc9fac-20260729T173457Z`.
+  Clean matched Video roots are
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5r-video-stock-code-mode-75bc9fac-20260729T172900Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5t-video-code-mode-only-75bc9fac-20260729T173609Z`.
+  Alongside the older finishing Code-Mode-Only and draining FastText
+  processes, their configured future maxima total the exact 48 GiB ceiling.
+- The fresh broad and Video starts revealed why supposedly warm task images
+  were cold again. `VmImageBuilder` included the complete VMM executable
+  digest in each Dockerfile build key. Eval invokes `vm-run-config` through
+  the same monolithic `nanocodex` executable that also contains agent,
+  capture, reporting, and CLI code, so any unrelated PR revision changed the
+  digest and forced a new set of multi-gigabyte task images. Flatten-only
+  images reused their task inputs; Dockerfile `RUN`/`COPY` images rebuilt.
+  This is distinct from the already-recorded eager all-task preparation cost.
+- The generic fix keeps whole-executable digesting as `VmImageBuilder`'s safe
+  default and adds an opt-in caller-owned semantic identity for applications
+  embedding a stable VMM boundary in a larger binary. Eval supplies
+  `nanocodex-eval-vm-process-v1` for its narrow `vm-run-config` executor and
+  must bump that version when the executor can change Dockerfile output.
+  Arguments, guest runtime, firmware, resource policy, networking, resolver
+  state, and egress scope remain separate cache-key inputs. A deterministic
+  regression proves that executable changes invalidate the default, do not
+  invalidate a fixed semantic identity, and do invalidate an explicit
+  identity bump. The complete VM suite (103 tests) and eval suite (163 tests),
+  including both crates' doc tests, pass. This intentionally creates one new
+  namespace and then prevents unrelated evaluator releases from repeating the
+  cold-image penalty.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
