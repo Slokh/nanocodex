@@ -300,9 +300,9 @@ that over-admission structurally impossible rather than relying on manual
 arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the latest cells for 40 controlled tasks Nanocodex is 149/200
-in the normal-stock cohort and 145/200 in the Code-Mode-Only-stock cohort,
-normal stock Codex is 154/200, and Code-Mode-Only stock Codex is 162/200.
+active; across the latest cells for 42 controlled tasks Nanocodex is 156/210
+in the normal-stock cohort and 153/210 in the Code-Mode-Only-stock cohort,
+normal stock Codex is 164/210, and Code-Mode-Only stock Codex is 173/210.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
@@ -326,9 +326,21 @@ both modes; the stock-only failures are correct-but-slow generated SQL, while
 large independent-control variance prevents an all-axis mode claim.
 `custom-memory-heap-crash` remains 5/5 everywhere and adds another clear
 all-axis stock-efficiency win for Code-Mode-Only.
+`adaptive-rejection-sampler` also remains 5/5 everywhere. Its repeated
+post-verifier-validation tails expose a stopping-policy difference rather than
+a Nanocodex loop regression, and direct outer tools add no score.
 That is directional evidence for Code-Mode-Only, not yet a broad causal
 winner: each mode uses independent model samples, and repeated tasks continue
 to show substantial within-configuration variance.
+
+The API differ also exposed a remaining non-model-visible request-envelope
+drift in Responses `client_metadata`. Commit `d3d01b7d` now preserves the same
+installation, session/window, logical-turn, and per-send timestamp lifetimes
+as pinned stock Codex while retaining the newer Lite-only Code Mode tool-name
+metadata. Focused API and agent tests, warnings-denied Clippy, rustfmt, and
+crate-boundary checks pass, and an exact remote binary is staged as a new
+cohort. Its VM smoke and k=5 affected-task reruns remain pending capacity; it
+will not be mixed into the active older cohorts.
 
 ## Current execution order
 
