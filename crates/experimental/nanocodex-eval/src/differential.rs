@@ -119,7 +119,7 @@ const TRAJECTORY_FILE: &str = "agent/trajectory.json";
 const API_EXCHANGES_FILE: &str = "agent/api-exchanges.jsonl";
 const API_COMPARISON_FILE: &str = "api-comparison.json";
 const API_CAPTURE_SCHEMA_VERSION: u32 = 1;
-const API_COMPARISON_SCHEMA_VERSION: u32 = 11;
+const API_COMPARISON_SCHEMA_VERSION: u32 = 12;
 const DIFF_CODEX_SHARE_TAG: &str = "nanoeval-codex";
 const DIFF_CODEX_SHARE_MOUNT: &str = "/run/nanoeval-codex";
 const DIFF_CODEX_GUEST_BINARY: &str = "/run/nanoeval-codex/codex";
@@ -775,6 +775,9 @@ struct ApiEventLoopArmSummary {
     turns: u64,
     generation_turns: u64,
     terminal_turns: u64,
+    turns_with_usage: u64,
+    turns_without_usage: u64,
+    usage: ApiTokenUsageSummary,
     tool_call_turns: u64,
     model_visible_tool_calls: u64,
     model_visible_tool_sequence: Vec<String>,
@@ -4244,12 +4247,19 @@ fn append_event_loop_arm_summary(
     };
     let _ = writeln!(
         output,
-        "{name} event loop: {}/{} terminal · {} generation turns · model-visible calls {} [{}] · profile {}/{}/summary={} · visible tools [{}] · {} detected poll-only · previous links {} direct/{} replay ({} after nonterminal)/{} broken · tool-result links {} valid/{} replayed/{} broken · cache stable {}",
+        "{name} event loop: {}/{} terminal · {} generation turns · model-visible calls {} [{}] · captured usage {} total tokens ({} cached + {} uncached input, {} output, {} reasoning) on {}/{} turns · profile {}/{}/summary={} · visible tools [{}] · {} detected poll-only · previous links {} direct/{} replay ({} after nonterminal)/{} broken · tool-result links {} valid/{} replayed/{} broken · cache stable {}",
         summary.terminal_turns,
         summary.turns,
         summary.generation_turns,
         summary.model_visible_tool_calls,
         summary.model_visible_tool_sequence.join(", "),
+        summary.usage.total_tokens,
+        summary.usage.cached_input_tokens,
+        summary.usage.uncached_input_tokens,
+        summary.usage.output_tokens,
+        summary.usage.reasoning_output_tokens,
+        summary.turns_with_usage,
+        summary.turns,
         summary.initial_model.as_deref().unwrap_or("unobserved"),
         summary
             .initial_reasoning_effort
@@ -4940,6 +4950,9 @@ fn build_event_loop_trace(requests: &[ApiRequestPayload]) -> ApiEventLoopTrace {
     let mut broken_tool_result_links = 0_u64;
     let mut generation_turns = 0_u64;
     let mut terminal_turns = 0_u64;
+    let mut turns_with_usage = 0_u64;
+    let mut turns_without_usage = 0_u64;
+    let mut usage = ApiTokenUsageSummary::default();
     let mut tool_call_turns = 0_u64;
     let mut model_visible_tool_sequence = Vec::new();
     let mut detected_poll_only_turns = 0_u64;
@@ -5066,11 +5079,18 @@ fn build_event_loop_trace(requests: &[ApiRequestPayload]) -> ApiEventLoopTrace {
             "request": normalized_request,
             "response": normalized_response,
         }));
+        let turn_usage = api_response_usage(&request.response_events);
+        if let Some(turn_usage) = &turn_usage {
+            turns_with_usage = turns_with_usage.saturating_add(1);
+            usage.add(turn_usage);
+        } else {
+            turns_without_usage = turns_without_usage.saturating_add(1);
+        }
         turn_metrics.push(ApiEventLoopTurnMetrics {
             generation,
             tool_calls: response_tool_count,
             detected_poll_only,
-            usage: api_response_usage(&request.response_events),
+            usage: turn_usage,
         });
 
         previous_response_id = response_id(&request.response_events);
@@ -5085,6 +5105,9 @@ fn build_event_loop_trace(requests: &[ApiRequestPayload]) -> ApiEventLoopTrace {
             turns: u64::try_from(requests.len()).unwrap_or(u64::MAX),
             generation_turns,
             terminal_turns,
+            turns_with_usage,
+            turns_without_usage,
+            usage,
             tool_call_turns,
             model_visible_tool_calls: u64::try_from(model_visible_tool_sequence.len())
                 .unwrap_or(u64::MAX),
@@ -6578,7 +6601,7 @@ mod tests {
 
         let report: serde_json::Value =
             serde_json::from_reader(fs::File::open(report_path).unwrap()).unwrap();
-        assert_eq!(report["schema_version"], 11);
+        assert_eq!(report["schema_version"], 12);
         assert_eq!(report["aligned_requests"], 1);
         assert_eq!(report["codex_unpaired_requests"], 1);
         assert_eq!(report["equal_requests"], 1);
@@ -7069,7 +7092,23 @@ mod tests {
             request(3, vec![completed(120, 100, 5, 2, 125)]),
         ];
 
-        let tail = build_event_loop_trace(&requests).unpaired_tail(1);
+        let trace = build_event_loop_trace(&requests);
+
+        assert_eq!(trace.summary.turns_with_usage, 3);
+        assert_eq!(trace.summary.turns_without_usage, 0);
+        assert_eq!(
+            trace.summary.usage,
+            ApiTokenUsageSummary {
+                input_tokens: 230,
+                cached_input_tokens: 180,
+                uncached_input_tokens: 50,
+                output_tokens: 18,
+                reasoning_output_tokens: 7,
+                total_tokens: 248,
+            }
+        );
+
+        let tail = trace.unpaired_tail(1);
 
         assert_eq!(
             tail,

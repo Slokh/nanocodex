@@ -258,8 +258,10 @@ variance live while preserving exact API, ATIF, event, and verifier evidence.
 The first-sample medium-effort `code_mode_only` baseline is complete for all 89
 Terminal-Bench 2.1 tasks: Nanocodex scores 79/89 and stock Codex 67/89. That
 inventory is k=1 discovery evidence, not a repeated performance result.
-API-comparison schema v11 fingerprints every initial model-input text section
-and nested Code Mode definition. Subsequent parity gates found and corrected
+API-comparison schema v12 fingerprints every initial model-input text section
+and nested Code Mode definition and preserves total usage reconstructed from
+captured API responses even when a timed-out stock process has no terminal
+usage summary. Subsequent parity gates found and corrected
 two model-visible VM context defects: the shell must come from the guest's
 UID-0 account, and the date/timezone must come from the guest rootfs rather
 than the host-resident agent process. The shell-corrected `0c135a8` cohorts
@@ -277,13 +279,15 @@ demonstrated that pair-lifetime charging stranded capacity during long
 unpaired tails; the per-arm release closes that gap without weakening paired
 starts or VM isolation. The pinned remote release and a deterministic
 three-task backfill smoke validate the new admission behavior on
-`dev-georgios`; the next representative k=5 cohort will measure its production
-throughput effect. The lower-overhead task-worker allocation described above
-is not implemented, so no final reduced-VM-overhead claim is complete.
+`dev-georgios`. A production k=5 cohort then admitted a waiting pair within
+124 microseconds of two completed arms returning enough pooled memory while
+their original comparisons remained live. The lower-overhead task-worker
+allocation described above is not implemented, so no final reduced-VM-overhead
+claim is complete.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; the first nine controlled tasks directionally favor Code-Mode-Only
-stock Codex.
+active; the first 12 controlled tasks are tied between Nanocodex and normal
+stock Codex at 28/60 while Code-Mode-Only stock Codex is 36/60.
 
 ## Current execution order
 
