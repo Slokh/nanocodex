@@ -155,6 +155,11 @@ impl Diff {
         }
 
         let tasks = run::load_tasks(self.tasks, self.suites)?;
+        let requested_trials = usize::from(self.trials);
+        let task_names = tasks
+            .iter()
+            .map(|task| task.name().to_owned())
+            .collect::<Vec<_>>();
         let (automatic_concurrency, automatic_memory_mb) =
             run::automatic_scheduling_defaults(self.host_utilization);
         let concurrency = self.concurrency.unwrap_or(automatic_concurrency);
@@ -212,15 +217,16 @@ impl Diff {
                     .git_sha(env!("VERGEN_GIT_SHA"))
                     .built_at(env!("VERGEN_BUILD_TIMESTAMP")),
             )
-            .max_concurrency(usize::from(concurrency));
+            .max_concurrency(usize::from(concurrency))
+            .max_infrastructure_replacements(requested_trials);
         if let Some(max_memory_mb) = max_memory_mb {
             evaluator = evaluator.max_memory_mb(max_memory_mb);
         }
         let evaluator = evaluator.build()?;
-        let comparison_count = tasks.len().saturating_mul(usize::from(self.trials));
+        let comparison_count = tasks.len().saturating_mul(requested_trials);
         let interrupts = run::ctrl_c_interrupt()?;
         let execution = run::finish_or_drain(
-            evaluator.tasks_n(tasks, usize::from(self.trials)),
+            evaluator.tasks_n(tasks, requested_trials),
             interrupts,
             comparison_count,
             || {
@@ -277,6 +283,28 @@ impl Diff {
                          queued comparisons were not started and retained evidence remains under \
                          {}",
                         output.display()
+                    ));
+                }
+                if let Some((task_name, valid_pairs)) = task_names.iter().find_map(|task_name| {
+                    let valid_pairs = reports
+                        .iter()
+                        .filter(|report| {
+                            report.task_name() == task_name && !report.has_infrastructure_failure()
+                        })
+                        .count();
+                    (valid_pairs < requested_trials).then_some((task_name, valid_pairs))
+                }) {
+                    let evidence = reports
+                        .iter()
+                        .find(|report| {
+                            report.task_name() == task_name && report.has_infrastructure_failure()
+                        })
+                        .map_or(output.as_path(), DifferentialReport::comparison_path);
+                    return Err(eyre!(
+                        "task {task_name} retained {valid_pairs}/{requested_trials} valid matched \
+                         pairs after {requested_trials} infrastructure replacement(s); evidence \
+                         retained at {}",
+                        evidence.display()
                     ));
                 }
                 Ok(())

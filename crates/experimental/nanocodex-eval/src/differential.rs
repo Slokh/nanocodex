@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt::{self, Display, Formatter, Write as _},
     fs::{self, File},
@@ -14,7 +14,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use futures_util::{StreamExt as _, stream};
+use futures_util::{StreamExt as _, stream::FuturesUnordered};
 use nanocodex_agent::{NanocodexBuilder, Thinking, events::AgentEventKind};
 use nanocodex_oai_api::MODEL;
 use nanocodex_vm::host::Gvproxy;
@@ -110,7 +110,7 @@ where
 
 const DEFAULT_OUTPUT_DIRECTORY: &str = ".nanocodex/eval-diff";
 const COMPARISON_FILE: &str = "comparison.json";
-const COMPARISON_SCHEMA_VERSION: u32 = 9;
+const COMPARISON_SCHEMA_VERSION: u32 = 10;
 const PROGRESS_FILE: &str = "progress.jsonl";
 const PROGRESS_SCHEMA_VERSION: u32 = 1;
 const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -172,6 +172,20 @@ struct DifferentialEvaluatorInner {
     admission: Arc<AdmissionController>,
     max_concurrency: usize,
     max_memory_mb: Option<u64>,
+    max_infrastructure_replacements: usize,
+}
+
+struct ScheduledComparison {
+    task_index: usize,
+    task: Task,
+    trial: usize,
+    infrastructure_replacement_for: Option<usize>,
+}
+
+struct InfrastructureReplacementState {
+    task: Task,
+    next_trial: usize,
+    remaining: usize,
 }
 
 struct DifferentialComparison {
@@ -203,6 +217,7 @@ pub struct DifferentialEvaluatorBuilder {
     nanocodex_build: Option<ExecutableIdentity>,
     max_concurrency: usize,
     max_memory_mb: Option<u64>,
+    max_infrastructure_replacements: usize,
 }
 
 /// Authentication material forwarded to a pinned stock-Codex guest.
@@ -388,6 +403,8 @@ struct DifferentialSchedule {
     admitted_pair_memory_mb: u64,
     max_concurrency: usize,
     max_memory_mb: Option<u64>,
+    max_infrastructure_replacements: usize,
+    infrastructure_replacement_for: Option<usize>,
 }
 
 const fn differential_pair_memory_mb(task: &Task) -> u64 {
@@ -2693,6 +2710,7 @@ impl DifferentialEvaluator {
             nanocodex_build: None,
             max_concurrency: 1,
             max_memory_mb: None,
+            max_infrastructure_replacements: 0,
         }
     }
 
@@ -2702,10 +2720,15 @@ impl DifferentialEvaluator {
     ///
     /// Returns an error when the comparison cannot be prepared or retained.
     pub async fn task(&self, task: Task) -> DifferentialResult<DifferentialReport> {
-        self.run_task(task, 1).await
+        self.run_task(task, 1, None).await
     }
 
-    async fn run_task(&self, task: Task, trial: usize) -> DifferentialResult<DifferentialReport> {
+    async fn run_task(
+        &self,
+        task: Task,
+        trial: usize,
+        infrastructure_replacement_for: Option<usize>,
+    ) -> DifferentialResult<DifferentialReport> {
         let queued_at = Utc::now();
         let queued = Instant::now();
         let requested_memory_mb = differential_pair_memory_mb(&task);
@@ -2744,6 +2767,8 @@ impl DifferentialEvaluator {
                 admitted_pair_memory_mb: admitted_memory_mb,
                 max_concurrency: inner.max_concurrency,
                 max_memory_mb: inner.max_memory_mb,
+                max_infrastructure_replacements: inner.max_infrastructure_replacements,
+                infrastructure_replacement_for,
             },
             admission,
         }
@@ -2752,6 +2777,10 @@ impl DifferentialEvaluator {
     }
 
     /// Runs `count` independent matched pairs for one task.
+    ///
+    /// Configured infrastructure replacements are retained after the requested
+    /// trial coordinates, so the returned collection can contain more than
+    /// `count` reports.
     ///
     /// Results preserve trial order even when pairs complete out of order.
     ///
@@ -2764,11 +2793,12 @@ impl DifferentialEvaluator {
         task: Task,
         count: usize,
     ) -> DifferentialResult<Vec<DifferentialReport>> {
-        self.run_tasks((1..=count).map(|trial| (task.clone(), trial)).collect())
-            .await
+        self.run_tasks(vec![task], count).await
     }
 
     /// Runs one independent matched pair for every task.
+    ///
+    /// Configured infrastructure replacements can add retained reports.
     ///
     /// Results preserve input order even when pairs complete out of order.
     ///
@@ -2777,37 +2807,78 @@ impl DifferentialEvaluator {
     /// Returns an error after all admitted pairs finish when any comparison
     /// cannot be prepared or retained.
     pub async fn tasks(&self, tasks: Vec<Task>) -> DifferentialResult<Vec<DifferentialReport>> {
-        self.run_tasks(tasks.into_iter().map(|task| (task, 1)).collect())
-            .await
+        self.run_tasks(tasks, 1).await
     }
 
     async fn run_tasks(
         &self,
-        tasks: Vec<(Task, usize)>,
+        tasks: Vec<Task>,
+        count: usize,
     ) -> DifferentialResult<Vec<DifferentialReport>> {
-        let scheduling_window = tasks
+        let mut replacements = tasks
+            .iter()
+            .cloned()
+            .map(|task| InfrastructureReplacementState {
+                task,
+                next_trial: count.saturating_add(1),
+                remaining: self.inner.max_infrastructure_replacements,
+            })
+            .collect::<Vec<_>>();
+        let mut pending = tasks
+            .into_iter()
+            .enumerate()
+            .flat_map(|(task_index, task)| {
+                (1..=count).map(move |trial| ScheduledComparison {
+                    task_index,
+                    task: task.clone(),
+                    trial,
+                    infrastructure_replacement_for: None,
+                })
+            })
+            .collect::<VecDeque<_>>();
+        let scheduling_window = pending
             .len()
             .min(self.inner.max_concurrency.saturating_mul(4))
             .max(1);
-        let evaluator = self.clone();
-        let mut completed = stream::iter(tasks.into_iter().enumerate())
-            .map(move |(index, (task, trial))| {
-                let evaluator = evaluator.clone();
-                async move { (index, evaluator.run_task(task, trial).await) }
-            })
-            .buffer_unordered(scheduling_window);
+        let mut in_flight = FuturesUnordered::new();
         let mut results = Vec::new();
-        while let Some(result) = completed.next().await {
-            results.push(result);
+        loop {
+            while in_flight.len() < scheduling_window {
+                let Some(scheduled) = pending.pop_front() else {
+                    break;
+                };
+                in_flight.push(run_scheduled_comparison(self.clone(), scheduled));
+            }
+            let Some((task_index, trial, result)) = in_flight.next().await else {
+                break;
+            };
+            if let Ok(report) = &result
+                && report.has_infrastructure_failure()
+                && let Some(replacement) = replacements[task_index].next(task_index, trial)
+            {
+                info!(
+                    task = report.task_name(),
+                    failed_trial = trial,
+                    replacement_trial = replacement.trial,
+                    remaining_replacements = replacements[task_index].remaining,
+                    "scheduled a fresh pair to replace retained infrastructure failure"
+                );
+                pending.push_front(replacement);
+            }
+            results.push((task_index, trial, result));
         }
-        results.sort_unstable_by_key(|(index, _)| *index);
+        results.sort_unstable_by_key(|(task_index, trial, _)| (*task_index, *trial));
         results
             .into_iter()
-            .map(|(_, result)| result)
+            .map(|(_, _, result)| result)
             .collect::<DifferentialResult<Vec<_>>>()
     }
 
     /// Runs `count` independent matched pairs for every task.
+    ///
+    /// Configured infrastructure replacements are retained after each task's
+    /// requested trial coordinates, so the returned collection can contain
+    /// more than `tasks.len() * count` reports.
     ///
     /// Results are grouped in input task order and then trial order.
     ///
@@ -2820,13 +2891,7 @@ impl DifferentialEvaluator {
         tasks: Vec<Task>,
         count: usize,
     ) -> DifferentialResult<Vec<DifferentialReport>> {
-        self.run_tasks(
-            tasks
-                .into_iter()
-                .flat_map(|task| (1..=count).map(move |trial| (task.clone(), trial)))
-                .collect::<Vec<_>>(),
-        )
-        .await
+        self.run_tasks(tasks, count).await
     }
 
     /// Returns the maximum number of concurrently executing pairs.
@@ -2841,6 +2906,12 @@ impl DifferentialEvaluator {
         self.inner.max_memory_mb
     }
 
+    /// Returns the per-task budget for replacing infrastructure-broken pairs.
+    #[must_use]
+    pub fn max_infrastructure_replacements(&self) -> usize {
+        self.inner.max_infrastructure_replacements
+    }
+
     /// Stops admitting pairs that have not started.
     ///
     /// Admitted work continues to completion. The return value is the total
@@ -2848,6 +2919,47 @@ impl DifferentialEvaluator {
     pub fn begin_drain(&self) -> usize {
         self.inner.admission.begin_drain()
     }
+}
+
+impl InfrastructureReplacementState {
+    fn next(
+        &mut self,
+        task_index: usize,
+        infrastructure_replacement_for: usize,
+    ) -> Option<ScheduledComparison> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let trial = self.next_trial;
+        self.remaining -= 1;
+        if let Some(next_trial) = trial.checked_add(1) {
+            self.next_trial = next_trial;
+        } else {
+            self.remaining = 0;
+        }
+        Some(ScheduledComparison {
+            task_index,
+            task: self.task.clone(),
+            trial,
+            infrastructure_replacement_for: Some(infrastructure_replacement_for),
+        })
+    }
+}
+
+async fn run_scheduled_comparison(
+    evaluator: DifferentialEvaluator,
+    scheduled: ScheduledComparison,
+) -> (usize, usize, DifferentialResult<DifferentialReport>) {
+    let ScheduledComparison {
+        task_index,
+        task,
+        trial,
+        infrastructure_replacement_for,
+    } = scheduled;
+    let result = evaluator
+        .run_task(task, trial, infrastructure_replacement_for)
+        .await;
+    (task_index, trial, result)
 }
 
 impl DifferentialComparison {
@@ -3113,6 +3225,20 @@ impl DifferentialEvaluatorBuilder {
         self
     }
 
+    /// Replaces retained pairs whose semantic outcome is infrastructure error.
+    ///
+    /// The budget applies independently to each task. Replacement pairs use
+    /// fresh trial coordinates after the requested trials and are returned
+    /// alongside the retained infrastructure evidence. The default is zero.
+    #[must_use]
+    pub const fn max_infrastructure_replacements(
+        mut self,
+        max_infrastructure_replacements: usize,
+    ) -> Self {
+        self.max_infrastructure_replacements = max_infrastructure_replacements;
+        self
+    }
+
     /// Validates required components and builds a reusable evaluator.
     ///
     /// # Errors
@@ -3157,6 +3283,7 @@ impl DifferentialEvaluatorBuilder {
                 )),
                 max_concurrency: self.max_concurrency,
                 max_memory_mb: self.max_memory_mb,
+                max_infrastructure_replacements: self.max_infrastructure_replacements,
             }),
         })
     }
@@ -3199,6 +3326,17 @@ impl DifferentialReport {
                     || arm.trajectory_error.is_some()
                     || arm.api_capture_error.is_some()
             })
+    }
+
+    /// Returns whether either retained arm ended in a semantic infrastructure
+    /// failure and therefore has no trustworthy benchmark score.
+    #[must_use]
+    pub fn has_infrastructure_failure(&self) -> bool {
+        [&self.nanocodex, &self.codex].into_iter().any(|arm| {
+            arm.outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.outcome() == EvalOutcome::InfrastructureError)
+        })
     }
 
     /// Renders the stable plain-text summary used by command-line consumers.
@@ -6334,12 +6472,13 @@ mod tests {
         CodexToolMode, CodexVersion, DIFF_CODEX_CA_BUNDLE_FILENAME,
         DIFF_CODEX_CLOUD_CONFIG_CACHE_FILENAME, DIFF_CODEX_SSL_CERT_FILE_ENVIRONMENT,
         DetectedEmptyStdinCalls, DiffCodexCaSource, DiffProgress, DifferentialBuildError,
-        DifferentialEvaluator, Evaluator, LaneProgressState, ShellPollingSummary, Task,
-        TrajectoryProjection, build_event_loop_trace, capture_proxy_vm_base_url,
-        compare_api_exchanges, detected_code_mode_empty_stdin_calls, detected_polling_turn,
-        diff_json, differential_comparison_name, differential_pair_memory_mb,
-        event_loop_difference_categories, first_client_metadata_difference, heartbeat_needed,
-        heartbeat_summary, inspect_api_exchanges, join_differential_arms, newly_completed_lines,
+        DifferentialEvaluator, Evaluator, InfrastructureReplacementState, LaneProgressState,
+        ShellPollingSummary, Task, TrajectoryProjection, build_event_loop_trace,
+        capture_proxy_vm_base_url, compare_api_exchanges, detected_code_mode_empty_stdin_calls,
+        detected_polling_turn, diff_json, differential_comparison_name,
+        differential_pair_memory_mb, event_loop_difference_categories,
+        first_client_metadata_difference, heartbeat_needed, heartbeat_summary,
+        inspect_api_exchanges, join_differential_arms, newly_completed_lines,
         read_api_request_payloads, read_optional_codex_cloud_config_cache, reanalyze,
         releasable_differential_arm_memory_mb, run_arm, stage_diff_codex_ca_bundle,
         summarize_client_metadata, summarize_nanocodex, validate_differential_profile,
@@ -6384,6 +6523,42 @@ mod tests {
         assert_eq!(
             differential_comparison_name(&task, 5, id),
             format!("write-greeting__005__{}", id.simple())
+        );
+    }
+
+    #[test]
+    fn infrastructure_replacements_use_fresh_bounded_trial_coordinates() {
+        let task =
+            Task::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tasks/write-greeting"))
+                .unwrap();
+        let mut replacements = InfrastructureReplacementState {
+            task,
+            next_trial: 6,
+            remaining: 5,
+        };
+
+        let coordinates = (1..=6)
+            .map(|failed_trial| {
+                replacements.next(3, failed_trial).map(|scheduled| {
+                    (
+                        scheduled.task_index,
+                        scheduled.trial,
+                        scheduled.infrastructure_replacement_for,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            coordinates,
+            vec![
+                Some((3, 6, Some(1))),
+                Some((3, 7, Some(2))),
+                Some((3, 8, Some(3))),
+                Some((3, 9, Some(4))),
+                Some((3, 10, Some(5))),
+                None,
+            ]
         );
     }
 
