@@ -93,7 +93,7 @@ struct EvaluatorInner {
     malformed_terminal_metrics: bool,
 }
 
-struct AdmissionController {
+pub(crate) struct AdmissionController {
     max_concurrency: usize,
     max_memory_mb: Option<u64>,
     state: Mutex<AdmissionState>,
@@ -108,7 +108,7 @@ struct AdmissionState {
     draining: bool,
 }
 
-struct AdmissionPermit {
+pub(crate) struct AdmissionPermit {
     controller: Arc<AdmissionController>,
     memory_mb: u64,
 }
@@ -2193,7 +2193,7 @@ impl EvaluatorBuilder {
 }
 
 impl AdmissionController {
-    fn new(max_concurrency: usize, max_memory_mb: Option<u64>) -> Self {
+    pub(crate) fn new(max_concurrency: usize, max_memory_mb: Option<u64>) -> Self {
         Self {
             max_concurrency,
             max_memory_mb,
@@ -2202,7 +2202,10 @@ impl AdmissionController {
         }
     }
 
-    async fn acquire(self: &Arc<Self>, requested_memory_mb: u64) -> Option<AdmissionPermit> {
+    pub(crate) async fn acquire(
+        self: &Arc<Self>,
+        requested_memory_mb: u64,
+    ) -> Option<AdmissionPermit> {
         let memory_mb = self
             .max_memory_mb
             .map_or(0, |limit| requested_memory_mb.min(limit));
@@ -2234,7 +2237,7 @@ impl AdmissionController {
         }
     }
 
-    fn begin_drain(&self) -> usize {
+    pub(crate) fn begin_drain(&self) -> usize {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.draining = true;
         let admitted = state.admitted;

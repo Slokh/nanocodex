@@ -160,8 +160,25 @@ impl VmResources {
     /// Returns an error when immutable backend configuration or verifier-cache
     /// preparation fails.
     pub async fn backend(&self, builder: VmBackendBuilder) -> Result<VmBackend, VmResourcesError> {
+        self.backend_for_tasks(builder, &self.tasks).await
+    }
+
+    pub(crate) async fn backend_for_task(
+        &self,
+        builder: VmBackendBuilder,
+        task: &Task,
+    ) -> Result<VmBackend, VmResourcesError> {
+        self.backend_for_tasks(builder, std::slice::from_ref(task))
+            .await
+    }
+
+    async fn backend_for_tasks(
+        &self,
+        builder: VmBackendBuilder,
+        tasks: &[Task],
+    ) -> Result<VmBackend, VmResourcesError> {
         let backend = builder.build();
-        self.configure(&backend).await?;
+        self.configure_for_tasks(&backend, tasks).await?;
         Ok(backend)
     }
 
@@ -175,6 +192,14 @@ impl VmResources {
     /// Returns an error when immutable backend configuration or verifier-cache
     /// preparation fails.
     pub async fn configure(&self, backend: &VmBackend) -> Result<(), VmResourcesError> {
+        self.configure_for_tasks(backend, &self.tasks).await
+    }
+
+    async fn configure_for_tasks(
+        &self,
+        backend: &VmBackend,
+        tasks: &[Task],
+    ) -> Result<(), VmResourcesError> {
         let mut configuration = VmBackendConfiguration::builder(&self.vmm, &self.runtime_image)
             .environments(self.environments.clone())
             .verifier_cache(&self.verifier_cache);
@@ -182,7 +207,7 @@ impl VmResources {
             configuration = configuration.gvproxy(gvproxy);
         }
         backend.configure(configuration.build())?;
-        backend.prepare_verifier_caches(&self.tasks).await?;
+        backend.prepare_verifier_caches(tasks).await?;
         Ok(())
     }
 

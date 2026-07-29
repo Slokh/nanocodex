@@ -14,6 +14,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use futures_util::{StreamExt as _, stream};
 use nanocodex_agent::{NanocodexBuilder, Thinking, events::AgentEventKind};
 use nanocodex_oai_api::MODEL;
 use serde::Serialize;
@@ -34,7 +35,9 @@ use crate::{
     CodexToolMode, EvalAttempt, EvalAttemptOutcome, EvalEventKind, EvalEventStream,
     EvalExceptionKind, EvalOutcome, EvalStatus, Evaluator, EvaluatorBuilder,
     MeasurementCompleteness, ResponsesCaptureProxy, ResponsesCaptureProxyConfig,
-    ResponsesModelCatalogOverride, Task, UsageTotals, project_codex_atif,
+    ResponsesModelCatalogOverride, Task, UsageTotals,
+    evaluator::AdmissionController,
+    project_codex_atif,
     vm::{
         SharedDirectory, VmAttempt, VmAttemptError, VmBackend, VmCommand, VmEnvironment,
         VmResources, VmToolSessionError, VmToolSessionHandle, reflink_or_sparse_copy,
@@ -106,7 +109,7 @@ where
 
 const DEFAULT_OUTPUT_DIRECTORY: &str = ".nanocodex/eval-diff";
 const COMPARISON_FILE: &str = "comparison.json";
-const COMPARISON_SCHEMA_VERSION: u32 = 6;
+const COMPARISON_SCHEMA_VERSION: u32 = 7;
 const PROGRESS_FILE: &str = "progress.jsonl";
 const PROGRESS_SCHEMA_VERSION: u32 = 1;
 const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -149,31 +152,56 @@ const VM_GUEST_ELF_MACHINE: u16 = 183;
 #[cfg(target_arch = "x86_64")]
 const VM_GUEST_ELF_MACHINE: u16 = 62;
 
-/// One owned, matched Nanocodex-versus-Codex evaluation.
-pub struct DifferentialEval {
-    task: Task,
+/// A reusable recipe for matched Nanocodex-versus-Codex evaluations.
+#[derive(Clone)]
+pub struct DifferentialEvaluator {
+    inner: Arc<DifferentialEvaluatorInner>,
+}
+
+struct DifferentialEvaluatorInner {
     nanocodex: NanocodexBuilder,
-    codex_binary: PathBuf,
+    codex_sha256: String,
+    codex_release: Arc<DiffCodexRelease>,
     codex_auth: CodexAuth,
-    vm: VmResources,
+    vm: Arc<VmResources>,
     output: PathBuf,
     thinking: Thinking,
     web_search: bool,
     codex_tool_mode: CodexToolMode,
     nanocodex_build: ExecutableIdentity,
+    admission: Arc<AdmissionController>,
+    max_concurrency: usize,
+    max_memory_mb: Option<u64>,
 }
 
-/// Deliberate policy and required components for [`DifferentialEval`].
-pub struct DifferentialEvalBuilder {
+struct DifferentialComparison {
     task: Task,
+    trial: usize,
+    nanocodex: NanocodexBuilder,
+    codex_sha256: String,
+    codex_release: Arc<DiffCodexRelease>,
+    codex_auth: CodexAuth,
+    vm: Arc<VmResources>,
+    output: PathBuf,
+    thinking: Thinking,
+    web_search: bool,
+    codex_tool_mode: CodexToolMode,
+    nanocodex_build: ExecutableIdentity,
+    schedule: DifferentialSchedule,
+}
+
+/// Deliberate policy and required components for [`DifferentialEvaluator`].
+pub struct DifferentialEvaluatorBuilder {
     nanocodex: NanocodexBuilder,
     codex: Option<(PathBuf, CodexAuth)>,
-    vm: Option<VmResources>,
+    vm: Option<Arc<VmResources>>,
     output: PathBuf,
     thinking: Thinking,
     web_search: bool,
     codex_tool_mode: CodexToolMode,
     nanocodex_build: Option<ExecutableIdentity>,
+    max_concurrency: usize,
+    max_memory_mb: Option<u64>,
 }
 
 /// Authentication material forwarded to a pinned stock-Codex guest.
@@ -244,6 +272,27 @@ impl ExecutableIdentity {
         self.built_at = Some(built_at.into());
         self
     }
+
+    fn resolve(mut self, label: &str) -> InternalResult<Self> {
+        let (path, sha256) = resolve_executable(&self.path, label)?;
+        self.path = path;
+        self.sha256 = sha256;
+        Ok(self)
+    }
+}
+
+fn resolve_executable(path: &Path, label: &str) -> InternalResult<(PathBuf, String)> {
+    let resolved = path
+        .canonicalize()
+        .wrap_err_with(|| format!("failed to resolve {label} executable {}", path.display()))?;
+    if !resolved.is_file() {
+        return Err(diff_error!(
+            "{label} executable is not a regular file: {}",
+            resolved.display()
+        ));
+    }
+    let sha256 = file_sha256(&resolved)?;
+    Ok((resolved, sha256))
 }
 
 /// Missing required component while building a differential evaluation.
@@ -260,6 +309,22 @@ pub enum DifferentialBuildError {
     /// No Nanocodex executable identity was supplied.
     #[error("a differential evaluation requires Nanocodex executable identity")]
     MissingNanocodexIdentity,
+
+    /// The configured pair concurrency was zero.
+    #[error("differential pair concurrency must be greater than zero")]
+    InvalidConcurrency,
+
+    /// The configured pair-memory ceiling was zero.
+    #[error("differential pair-memory ceiling must be greater than zero")]
+    InvalidMemory,
+
+    /// A pinned executable could not be resolved or hashed.
+    #[error("failed to prepare differential executable identity: {0}")]
+    Executable(#[source] DifferentialError),
+
+    /// Shared stock-Codex guest assets could not be staged.
+    #[error("failed to prepare shared stock-Codex guest assets: {0}")]
+    Assets(#[source] DifferentialError),
 }
 
 /// Runtime or retained-evidence failure in a differential evaluation.
@@ -295,12 +360,14 @@ pub struct DifferentialReport {
     schema_version: u32,
     id: Uuid,
     task: TaskIdentity,
+    trial: usize,
     model: String,
     thinking: String,
     policy: ComparisonPolicy,
     started_at: DateTime<Utc>,
     finished_at: DateTime<Utc>,
     duration_ms: u64,
+    schedule: DifferentialSchedule,
     classification: DifferentialClassification,
     trajectory_comparison: TrajectoryComparison,
     api_comparison: ApiComparisonSummary,
@@ -309,6 +376,26 @@ pub struct DifferentialReport {
     nanocodex: ArmReport,
     codex: ArmReport,
     artifacts: ComparisonArtifacts,
+}
+
+#[derive(Serialize)]
+struct DifferentialSchedule {
+    queued_at: DateTime<Utc>,
+    admitted_at: DateTime<Utc>,
+    queue_duration_ms: u64,
+    requested_pair_memory_mb: u64,
+    admitted_pair_memory_mb: u64,
+    max_concurrency: usize,
+    max_memory_mb: Option<u64>,
+}
+
+const fn differential_pair_memory_mb(task: &Task) -> u64 {
+    task.resources().memory_mb.saturating_mul(2)
+}
+
+fn differential_comparison_name(task: &Task, trial: usize, id: Uuid) -> String {
+    let short_name = task.name().rsplit('/').next().unwrap_or(task.name());
+    format!("{short_name}__{trial:03}__{}", id.simple())
 }
 
 /// Result of rebuilding derived trajectory and API comparisons from retained evidence.
@@ -885,6 +972,7 @@ impl DiffProgress {
         let mut output = tokio::fs::File::create(&path)
             .await
             .wrap_err_with(|| format!("failed to create live progress log {}", path.display()))?;
+        let progress_path = path.clone();
         let (sender, mut receiver) = mpsc::unbounded_channel::<PendingProgressRecord>();
         let task = tokio::spawn(async move {
             let mut sequence = 0_u64;
@@ -910,13 +998,15 @@ impl DiffProgress {
                             );
                         }
                         sequence = sequence.saturating_add(1);
-                        write_progress_record(&mut output, sequence, pending).await?;
+                        write_progress_record(&mut output, &progress_path, sequence, pending)
+                            .await?;
                     }
                     _ = heartbeat.tick(), if heartbeat_needed(&lanes) => {
                         let elapsed_ms = elapsed_ms(started);
                         sequence = sequence.saturating_add(1);
                         write_progress_record(
                             &mut output,
+                            &progress_path,
                             sequence,
                             PendingProgressRecord {
                                 observed_at: Utc::now(),
@@ -1300,6 +1390,7 @@ impl DiffProgressRecorder {
 
 async fn write_progress_record(
     output: &mut tokio::fs::File,
+    path: &Path,
     sequence: u64,
     pending: PendingProgressRecord,
 ) -> std::io::Result<()> {
@@ -1322,6 +1413,7 @@ async fn write_progress_record(
         comparison_arm = record.arm,
         event_kind = %record.kind,
         summary = record.summary.as_deref().unwrap_or(""),
+        progress_path = %path.display(),
         "differential progress"
     );
     Ok(())
@@ -1610,25 +1702,38 @@ struct DiffVmResources {
     codex_ca_bundle: Option<DiffCodexCaBundle>,
 }
 
-async fn prepare_diff_vm_resources(
-    task: &Task,
-    comparison_directory: &Path,
-    vm: &VmResources,
-    web_search: bool,
+struct DiffCodexRelease {
+    root: PathBuf,
+    ca_bundle: Option<DiffCodexCaBundle>,
+}
+
+fn prepare_diff_codex_release(
+    output_parent: &Path,
     codex_binary: &Path,
-) -> InternalResult<DiffVmResources> {
-    let codex_share_root = comparison_directory.join("codex-release");
-    fs::create_dir(&codex_share_root)?;
-    let staged_codex = codex_share_root.join("codex");
+) -> InternalResult<DiffCodexRelease> {
+    let releases = output_parent.join(".codex-releases");
+    fs::create_dir_all(&releases)?;
+    let temporary = tempfile::tempdir_in(&releases)?;
+    let staged_codex = temporary.path().join("codex");
     reflink_or_sparse_copy(codex_binary, &staged_codex)?;
     fs::set_permissions(&staged_codex, fs::Permissions::from_mode(0o755))?;
     let mut header = [0_u8; 20];
     fs::File::open(&staged_codex)?.read_exact(&mut header)?;
     validate_vm_guest_elf(&header, &staged_codex)?;
-    let codex_ca_bundle = resolve_diff_codex_ca_source()?
+    let ca_bundle = resolve_diff_codex_ca_source()?
         .as_ref()
-        .map(|source| stage_diff_codex_ca_bundle(source, &codex_share_root))
+        .map(|source| stage_diff_codex_ca_bundle(source, temporary.path()))
         .transpose()?;
+    let root = temporary.keep();
+    Ok(DiffCodexRelease { root, ca_bundle })
+}
+
+async fn prepare_diff_vm_resources(
+    task: &Task,
+    vm: &VmResources,
+    web_search: bool,
+    codex_release: &DiffCodexRelease,
+) -> InternalResult<DiffVmResources> {
     let environment = vm.environment(task).cloned().ok_or_else(|| {
         diff_error!(
             "VM diff did not prepare the requested task root {}",
@@ -1636,28 +1741,30 @@ async fn prepare_diff_vm_resources(
         )
     })?;
     let nanocodex = vm
-        .backend(
+        .backend_for_task(
             VmBackend::builder()
                 .retain_passed_rootfs(true)
                 .web_search(web_search),
+            task,
         )
         .await?;
     let codex = vm
-        .backend(
+        .backend_for_task(
             VmBackend::builder()
                 .retain_passed_rootfs(true)
                 .web_search(web_search)
                 .shared_directory(SharedDirectory::read_only(
                     DIFF_CODEX_SHARE_TAG,
-                    codex_share_root,
+                    codex_release.root.clone(),
                 )),
+            task,
         )
         .await?;
     Ok(DiffVmResources {
         environment,
         nanocodex,
         codex,
-        codex_ca_bundle,
+        codex_ca_bundle: codex_release.ca_bundle,
     })
 }
 
@@ -2317,12 +2424,11 @@ fn validate_vm_guest_elf(bytes: &[u8], path: &Path) -> InternalResult<()> {
     Ok(())
 }
 
-impl DifferentialEval {
-    /// Starts a matched differential-evaluation recipe.
+impl DifferentialEvaluator {
+    /// Starts a reusable matched differential-evaluation recipe.
     #[must_use]
-    pub fn builder(task: Task, nanocodex: NanocodexBuilder) -> DifferentialEvalBuilder {
-        DifferentialEvalBuilder {
-            task,
+    pub fn builder(nanocodex: NanocodexBuilder) -> DifferentialEvaluatorBuilder {
+        DifferentialEvaluatorBuilder {
             nanocodex,
             codex: None,
             vm: None,
@@ -2331,9 +2437,165 @@ impl DifferentialEval {
             web_search: false,
             codex_tool_mode: CodexToolMode::CodeModeOnly,
             nanocodex_build: None,
+            max_concurrency: 1,
+            max_memory_mb: None,
         }
     }
 
+    /// Runs one independent matched pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the comparison cannot be prepared or retained.
+    pub async fn task(&self, task: Task) -> DifferentialResult<DifferentialReport> {
+        self.run_task(task, 1).await
+    }
+
+    async fn run_task(&self, task: Task, trial: usize) -> DifferentialResult<DifferentialReport> {
+        let queued_at = Utc::now();
+        let queued = Instant::now();
+        let requested_memory_mb = differential_pair_memory_mb(&task);
+        let admitted_memory_mb = self
+            .inner
+            .max_memory_mb
+            .map_or(requested_memory_mb, |limit| requested_memory_mb.min(limit));
+        let _permit = self
+            .inner
+            .admission
+            .acquire(requested_memory_mb)
+            .await
+            .ok_or_else(|| {
+                DifferentialError::new(diff_error!("differential evaluator is draining"))
+            })?;
+        let admitted_at = Utc::now();
+        let inner = &self.inner;
+        DifferentialComparison {
+            task,
+            trial,
+            nanocodex: inner.nanocodex.clone(),
+            codex_sha256: inner.codex_sha256.clone(),
+            codex_release: Arc::clone(&inner.codex_release),
+            codex_auth: inner.codex_auth.clone(),
+            vm: Arc::clone(&inner.vm),
+            output: inner.output.clone(),
+            thinking: inner.thinking,
+            web_search: inner.web_search,
+            codex_tool_mode: inner.codex_tool_mode,
+            nanocodex_build: inner.nanocodex_build.clone(),
+            schedule: DifferentialSchedule {
+                queued_at,
+                admitted_at,
+                queue_duration_ms: elapsed_ms(queued),
+                requested_pair_memory_mb: requested_memory_mb,
+                admitted_pair_memory_mb: admitted_memory_mb,
+                max_concurrency: inner.max_concurrency,
+                max_memory_mb: inner.max_memory_mb,
+            },
+        }
+        .run()
+        .await
+    }
+
+    /// Runs `count` independent matched pairs for one task.
+    ///
+    /// Results preserve trial order even when pairs complete out of order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after all admitted pairs finish when any comparison
+    /// cannot be prepared or retained.
+    pub async fn task_n(
+        &self,
+        task: Task,
+        count: usize,
+    ) -> DifferentialResult<Vec<DifferentialReport>> {
+        self.run_tasks((1..=count).map(|trial| (task.clone(), trial)).collect())
+            .await
+    }
+
+    /// Runs one independent matched pair for every task.
+    ///
+    /// Results preserve input order even when pairs complete out of order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after all admitted pairs finish when any comparison
+    /// cannot be prepared or retained.
+    pub async fn tasks(&self, tasks: Vec<Task>) -> DifferentialResult<Vec<DifferentialReport>> {
+        self.run_tasks(tasks.into_iter().map(|task| (task, 1)).collect())
+            .await
+    }
+
+    async fn run_tasks(
+        &self,
+        tasks: Vec<(Task, usize)>,
+    ) -> DifferentialResult<Vec<DifferentialReport>> {
+        let scheduling_window = tasks
+            .len()
+            .min(self.inner.max_concurrency.saturating_mul(4))
+            .max(1);
+        let evaluator = self.clone();
+        let mut completed = stream::iter(tasks.into_iter().enumerate())
+            .map(move |(index, (task, trial))| {
+                let evaluator = evaluator.clone();
+                async move { (index, evaluator.run_task(task, trial).await) }
+            })
+            .buffer_unordered(scheduling_window);
+        let mut results = Vec::new();
+        while let Some(result) = completed.next().await {
+            results.push(result);
+        }
+        results.sort_unstable_by_key(|(index, _)| *index);
+        results
+            .into_iter()
+            .map(|(_, result)| result)
+            .collect::<DifferentialResult<Vec<_>>>()
+    }
+
+    /// Runs `count` independent matched pairs for every task.
+    ///
+    /// Results are grouped in input task order and then trial order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after all admitted pairs finish when any comparison
+    /// cannot be prepared or retained.
+    pub async fn tasks_n(
+        &self,
+        tasks: Vec<Task>,
+        count: usize,
+    ) -> DifferentialResult<Vec<DifferentialReport>> {
+        self.run_tasks(
+            tasks
+                .into_iter()
+                .flat_map(|task| (1..=count).map(move |trial| (task.clone(), trial)))
+                .collect::<Vec<_>>(),
+        )
+        .await
+    }
+
+    /// Returns the maximum number of concurrently executing pairs.
+    #[must_use]
+    pub fn max_concurrency(&self) -> usize {
+        self.inner.max_concurrency
+    }
+
+    /// Returns the optional ceiling on task-declared memory across both arms.
+    #[must_use]
+    pub fn max_memory_mb(&self) -> Option<u64> {
+        self.inner.max_memory_mb
+    }
+
+    /// Stops admitting pairs that have not started.
+    ///
+    /// Admitted work continues to completion. The return value is the total
+    /// number of pairs admitted since this evaluator was built.
+    pub fn begin_drain(&self) -> usize {
+        self.inner.admission.begin_drain()
+    }
+}
+
+impl DifferentialComparison {
     /// Runs both agents concurrently and retains one complete comparison.
     ///
     /// An incomplete arm remains a successful, inspectable report. This method
@@ -2344,54 +2606,32 @@ impl DifferentialEval {
     ///
     /// Returns an error for invalid executable inputs, VM preparation failure,
     /// artifact I/O failure, or evaluator setup that prevents a report.
-    pub async fn run(self) -> DifferentialResult<DifferentialReport> {
+    async fn run(self) -> DifferentialResult<DifferentialReport> {
         self.run_inner().await.map_err(DifferentialError::new)
     }
 
     async fn run_inner(self) -> InternalResult<DifferentialReport> {
         let Self {
             task,
+            trial,
             nanocodex,
-            codex_binary,
+            codex_sha256,
+            codex_release,
             codex_auth,
             vm,
             output,
             thinking,
             web_search,
             codex_tool_mode,
-            mut nanocodex_build,
+            nanocodex_build,
+            schedule,
         } = self;
+        let codex_path = codex_release.root.join("codex");
         let started_at = Utc::now();
         let started = Instant::now();
-        let codex_path = codex_binary.canonicalize().wrap_err_with(|| {
-            format!(
-                "failed to resolve Codex executable {}",
-                codex_binary.display(),
-            )
-        })?;
-        if !codex_path.is_file() {
-            return Err(diff_error!(
-                "Codex executable is not a regular file: {}",
-                codex_path.display()
-            ));
-        }
-        let codex_sha256 = file_sha256(&codex_path)?;
-        nanocodex_build.path = nanocodex_build.path.canonicalize().wrap_err_with(|| {
-            format!(
-                "failed to resolve Nanocodex executable {}",
-                nanocodex_build.path.display(),
-            )
-        })?;
-        if !nanocodex_build.path.is_file() {
-            return Err(diff_error!(
-                "Nanocodex executable is not a regular file: {}",
-                nanocodex_build.path.display()
-            ));
-        }
-        nanocodex_build.sha256 = file_sha256(&nanocodex_build.path)?;
-        let output_parent = prepare_output_parent(&output)?;
         let comparison_id = Uuid::now_v7();
-        let comparison_directory = output_parent.join(comparison_id.to_string());
+        let comparison_directory =
+            output.join(differential_comparison_name(&task, trial, comparison_id));
         fs::create_dir(&comparison_directory).wrap_err_with(|| {
             format!(
                 "failed to create comparison directory {}",
@@ -2408,10 +2648,8 @@ impl DifferentialEval {
         );
 
         let guest_codex_version = Arc::new(OnceLock::new());
-        let vm_resources = Arc::new(
-            prepare_diff_vm_resources(&task, &comparison_directory, &vm, web_search, &codex_path)
-                .await?,
-        );
+        let vm_resources =
+            Arc::new(prepare_diff_vm_resources(&task, &vm, web_search, &codex_release).await?);
         let codex = CodexExec::new(&codex_path, MODEL, thinking.as_str())?
             .web_search(web_search)
             .tool_mode(codex_tool_mode);
@@ -2493,6 +2731,7 @@ impl DifferentialEval {
                 name: task.name().to_owned(),
                 root: task.root().to_path_buf(),
             },
+            trial,
             model: MODEL.to_owned(),
             thinking: thinking.to_string(),
             policy: ComparisonPolicy {
@@ -2513,12 +2752,13 @@ impl DifferentialEval {
             started_at,
             finished_at: Utc::now(),
             duration_ms: elapsed_ms(started),
+            schedule,
             classification,
             trajectory_comparison,
             api_comparison,
             nanocodex_build,
             codex_build: ExecutableIdentity {
-                path: codex_path,
+                path: codex_release.root.join("codex"),
                 version: codex_version,
                 git_sha: None,
                 built_at: None,
@@ -2541,7 +2781,7 @@ impl DifferentialEval {
     }
 }
 
-impl DifferentialEvalBuilder {
+impl DifferentialEvaluatorBuilder {
     /// Selects the pinned stock-Codex executable and its guest auth.
     #[must_use]
     pub fn codex(mut self, executable: impl Into<PathBuf>, auth: CodexAuth) -> Self {
@@ -2552,7 +2792,7 @@ impl DifferentialEvalBuilder {
     /// Selects the prepared, matched VM resources used by both arms.
     #[must_use]
     pub fn vm(mut self, vm: VmResources) -> Self {
-        self.vm = Some(vm);
+        self.vm = Some(Arc::new(vm));
         self
     }
 
@@ -2594,27 +2834,69 @@ impl DifferentialEvalBuilder {
         self
     }
 
-    /// Validates required components and builds one owned evaluation.
+    /// Sets the maximum number of matched pairs allowed to run concurrently.
+    ///
+    /// The default is one. [`Self::build`] rejects zero.
+    #[must_use]
+    pub const fn max_concurrency(mut self, max_concurrency: usize) -> Self {
+        self.max_concurrency = max_concurrency;
+        self
+    }
+
+    /// Bounds the sum of task-declared memory across both arms of every
+    /// concurrently running pair. A task whose pair declaration exceeds the
+    /// ceiling runs alone.
+    #[must_use]
+    pub const fn max_memory_mb(mut self, max_memory_mb: u64) -> Self {
+        self.max_memory_mb = Some(max_memory_mb);
+        self
+    }
+
+    /// Validates required components and builds a reusable evaluator.
     ///
     /// # Errors
     ///
     /// Returns an error when Codex, VM resources, or executable identity is
     /// missing.
-    pub fn build(self) -> std::result::Result<DifferentialEval, DifferentialBuildError> {
+    pub fn build(self) -> std::result::Result<DifferentialEvaluator, DifferentialBuildError> {
+        if self.max_concurrency == 0 {
+            return Err(DifferentialBuildError::InvalidConcurrency);
+        }
+        if self.max_memory_mb == Some(0) {
+            return Err(DifferentialBuildError::InvalidMemory);
+        }
+        let vm = self.vm.ok_or(DifferentialBuildError::MissingVm)?;
         let (codex_binary, codex_auth) = self.codex.ok_or(DifferentialBuildError::MissingCodex)?;
-        Ok(DifferentialEval {
-            task: self.task,
-            nanocodex: self.nanocodex,
-            codex_binary,
-            codex_auth,
-            vm: self.vm.ok_or(DifferentialBuildError::MissingVm)?,
-            output: self.output,
-            thinking: self.thinking,
-            web_search: self.web_search,
-            codex_tool_mode: self.codex_tool_mode,
-            nanocodex_build: self
-                .nanocodex_build
-                .ok_or(DifferentialBuildError::MissingNanocodexIdentity)?,
+        let (codex_binary, codex_sha256) = resolve_executable(&codex_binary, "stock Codex")
+            .map_err(|error| DifferentialBuildError::Executable(DifferentialError::new(error)))?;
+        let nanocodex_build = self
+            .nanocodex_build
+            .ok_or(DifferentialBuildError::MissingNanocodexIdentity)?
+            .resolve("Nanocodex")
+            .map_err(|error| DifferentialBuildError::Executable(DifferentialError::new(error)))?;
+        let output = prepare_output_parent(&self.output)
+            .map_err(|error| DifferentialBuildError::Assets(DifferentialError::new(error)))?;
+        let codex_release = prepare_diff_codex_release(&output, &codex_binary)
+            .map_err(|error| DifferentialBuildError::Assets(DifferentialError::new(error)))?;
+        Ok(DifferentialEvaluator {
+            inner: Arc::new(DifferentialEvaluatorInner {
+                nanocodex: self.nanocodex,
+                codex_sha256,
+                codex_release: Arc::new(codex_release),
+                codex_auth,
+                vm,
+                output,
+                thinking: self.thinking,
+                web_search: self.web_search,
+                codex_tool_mode: self.codex_tool_mode,
+                nanocodex_build,
+                admission: Arc::new(AdmissionController::new(
+                    self.max_concurrency,
+                    self.max_memory_mb,
+                )),
+                max_concurrency: self.max_concurrency,
+                max_memory_mb: self.max_memory_mb,
+            }),
         })
     }
 }
@@ -2630,6 +2912,12 @@ impl DifferentialReport {
     #[must_use]
     pub fn task_name(&self) -> &str {
         &self.task.name
+    }
+
+    /// Returns the one-indexed independent trial coordinate.
+    #[must_use]
+    pub const fn trial(&self) -> usize {
+        self.trial
     }
 
     /// Returns the durable comparison record path.
@@ -2657,7 +2945,7 @@ impl DifferentialReport {
     pub fn human_summary(&self) -> String {
         let mut output = String::new();
         let _ = writeln!(output, "{}", self.classification.as_str());
-        let _ = writeln!(output, "task: {}", self.task.name);
+        let _ = writeln!(output, "task: {} · trial: {}", self.task.name, self.trial);
         append_arm_summary(&mut output, "nanocodex", &self.nanocodex);
         append_arm_summary(&mut output, "codex", &self.codex);
         append_model_visible_tool_summary(&mut output, &self.api_comparison.event_loop);
@@ -5508,14 +5796,46 @@ mod tests {
         ApiEventLoopTailSummary, ApiRequestPayload, ApiTokenUsageSummary, ArmStatus, CodexExec,
         CodexToolMode, CodexVersion, DIFF_CODEX_CA_BUNDLE_FILENAME,
         DIFF_CODEX_CLOUD_CONFIG_CACHE_FILENAME, DIFF_CODEX_SSL_CERT_FILE_ENVIRONMENT,
-        DiffCodexCaSource, DiffProgress, Evaluator, LaneProgressState, ShellPollingSummary, Task,
-        TrajectoryProjection, build_event_loop_trace, compare_api_exchanges,
-        detected_code_mode_empty_stdin_calls, detected_polling_turn, diff_json,
+        DiffCodexCaSource, DiffProgress, DifferentialBuildError, DifferentialEvaluator, Evaluator,
+        LaneProgressState, ShellPollingSummary, Task, TrajectoryProjection, build_event_loop_trace,
+        compare_api_exchanges, detected_code_mode_empty_stdin_calls, detected_polling_turn,
+        diff_json, differential_comparison_name, differential_pair_memory_mb,
         event_loop_difference_categories, heartbeat_needed, heartbeat_summary,
         inspect_api_exchanges, newly_completed_lines, read_api_request_payloads,
         read_optional_codex_cloud_config_cache, reanalyze, run_arm, stage_diff_codex_ca_bundle,
         validate_differential_profile,
     };
+
+    #[test]
+    fn differential_scheduler_rejects_zero_limits_before_asset_work() {
+        let nanocodex = Nanocodex::builder(OpenAi::new("test").unwrap());
+        assert!(matches!(
+            DifferentialEvaluator::builder(nanocodex.clone())
+                .max_concurrency(0)
+                .build(),
+            Err(DifferentialBuildError::InvalidConcurrency)
+        ));
+        assert!(matches!(
+            DifferentialEvaluator::builder(nanocodex)
+                .max_memory_mb(0)
+                .build(),
+            Err(DifferentialBuildError::InvalidMemory)
+        ));
+    }
+
+    #[test]
+    fn differential_coordinates_charge_both_arms_and_name_the_trial() {
+        let task =
+            Task::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tasks/write-greeting"))
+                .unwrap();
+        let id = uuid::Uuid::from_u128(0x1234);
+
+        assert_eq!(differential_pair_memory_mb(&task), 512);
+        assert_eq!(
+            differential_comparison_name(&task, 5, id),
+            format!("write-greeting__005__{}", id.simple())
+        );
+    }
 
     #[test]
     fn reanalysis_keeps_missing_refusal_trajectories_unavailable() {

@@ -33,8 +33,8 @@ const INVOCATION_FILE: &str = "invocation.json";
 const LAST_RUN_FILE: &str = ".nanocodex/eval/last-run.json";
 const INVOCATION_VERSION: u32 = 3;
 const SCHEDULING_POLICY: &str = "bounded_fifo_work_conserving-v1";
-const DEFAULT_TRIALS: u16 = 5;
-const DEFAULT_HOST_UTILIZATION_PERCENT: u8 = 80;
+pub(super) const DEFAULT_TRIALS: u16 = 5;
+pub(super) const DEFAULT_HOST_UTILIZATION_PERCENT: u8 = 80;
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 
 #[derive(Args)]
@@ -364,6 +364,11 @@ impl HostResources {
             max_memory_mb,
         }
     }
+}
+
+pub(super) fn automatic_scheduling_defaults(utilization_percent: u8) -> (u16, Option<u64>) {
+    let defaults = HostResources::detect().scheduling_defaults(utilization_percent);
+    (defaults.concurrency, defaults.max_memory_mb)
 }
 
 const fn percentage(value: u64, percent: u8) -> u64 {
@@ -1605,7 +1610,7 @@ impl VmRetention {
     }
 }
 
-fn load_tasks(paths: Vec<PathBuf>, suites: Vec<PathBuf>) -> Result<Vec<Task>> {
+pub(super) fn load_tasks(paths: Vec<PathBuf>, suites: Vec<PathBuf>) -> Result<Vec<Task>> {
     load_task_paths(paths, suites)?
         .into_iter()
         .map(Task::load)

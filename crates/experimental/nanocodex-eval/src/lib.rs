@@ -95,8 +95,8 @@ pub use codex::{
 };
 pub use differential::{
     CodexAuth, DifferentialBuildError, DifferentialClassification, DifferentialError,
-    DifferentialEval, DifferentialEvalBuilder, DifferentialReanalysis, DifferentialReport,
-    DifferentialResult, ExecutableIdentity, reanalyze,
+    DifferentialEvaluator, DifferentialEvaluatorBuilder, DifferentialReanalysis,
+    DifferentialReport, DifferentialResult, ExecutableIdentity, reanalyze,
 };
 pub use evaluator::{
     AttemptAgent, AttemptVerification, AttemptVerificationFailure, AttemptVerifier, EvalAttempt,
