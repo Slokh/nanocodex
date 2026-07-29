@@ -241,6 +241,15 @@ async fn serve_io_with_frame_limit(
                             });
                             write_response(&mut output, &response, max_frame_bytes).await?;
                         }
+                        SessionRequest::TerminateToolProcesses(request) => {
+                            runtime.control().cancel().await;
+                            let response =
+                                SessionResponse::TerminateToolProcesses(ControlResponse {
+                                    id: request.id,
+                                    error: None,
+                                });
+                            write_response(&mut output, &response, max_frame_bytes).await?;
+                        }
                         request => {
                             let id = request.id();
                             if active.contains_key(&id) {
@@ -310,6 +319,15 @@ async fn execute_request(
             SessionResponse::Cancel(ControlResponse {
                 id,
                 error: Some("cancel cannot be dispatched as a concurrent request".to_owned()),
+            })
+        }
+        SessionRequest::TerminateToolProcesses(request) => {
+            SessionResponse::TerminateToolProcesses(ControlResponse {
+                id: request.id,
+                error: Some(
+                    "tool-process termination cannot be dispatched as a concurrent request"
+                        .to_owned(),
+                ),
             })
         }
         SessionRequest::Shutdown(request) => SessionResponse::Shutdown(ControlResponse {
@@ -853,12 +871,15 @@ mod tests {
     };
 
     use nanocodex_tools::{ToolInput, contract::ToolOutputBody, standard::StandardTool};
+    use nix::sys::signal::Signal;
+    use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
     use serde_json::{json, value::to_raw_value};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     use super::super::protocol::{
         CancelRequest, ExecuteRequest, ReadFileRequest, ReadyRequest, SessionRequest,
-        SessionResponse, ShutdownRequest, ToolRequest, WireToolContext, WireToolInput,
+        SessionResponse, ShutdownRequest, TerminateToolProcessesRequest, ToolRequest,
+        WireToolContext, WireToolInput,
     };
     use super::{
         atomic_write_file, command_environment, create_directory_path, execute_command,
@@ -1242,6 +1263,216 @@ mod tests {
         assert!(matches!(
             serde_json::from_str::<SessionResponse>(&shutdown).unwrap(),
             SessionResponse::Shutdown(response) if response.id == 3 && response.error.is_none()
+        ));
+        guest_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn tool_process_termination_kills_foreground_session_and_keeps_guest_ready() {
+        let workspace = tempfile::tempdir().unwrap();
+        let pid_file = workspace.path().join("foreground.pid");
+        let (host, guest) = tokio::io::duplex(64 * 1024);
+        let (host_read, mut host_write) = tokio::io::split(host);
+        let (guest_read, guest_write) = tokio::io::split(guest);
+        let guest_task = tokio::spawn({
+            let workspace = workspace.path().to_owned();
+            async move { serve_io(&workspace, guest_read, guest_write).await }
+        });
+        let command = format!("printf %s $$ > '{}'; exec sleep 30", pid_file.display());
+        let start = SessionRequest::Tool(ToolRequest {
+            id: 0,
+            tool: StandardTool::ExecCommand,
+            input: WireToolInput::from(ToolInput::Function(
+                to_raw_value(&json!({
+                    "cmd": command,
+                    "login": false,
+                    "yield_time_ms": 250,
+                }))
+                .unwrap(),
+            )),
+            context: WireToolContext {
+                model: "model".to_owned(),
+                session_id: "session".to_owned(),
+                call_id: "foreground".to_owned(),
+                output_token_budget: 10_000,
+            },
+        });
+        host_write
+            .write_all(&serde_json::to_vec(&start).unwrap())
+            .await
+            .unwrap();
+        host_write.write_all(b"\n").await.unwrap();
+
+        let mut responses = BufReader::new(host_read).lines();
+        let started = tokio::time::timeout(Duration::from_secs(2), responses.next_line())
+            .await
+            .expect("the foreground command must yield")
+            .unwrap()
+            .unwrap();
+        let SessionResponse::Tool(response) =
+            serde_json::from_str::<SessionResponse>(&started).unwrap()
+        else {
+            panic!("expected the foreground command response");
+        };
+        assert_eq!(response.id, 0);
+        assert!(response.error.is_none());
+        let execution = response.execution.expect("foreground command must execute");
+        assert!(
+            execution.success,
+            "foreground command failed: {:?}",
+            execution.output
+        );
+        let pid = fs::read_to_string(&pid_file)
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        assert_eq!(kill(Pid::from_raw(pid), None), Ok(()));
+
+        let terminate =
+            SessionRequest::TerminateToolProcesses(TerminateToolProcessesRequest { id: 1 });
+        host_write
+            .write_all(&serde_json::to_vec(&terminate).unwrap())
+            .await
+            .unwrap();
+        host_write.write_all(b"\n").await.unwrap();
+        let terminated = tokio::time::timeout(Duration::from_secs(2), responses.next_line())
+            .await
+            .expect("managed process termination must complete")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            serde_json::from_str::<SessionResponse>(&terminated).unwrap(),
+            SessionResponse::TerminateToolProcesses(response)
+                if response.id == 1 && response.error.is_none()
+        ));
+        assert_eq!(kill(Pid::from_raw(pid), None), Err(Errno::ESRCH));
+
+        let ready = SessionRequest::Ready(ReadyRequest { id: 2 });
+        host_write
+            .write_all(&serde_json::to_vec(&ready).unwrap())
+            .await
+            .unwrap();
+        host_write.write_all(b"\n").await.unwrap();
+        let ready = responses.next_line().await.unwrap().unwrap();
+        assert!(matches!(
+            serde_json::from_str::<SessionResponse>(&ready).unwrap(),
+            SessionResponse::Ready(response) if response.id == 2 && response.error.is_none()
+        ));
+
+        host_write
+            .write_all(
+                &serde_json::to_vec(&SessionRequest::Shutdown(ShutdownRequest { id: 3 })).unwrap(),
+            )
+            .await
+            .unwrap();
+        host_write.write_all(b"\n").await.unwrap();
+        drop(host_write);
+        let shutdown = responses.next_line().await.unwrap().unwrap();
+        assert!(matches!(
+            serde_json::from_str::<SessionResponse>(&shutdown).unwrap(),
+            SessionResponse::Shutdown(response) if response.id == 3 && response.error.is_none()
+        ));
+        guest_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn tool_process_termination_preserves_deliberately_detached_process() {
+        let workspace = tempfile::tempdir().unwrap();
+        let pid_file = workspace.path().join("detached.pid");
+        let (host, guest) = tokio::io::duplex(64 * 1024);
+        let (host_read, mut host_write) = tokio::io::split(host);
+        let (guest_read, guest_write) = tokio::io::split(guest);
+        let guest_task = tokio::spawn({
+            let workspace = workspace.path().to_owned();
+            async move { serve_io(&workspace, guest_read, guest_write).await }
+        });
+        let command = format!(
+            "/bin/sh -c 'set -m; (trap : HUP; exec sleep 30) >/dev/null 2>&1 </dev/null & \
+             child=$!; printf %s \"$child\" > \"$1\"' sh '{}'",
+            pid_file.display()
+        );
+        let start = SessionRequest::Tool(ToolRequest {
+            id: 0,
+            tool: StandardTool::ExecCommand,
+            input: WireToolInput::from(ToolInput::Function(
+                to_raw_value(&json!({
+                    "cmd": command,
+                    "login": false,
+                }))
+                .unwrap(),
+            )),
+            context: WireToolContext {
+                model: "model".to_owned(),
+                session_id: "session".to_owned(),
+                call_id: "detached".to_owned(),
+                output_token_budget: 10_000,
+            },
+        });
+        host_write
+            .write_all(&serde_json::to_vec(&start).unwrap())
+            .await
+            .unwrap();
+        host_write.write_all(b"\n").await.unwrap();
+
+        let mut responses = BufReader::new(host_read).lines();
+        let started = tokio::time::timeout(Duration::from_secs(2), responses.next_line())
+            .await
+            .expect("the detaching command must complete")
+            .unwrap()
+            .unwrap();
+        let SessionResponse::Tool(response) =
+            serde_json::from_str::<SessionResponse>(&started).unwrap()
+        else {
+            panic!("expected the detaching command response");
+        };
+        assert_eq!(response.id, 0);
+        assert!(response.error.is_none());
+        let execution = response.execution.expect("detaching command must execute");
+        assert!(
+            execution.success,
+            "detaching command failed: {:?}",
+            execution.output
+        );
+        let pid = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(pid) = fs::read_to_string(&pid_file) {
+                    break pid.parse::<i32>().unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the detached process must publish its PID");
+        assert_eq!(kill(Pid::from_raw(pid), None), Ok(()));
+
+        let terminate =
+            SessionRequest::TerminateToolProcesses(TerminateToolProcessesRequest { id: 1 });
+        host_write
+            .write_all(&serde_json::to_vec(&terminate).unwrap())
+            .await
+            .unwrap();
+        host_write.write_all(b"\n").await.unwrap();
+        let terminated = responses.next_line().await.unwrap().unwrap();
+        assert!(matches!(
+            serde_json::from_str::<SessionResponse>(&terminated).unwrap(),
+            SessionResponse::TerminateToolProcesses(response)
+                if response.id == 1 && response.error.is_none()
+        ));
+        assert_eq!(kill(Pid::from_raw(pid), None), Ok(()));
+        kill(Pid::from_raw(pid), Signal::SIGKILL).unwrap();
+
+        host_write
+            .write_all(
+                &serde_json::to_vec(&SessionRequest::Shutdown(ShutdownRequest { id: 2 })).unwrap(),
+            )
+            .await
+            .unwrap();
+        host_write.write_all(b"\n").await.unwrap();
+        drop(host_write);
+        let shutdown = responses.next_line().await.unwrap().unwrap();
+        assert!(matches!(
+            serde_json::from_str::<SessionResponse>(&shutdown).unwrap(),
+            SessionResponse::Shutdown(response) if response.id == 2 && response.error.is_none()
         ));
         guest_task.await.unwrap().unwrap();
     }

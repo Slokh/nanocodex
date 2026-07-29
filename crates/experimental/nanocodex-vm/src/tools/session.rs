@@ -30,8 +30,8 @@ use super::{
     protocol::{
         CancelRequest, ControlResponse, CreateDirectoryRequest, ExecuteRequest, ExecuteResponse,
         MemoryRequest, MemoryResponse, ReadFileRequest, ReadFileResponse, ReadyRequest,
-        SessionRequest, SessionResponse, ShutdownRequest, ToolRequest, WireToolContext,
-        WireToolInput, WriteFileRequest,
+        SessionRequest, SessionResponse, ShutdownRequest, TerminateToolProcessesRequest,
+        ToolRequest, WireToolContext, WireToolInput, WriteFileRequest,
     },
 };
 
@@ -253,6 +253,10 @@ pub enum VmToolSessionError {
     /// Graceful guest shutdown did not stop the VMM before the deadline.
     #[error("the VMM did not exit within {0:?} after guest shutdown")]
     ShutdownTimeout(Duration),
+
+    /// Managed guest tool processes did not stop before the deadline.
+    #[error("managed guest tool processes did not stop within {0:?}")]
+    ToolProcessTerminationTimeout(Duration),
 
     /// The VMM returned an unsuccessful status after guest shutdown.
     #[error("the VMM exited unsuccessfully after guest shutdown: {0}")]
@@ -724,6 +728,56 @@ impl VmToolSession {
     /// so diagnostics never obscure the attempt's primary result.
     pub async fn memory_observation(&self) -> VmMemoryObservation {
         self.handle.memory_observation().await
+    }
+
+    /// Terminates subprocesses retained by the guest workspace-tool runtime.
+    ///
+    /// This is a non-destructive agent-lifecycle boundary: the VM, filesystem,
+    /// and host-control channel remain available. Processes that deliberately
+    /// detached from the workspace tool's managed process group are not
+    /// terminated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the guest cannot acknowledge cleanup before the
+    /// session's shutdown deadline or returns an invalid response.
+    pub async fn terminate_tool_processes(&self) -> Result<(), VmToolSessionError> {
+        let span = info_span!(
+            target: "nanocodex_vm",
+            "vm.session.terminate_tool_processes",
+            otel.kind = "internal",
+            otel.status_code = tracing::field::Empty,
+            vm.session.age_ns = tracing::field::Empty,
+            status = tracing::field::Empty,
+            error.message = tracing::field::Empty,
+            duration_ns = tracing::field::Empty,
+        );
+        let started_at = Instant::now();
+        let timeout = self.handle.inner.shutdown_timeout;
+        let result = async {
+            let response = tokio::time::timeout(
+                timeout,
+                self.handle.control_request(|id| {
+                    SessionRequest::TerminateToolProcesses(TerminateToolProcessesRequest { id })
+                }),
+            )
+            .await
+            .map_err(|_| VmToolSessionError::ToolProcessTerminationTimeout(timeout))??;
+            let SessionResponse::TerminateToolProcesses(response) = response else {
+                return Err(VmToolSessionError::Protocol(
+                    "expected a tool-process termination response",
+                ));
+            };
+            control_result(response)
+        }
+        .instrument(span.clone())
+        .await;
+        span.record(
+            "vm.session.age_ns",
+            elapsed_ns(self.handle.inner.spawned_at),
+        );
+        record_vm_result(&span, started_at, &result);
+        result
     }
 
     async fn terminate(&self) {
@@ -1740,6 +1794,7 @@ const fn set_request_id(request: &mut SessionRequest, id: u64) {
         SessionRequest::Memory(request) => request.id = id,
         SessionRequest::Execute(request) => request.id = id,
         SessionRequest::Cancel(request) => request.id = id,
+        SessionRequest::TerminateToolProcesses(request) => request.id = id,
         SessionRequest::Shutdown(request) => request.id = id,
     }
 }
@@ -2046,6 +2101,36 @@ mod tracing_tests {
         runtime.block_on(async {
             let session = VmToolSession::spawn(&mut command).unwrap();
             session.ready().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn managed_tool_process_termination_keeps_the_vm_session_open() {
+        let _test_guard = TRACE_TEST_LOCK.lock().unwrap();
+        let terminated = r#"{"kind":"terminate_tool_processes","payload":{"id":0,"error":null}}"#;
+        let ready = r#"{"kind":"ready","payload":{"id":1,"error":null}}"#;
+        let shutdown = r#"{"kind":"shutdown","payload":{"id":2,"error":null}}"#;
+        let script = format!(
+            "IFS= read -r terminate\n\
+             case \"$terminate\" in *'\"kind\":\"terminate_tool_processes\"'*) ;; *) exit 91 ;; esac\n\
+             printf '%s\\n' '{terminated}'\n\
+             IFS= read -r ready\n\
+             printf '%s\\n' '{ready}'\n\
+             IFS= read -r shutdown\n\
+             printf '%s\\n' '{shutdown}'"
+        );
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.arg("-c").arg(script);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let session = VmToolSession::spawn(&mut command).unwrap();
+            session.terminate_tool_processes().await.unwrap();
+            session.ready().await.unwrap();
+            session.shutdown().await.unwrap();
         });
     }
 

@@ -231,13 +231,14 @@ Snapshot: 2026-07-29 06:11 UTC.
   concurrently launched repeats passed on both arms. Across four samples,
   Nanocodex is 4/4 and stock Codex is 3/4.
 - `kv-store-grpc` and `pypi-server`: both implementations create working
-  services and prove them during the agent turn. Detached children are cleaned
-  up by both shell tools. Nanocodex then uses a managed long-running execution
-  session which is still alive when the canonical verifier runs. Stock Codex
-  also proves the service during its turn, but its execution session is gone
-  after the `codex exec` process exits; the verifier sees connection refused.
-  These are lifecycle/session-retention score splits, not implementation or
-  response-chain failures.
+  services and prove them during the agent turn. Nanocodex then leaves a
+  managed long-running execution session alive because the evaluator retains
+  the caller-owned VM tool runtime for verification. Stock Codex also proves
+  the service during its turn, but its own session shutdown deliberately
+  terminates managed Unified Exec processes; the verifier sees connection
+  refused unless the model detached the server from that process group.
+  This is an adapter-lifecycle asymmetry and these scores are quarantined from
+  agent-parity conclusions.
 - `mteb-retrieve`: the task requires the pinned BGE model's fifth cosine
   result. Nanocodex uses asymmetric `PromptType.query` and
   `PromptType.passage` encodings under `T2Retrieval`, ranking MTEB fifth.
@@ -946,8 +947,9 @@ outside the denominator. They are `gpt2-codegolf`, `mcmc-sampling-stan`,
 `winning-avg-corewars`.
 
 The result is more specific than either “Nanocodex is better” or “sampling
-noise.” Nanocodex has a six-score aggregate edge only after a 25-score service
-lifetime advantage offsets stock-favored generated decisions. Each
+noise.” The raw table gives Nanocodex a six-score aggregate edge only after a
+25-score service-lifetime artifact offsets stock-favored generated decisions.
+Each
 discordant score has a concrete artifact, generated choice, provider-policy
 outcome, or stopping decision behind it. The evidence does not show a
 Nanocodex request-loop, cache, replay, or tool-result defect. Some generated
@@ -1102,21 +1104,21 @@ Forty-nine of the 81 tasks have no discordant pair in the current matrix.
 of stock's gross exclusive-win advantage, while `hf-model-inference`,
 `kv-store-grpc`, and `pypi-server` contribute 25 Nanocodex net wins. This
 cancellation is why the full matrix is nearly tied, but the two sides are not
-evidence about the same mechanism. The service scores are real product
-behavior: Nanocodex can retain a foreground guest command in the
-evaluator-owned VM tool session through agent shutdown, whereas stock Codex
-runs inside the guest and its process exit tears down its command session
-unless the model explicitly daemonizes the server. They are not evidence that
-Nanocodex has better conversation context or event-loop policy.
+evidence about the same mechanism. The service scores are contaminated by an
+evaluation-adapter lifecycle asymmetry: Nanocodex retains a foreground guest
+command in the evaluator-owned VM tool session through agent shutdown,
+whereas stock Codex deliberately tears down its managed command sessions.
+They are not an agent capability advantage and are quarantined pending a
+matched-boundary rerun.
 
-As a post-hoc mechanism stratum, excluding only those three service-lifetime
-tasks leaves 780 pairs: 57 stock-only versus 38 Nanocodex-only, with scores
-660/780 for stock and 641/780 for Nanocodex (`p=0.06421`, exact paired sign
-test). That number is descriptive, not confirmatory: the exclusion was chosen
-after reading outcomes, provider refusals remain mixed in, and no
-preregistered stratum or stopping rule exists. It does identify where to
-work: image/signal interpretation, cancellation topology, retrieval prompt
-semantics, and hidden-boundary validation.
+Removing the 30 lifecycle-contaminated pairs leaves 780 pairs: 57 stock-only
+versus 38 Nanocodex-only, with scores 660/780 for stock and 641/780 for
+Nanocodex (`p=0.06421`, exact paired sign test). That corrected operational
+view is still descriptive, not confirmatory: the defect was diagnosed after
+reading outcomes, provider refusals remain mixed in, and no preregistered
+stopping rule exists. It does identify where to work: image/signal
+interpretation, cancellation topology, retrieval prompt semantics, and
+hidden-boundary validation.
 
 The strongest actionable reading is therefore:
 
@@ -1129,6 +1131,51 @@ The strongest actionable reading is therefore:
 - report provider safety refusals separately from completed-agent correctness;
 - retain winner-flip tasks as variance controls instead of optimizing the
   runtime toward whichever agent won the last k=5 cell.
+
+#### Managed-process lifecycle correction (2026-07-29)
+
+The service split is not caused by the differential command runner killing
+the stock VM after a successful arm. `DiffVmCodexRunner` awaits one guest
+command and returns its output; on normal completion it neither shuts down
+the shared VM tool session nor performs an extra process-group kill.
+
+The cleanup happens inside stock Codex. At reviewed checkpoint
+`openai/codex@35eaf3ffb0bf2001486c68c47a3d946b34d16634`,
+`shutdown_session_runtime` explicitly calls
+`unified_exec_manager.terminate_all_processes()`. This is the intended owner
+boundary for foreground or yielded Unified Exec commands.
+
+Nanocodex has the same invariant for tools it owns:
+`ModelRun::shutdown()` calls its `ToolRuntimeControl::cancel()`, which
+terminates retained shell process groups. The VM eval arm replaces those
+workspace handlers with remote `VmTools`, however. Their
+`WorkspaceToolRuntime` lives in the guest process owned by
+`VmVerifier.agent_session`, outside the Nanocodex driver. The evaluator calls
+`agent.shutdown()` and then reuses that same `VmToolSession` directly for the
+verifier, so no equivalent `WorkspaceToolRuntimeControl::cancel()` is sent.
+Foreground server sessions therefore remain alive only on the Nanocodex arm.
+
+The parity contract is:
+
+- terminate all agent-managed foreground/yielded command process groups before
+  starting the verifier on both arms;
+- keep the guest and filesystem alive;
+- allow a service that deliberately escapes the managed process group
+  (`setsid`, `start_new_session`, or an equivalent daemon supervisor) to
+  survive into same-guest verification.
+
+The implemented VM protocol now exposes an owner-only, non-destructive
+`terminate_tool_processes` operation. `VmVerifier` invokes it before staging
+or running verification for every arm. Focused regressions cross that boundary
+with a managed foreground process and a process deliberately moved into a
+separate process group: only the detached process survives, and the same guest
+still answers control requests afterward. The stock arm sees a harmless no-op
+because its guest workspace-tool runtime owns no stock-Codex subprocesses.
+
+The runner defect is fixed, but the recorded results are not retroactively
+corrected. Until the three k=5-by-mode task cells are rerun with the new guest
+runtime, the 30 existing service pairs remain useful bug evidence but are
+excluded from agent-parity totals.
 
 #### Final replies and self-verification
 

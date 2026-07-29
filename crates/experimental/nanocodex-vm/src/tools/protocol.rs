@@ -13,6 +13,7 @@ pub(crate) enum SessionRequest {
     Memory(MemoryRequest),
     Execute(ExecuteRequest),
     Cancel(CancelRequest),
+    TerminateToolProcesses(TerminateToolProcessesRequest),
     Shutdown(ShutdownRequest),
 }
 
@@ -28,6 +29,7 @@ impl SessionRequest {
             Self::Memory(request) => request.id,
             Self::Execute(request) => request.id,
             Self::Cancel(request) => request.id,
+            Self::TerminateToolProcesses(request) => request.id,
             Self::Shutdown(request) => request.id,
         }
     }
@@ -44,6 +46,7 @@ pub(crate) enum SessionResponse {
     Memory(MemoryResponse),
     Execute(ExecuteResponse),
     Cancel(ControlResponse),
+    TerminateToolProcesses(ControlResponse),
     Shutdown(ControlResponse),
 }
 
@@ -55,6 +58,7 @@ impl SessionResponse {
             Self::WriteFile(response)
             | Self::CreateDirectory(response)
             | Self::Cancel(response)
+            | Self::TerminateToolProcesses(response)
             | Self::Shutdown(response) => response.id,
             Self::ReadFile(response) => response.id,
             Self::Memory(response) => response.id,
@@ -66,6 +70,12 @@ impl SessionResponse {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReadyRequest {
+    pub id: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TerminateToolProcessesRequest {
     pub id: u64,
 }
 
@@ -245,8 +255,8 @@ mod tests {
     use super::{
         CancelRequest, ControlResponse, CreateDirectoryRequest, ExecuteRequest, ExecuteResponse,
         MemoryRequest, MemoryResponse, ReadFileRequest, ReadFileResponse, ReadyRequest,
-        SessionRequest, SessionResponse, ShutdownRequest, ToolRequest, ToolResponse,
-        WireToolContext, WireToolInput, WriteFileRequest,
+        SessionRequest, SessionResponse, ShutdownRequest, TerminateToolProcessesRequest,
+        ToolRequest, ToolResponse, WireToolContext, WireToolInput, WriteFileRequest,
     };
 
     #[test]
@@ -263,6 +273,23 @@ mod tests {
         let encoded = serde_json::to_string(&request).unwrap();
 
         assert_eq!(encoded, r#"{"kind":"shutdown","payload":{"id":9}}"#);
+    }
+
+    #[test]
+    fn tool_process_termination_has_a_stable_typed_shape() {
+        let request =
+            SessionRequest::TerminateToolProcesses(TerminateToolProcessesRequest { id: 8 });
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"kind":"terminate_tool_processes","payload":{"id":8}}"#
+        );
+
+        let response =
+            SessionResponse::TerminateToolProcesses(ControlResponse { id: 8, error: None });
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"terminate_tool_processes","payload":{"id":8,"error":null}}"#
+        );
     }
 
     #[test]

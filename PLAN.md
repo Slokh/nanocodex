@@ -120,6 +120,10 @@ Compare more than final answers and scores:
 - every Responses request and visible response event;
 - reasoning summaries and encrypted reasoning items observable at the API;
 - tool calls, arguments, outputs, timing, errors, and process cleanup;
+- agent-owned process lifetime at the agent/verifier boundary: managed
+  foreground commands must be terminated for both implementations, while
+  children that deliberately detach from the managed process group may
+  survive into same-guest verification;
 - typed history deltas, `previous_response_id`, reconnect replay, compaction,
   retry, and cancellation behavior;
 - stable prompt-cache identity, byte-stable prefixes, cached-input tokens, and
@@ -162,6 +166,10 @@ After that baseline:
 Do not infer a loop change from one successful trajectory. Retain repetitions
 and classify whether a difference is prompt/context, cache/transport, model
 sampling, tool execution, verifier interaction, or scheduler contention.
+Quarantine a cell from agent-parity totals when the two adapters do not apply
+the same cleanup boundary. A service that survives only because an
+evaluator-owned remote tool runtime outlives one agent is runner evidence, not
+agent-quality evidence.
 
 #### 4. Host-saturating execution
 
@@ -232,6 +240,9 @@ Part 3 is complete when:
   efforts with exact paired artifacts;
 - repeated stock-Codex advantages have an evidence-backed diagnosis and either
   a verified Nanocodex improvement or an explicit external/policy boundary;
+- stock and Nanocodex apply the same managed-process cleanup boundary before
+  verification, with a regression proving that foreground commands die and
+  deliberately detached services survive on both arms;
 - the differ reports request, response, context/cache, tool, trajectory, and
   verifier divergence while attempts run;
 - interrupted and resumed sweeps preserve exact cardinality and partial
@@ -394,18 +405,26 @@ required query/passage prompt types in three of four discordant samples,
 whereas the loser treats retrieval as symmetric STS encoding. These are
 model-selected solution and stopping differences after the first output
 divergence, not cache or transport failures.
-Three service tasks are a separate product mechanism. Nanocodex is 29/30 and
-stock is 4/30 across `hf-model-inference`, `kv-store-grpc`, and `pypi-server`
-because the evaluator-owned VM tool session can retain Nanocodex foreground
-guest commands after agent shutdown; stock runs inside the guest and must
-explicitly daemonize a service before its process exits. Excluding those three
-tasks post-hoc leaves stock 660/780 versus Nanocodex 641/780, but that
-stratum was chosen after seeing results and is diagnostic rather than
-confirmatory.
-Service lifetime must remain visible as a real capability without being
-mistaken for conversation-loop parity evidence. There is still no broad
-causal tool-mode winner: each mode uses independent model samples, and
-repeated tasks continue to show substantial within-configuration variance.
+Three service tasks expose an adapter lifecycle defect. Nanocodex is 29/30
+and stock is 4/30 across `hf-model-inference`, `kv-store-grpc`, and
+`pypi-server` because the evaluator-owned VM tool session retains Nanocodex
+foreground guest commands after `agent.shutdown()`. At the reviewed stock
+checkpoint, Codex deliberately terminates all managed Unified Exec processes
+during session shutdown; Nanocodex normally terminates its owned shell
+sessions too, but the remote guest runtime is caller-owned and the evaluator
+reuses it for verification without sending the equivalent cancellation.
+These 30 pairs are therefore quarantined from agent-parity interpretation
+until the cells are rerun. The evaluator now sends a non-destructive managed
+tool-process termination request at the agent/verifier boundary for every arm.
+Focused VM regressions prove that a foreground process dies, a process moved
+into a separate process group survives, and the same guest remains usable for
+verification.
+The provisional unaffected-task view is stock 660/780 versus Nanocodex
+641/780; it remains descriptive because the lifecycle defect was found after
+reading outcomes.
+There is still no broad causal tool-mode winner: each mode uses independent
+model samples, and repeated tasks continue to show substantial
+within-configuration variance.
 
 The API differ also exposed a remaining non-model-visible request-envelope
 drift in Responses `client_metadata`. Commit `d3d01b7d` now preserves the same

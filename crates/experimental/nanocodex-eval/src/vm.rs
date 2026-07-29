@@ -2507,6 +2507,15 @@ impl VmVerifier {
                 CleanupPhase::not_required(),
             ));
         };
+        if let Err(primary) = agent_session.terminate_tool_processes().await {
+            let occurred_at = Utc::now();
+            let cleanup = self.cleanup_session(Some(&agent_session)).await;
+            return Err(AttemptVerificationFailure::observed_at(
+                primary,
+                occurred_at,
+                cleanup,
+            ));
+        }
         let launch = self
             .separate_launch
             .clone()
@@ -3577,6 +3586,80 @@ done
             assert_eq!(creates[1]["payload"]["mode"], final_mode);
             assert_eq!(creates[1]["payload"]["modified_unix_seconds"], 0);
         }
+    }
+
+    #[tokio::test]
+    async fn verifier_boundary_terminates_managed_tool_processes_before_staging() {
+        let control = tempfile::tempdir().unwrap();
+        let journal = control.path().join("requests.jsonl");
+        let script = r#"
+request_id=0
+while IFS= read -r request; do
+    printf '%s\n' "$request" >> "$1"
+    case "$request" in
+        *'"kind":"terminate_tool_processes"'*) kind=terminate_tool_processes ;;
+        *'"kind":"create_directory"'*) kind=create_directory ;;
+        *'"kind":"write_file"'*) kind=write_file ;;
+        *'"kind":"shutdown"'*) kind=shutdown ;;
+        *) exit 91 ;;
+    esac
+    printf '{"kind":"%s","payload":{"id":%s,"error":null}}\n' "$kind" "$request_id"
+    if [ "$kind" = shutdown ]; then
+        exit 0
+    fi
+    request_id=$((request_id + 1))
+done
+"#;
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .arg("nanocodex-verifier-boundary")
+            .arg(&journal);
+        let session = VmToolSession::spawn(&mut command).unwrap();
+        let task =
+            Task::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tasks/write-greeting"))
+                .unwrap();
+        let launch = VmLaunch {
+            root: control.path().join("root"),
+            workspace: "/workspace".to_owned(),
+            shell: "/bin/sh".to_owned(),
+            runtime_image: control.path().join("runtime"),
+            vmm: control.path().join("vmm"),
+            cpus: 1,
+            memory_mib: 256,
+            ext4: false,
+            resolver_configuration: String::new(),
+            environment: BTreeMap::new(),
+            network_socket: None,
+            shared_directories: Vec::new(),
+        };
+        let mut verifier = VmVerifier {
+            agent_session: Some(session),
+            launch,
+            separate_launch: None,
+            cache: None,
+            attempt_cache: None,
+            retain_passed_rootfs: false,
+            memory: VmAttemptMemory::default(),
+            _network: None,
+        };
+
+        let (_, session) = verifier.start_verifier_session(&task).await.unwrap();
+        session.shutdown().await.unwrap();
+
+        let requests = fs::read_to_string(journal)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(requests[0]["kind"], "terminate_tool_processes");
+        assert!(
+            requests[1..]
+                .iter()
+                .any(|request| request["kind"] == "write_file"),
+            "verifier staging must continue in the same guest after process cleanup"
+        );
     }
 
     #[test]
