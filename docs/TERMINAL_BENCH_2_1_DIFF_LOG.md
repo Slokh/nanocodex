@@ -676,7 +676,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 12:01 UTC.
+Snapshot: 2026-07-29 12:10 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -802,10 +802,13 @@ Snapshot: 2026-07-29 12:01 UTC.
   | `make-mips-interpreter` | 4/5 | 3/5 | 2/5 | 3/5 |
   | `caffe-cifar-10` | 5/5 | 5/5 | 4/5 | 5/5 |
   | `make-doom-for-mips` | 2/5 | 3/5 | 3/5 | 3/5 |
+  | `password-recovery` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `regex-log` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `write-compressor` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 20 controlled tasks, Nanocodex is 56/100 in the normal-stock
-  cohort and 52/100 in the Code-Mode-Only-stock cohort. Stock Codex is 57/100
-  in normal Code Mode and 66/100 in `code_mode_only`. Nanocodex has the same
+  Across these 23 controlled tasks, Nanocodex is 71/115 in the normal-stock
+  cohort and 67/115 in the Code-Mode-Only-stock cohort. Stock Codex is 72/115
+  in normal Code Mode and 81/115 in `code_mode_only`. Nanocodex has the same
   Code-Mode-Only configuration in both independent cohorts, so its four-score
   spread is a useful estimate of task-sampling variance. Stock
   `code_mode_only` retains the stronger aggregate result, although
@@ -1239,6 +1242,26 @@ Snapshot: 2026-07-29 12:01 UTC.
   Direct outer tools therefore do not improve the Doom score and coincide
   with more stock lifecycle timeouts; there is no demonstrated Nanocodex loop
   fix to make from this cell.
+- `password-recovery`, `regex-log`, and `write-compressor` are all 5/5 for
+  both agents in both controlled stock-mode cohorts. Password medians for
+  Nanocodex/stock are 76.3/98.7 seconds, 124,954/119,858 tokens, and 10/10
+  generation turns in normal mode, versus 156.8/132.9 seconds,
+  155,100/254,238 tokens, and 12/15 turns in Code-Mode-Only. Regex medians
+  are 63.4/80.9 seconds, 43,928/58,150 tokens, and 5/6 turns in normal mode,
+  versus 86.8/115.7 seconds, 63,117/97,296 tokens, and 7/10 turns in
+  Code-Mode-Only. Compressor medians are 194.4/172.5 seconds,
+  276,196/209,561 tokens, and 16/14 turns in normal mode, versus 246.4/189.2
+  seconds, 145,541/198,553 tokens, and 12/16 turns in Code-Mode-Only.
+- Regex and compressor have no detected poll-only turns. Password has zero
+  median polling but occasional long tails when either agent searches the
+  complete guest root disk, deleted inodes, and raw ext4 blocks instead of
+  restricting recovery to the small nested evidence files. Those tails move
+  between agents and independent cohorts. All matched initial contexts and
+  nested tool catalogs are exact, cache keys remain stable, and all response
+  and tool-result links are valid. Normal stock is directionally faster on
+  password and regex, while compressor trades slightly lower stock latency
+  for slightly higher tokens; none changes score. This is mixed stochastic
+  execution efficiency, not evidence to expose outer tools in Nanocodex.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |
