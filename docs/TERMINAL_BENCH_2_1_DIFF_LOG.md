@@ -676,7 +676,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 12:16 UTC.
+Snapshot: 2026-07-29 12:33 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -1211,6 +1211,51 @@ Snapshot: 2026-07-29 12:16 UTC.
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5e-stock-code-mode-6427590-20260729T115027Z`
   and
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5e-code-mode-only-6427590-20260729T115027Z`.
+- The first two completed normal-Code-Mode `compile-compcert` trials pass on
+  both arms but reverse which arm pays the polling tail. Trial 1 uses
+  70/93 Nanocodex/stock generation turns, 42/60 poll-only turns, and
+  3,039,853/4,853,567 tokens. Trial 2 uses 112/72 generation turns, 87/34
+  poll-only turns, and 5,395,402/3,625,046 tokens. In trial 2, every
+  Nanocodex nested `write_stdin` poll explicitly requests 1,000 ms, for
+  87,000 ms total requested yield; normal stock calls the directly exposed
+  `write_stdin` once with 1,000 ms and 33 times with 30,000 ms, for
+  991,000 ms total. Initial task text matches, cache keys are stable, all
+  response/tool-result links are intact, and the first generation divergence
+  is model output. This is early per-trial evidence, not a k=5 cell
+  conclusion, but it demonstrates a potentially important direct-tool
+  treatment: longer model-selected waits can trade tool-blocking time for
+  fewer model roundtrips.
+- That observation exposed an asymmetric differ summary. Raw API capture
+  retained both arms' exact arguments, while typed requested-yield totals
+  came only from the richer Nanocodex ATIF projection. The next comparison
+  schema v8/API-comparison schema v13 derives, for both direct and nested
+  Code Mode calls, the count of detected polling calls with an explicit
+  yield and their requested milliseconds. It includes those fields in arm
+  summaries and unpaired tails. Live `api.polling.match` now requires call
+  count and explicit-yield shape to match; otherwise `api.polling.diff`
+  reports both shapes as the responses arrive. Focused raw-API and unpaired-
+  tail tests cover 1-second nested and 30-second direct waits. Existing
+  retained cohorts remain pinned and immutable; this instrumentation will be
+  deployed only in a new cohort.
+- The Code-Mode-Only `sam-cell-seg` k=5 cell is complete at 2/5 for
+  Nanocodex and 4/5 for stock. Nanocodex/stock medians are 243.2/232.7
+  seconds, 98,230/104,682 tokens, and 8/8 generation turns; neither arm has
+  a poll-only turn. Nanocodex trial 2 leaves a 5/551-area overlap between
+  two output polygons. Trial 4 aborts conversion when its chosen MobileSAM
+  component degenerates to an empty contour. Both arms' trial 5 solutions
+  run but miss the alignment threshold, with IoU 0.4249/0.4965. Initial
+  task text and nested tool definitions match, cache and response chains are
+  healthy, and each first divergence is generated model output. These are
+  stochastic solution-logic failures, not an event-loop or VM regression.
+  The normal-Code-Mode cell remains in progress and is not yet added to the
+  controlled score table.
+- When the completed Code-Mode-Only SAM process released its 8 GiB
+  partition, a fresh independent Code-Mode-Only `overfull-hbox` k=5 rerun
+  backfilled it with exact runner `6427590`, one 8,192 MiB pair at a time,
+  and no `--trials` override. Retained root:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5f-overfull-code-mode-only-6427590-20260729T123301Z`.
+  The matching normal-Code-Mode rerun will start when its SAM partition
+  releases; neither new cell is mixed into the earlier Overfull row.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
