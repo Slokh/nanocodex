@@ -1060,6 +1060,29 @@ Snapshot: 2026-07-29 10:40 UTC.
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5d-stock-code-mode-0537dfd-20260729T103802Z`
   and
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5d-code-mode-only-0537dfd-20260729T103802Z`.
+- Before `caffe-cifar-10` admission, the fourth cohort exposed a configuration
+  hazard: each caffe pair declares 16,384 MiB, exceeding each second-cohort
+  process's 12,288 MiB limit. The library scheduler deliberately admits one
+  oversized task alone, but doing that in both mode processes while the third
+  and fourth cohorts were live would exceed the campaign-wide 48 GiB
+  declaration. The lower-priority fourth cohort was therefore stopped at an
+  attempt boundary by making only its parent output directories temporarily
+  non-writable. Already created comparison directories remained writable and
+  finished normally; the next queued directory creation failed before any
+  agent or VM started. The stock-mode process retained all five
+  `password-recovery` trials and stopped before `regex-log`; the
+  Code-Mode-Only process retained four `password-recovery` trials and stopped
+  before its fifth. Permissions were restored after both processes exited.
+  This is an operational drain boundary, not benchmark evidence, and
+  unstarted work will use a new retained root.
+- The next runner makes that workaround unnecessary. `eval diff
+  --max-memory-mb` rejects a task whose pair declaration exceeds the
+  configured per-process ceiling. Its first Ctrl-C reuses the standard eval
+  interrupt path to call `DifferentialEvaluator::begin_drain()`, finish
+  admitted comparisons, and leave queued comparisons unstarted; a second
+  interrupt still forces cancellation. The limit remains per process, so the
+  operator must partition the 48 GiB host budget across concurrent stock-mode
+  processes.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |

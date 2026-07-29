@@ -102,7 +102,10 @@ pub(crate) struct Diff {
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     concurrency: Option<u16>,
 
-    /// Maximum task-declared memory across live arms; both are charged at pair start.
+    /// Hard ceiling on task-declared memory across live arms in this process.
+    ///
+    /// Both arms are charged at pair start. A task whose pair exceeds this
+    /// ceiling is rejected instead of being admitted as an oversized job.
     #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u64).range(1..))]
     max_memory_mb: Option<u64>,
 
@@ -156,6 +159,11 @@ impl Diff {
             run::automatic_scheduling_defaults(self.host_utilization);
         let concurrency = self.concurrency.unwrap_or(automatic_concurrency);
         let max_memory_mb = self.max_memory_mb.or(automatic_memory_mb);
+        if let Some(max_memory_mb) = max_memory_mb {
+            for task in &tasks {
+                validate_pair_memory_limit(task.name(), task.resources().memory_mb, max_memory_mb)?;
+            }
+        }
         eprintln!(
             "Differential sweep: {} task(s) × k={} · up to {} pair(s) · {}",
             tasks.len(),
@@ -187,6 +195,7 @@ impl Diff {
             })
             .prepare()
             .await?;
+        let output = self.output;
         let mut evaluator = DifferentialEvaluator::builder(nanocodex)
             .codex(
                 self.codex_bin
@@ -194,7 +203,7 @@ impl Diff {
                 codex_auth,
             )
             .vm(vm)
-            .output_directory(self.output)
+            .output_directory(&output)
             .thinking(thinking)
             .web_search(web_search)
             .codex_tool_mode(self.codex_tool_mode.into())
@@ -208,28 +217,93 @@ impl Diff {
             evaluator = evaluator.max_memory_mb(max_memory_mb);
         }
         let evaluator = evaluator.build()?;
-        let reports = evaluator.tasks_n(tasks, usize::from(self.trials)).await?;
-
-        if self.json {
-            write_json(&reports)?;
-        } else {
-            for report in &reports {
-                print!("{}", report.human_summary());
-            }
-        }
-        let operational_errors = reports
-            .iter()
-            .filter(|report| report.has_operational_error())
-            .collect::<Vec<_>>();
-        if !operational_errors.is_empty() {
-            return Err(eyre!(
-                "{} comparison runner(s) failed; first evidence retained at {}",
-                operational_errors.len(),
-                operational_errors[0].comparison_path().display()
-            ));
-        }
+        let comparison_count = tasks.len().saturating_mul(usize::from(self.trials));
+        let interrupts = run::ctrl_c_interrupt()?;
+        let execution = run::finish_or_drain(
+            evaluator.tasks_n(tasks, usize::from(self.trials)),
+            interrupts,
+            comparison_count,
+            || {
+                let admitted = evaluator.begin_drain();
+                eprintln!(
+                    "Interrupt received; stopped admitting new comparisons after {admitted} \
+                     pair(s), draining admitted work; press Ctrl-C again to abort"
+                );
+                admitted
+            },
+        )
+        .await?;
+        let run::DrainExecution {
+            result,
+            interrupted,
+            interrupt,
+            ..
+        } = execution;
+        run::finish_or_interrupt(
+            async move {
+                let reports = match result {
+                    Ok(reports) => reports,
+                    Err(error) if interrupted => {
+                        return Err(eyre!(
+                            "differential sweep interrupted after draining admitted comparisons; \
+                             queued comparisons were not started and retained evidence remains \
+                             under {} ({error})",
+                            output.display()
+                        ));
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                if self.json {
+                    write_json(&reports)?;
+                } else {
+                    for report in &reports {
+                        print!("{}", report.human_summary());
+                    }
+                }
+                let operational_errors = reports
+                    .iter()
+                    .filter(|report| report.has_operational_error())
+                    .collect::<Vec<_>>();
+                if !operational_errors.is_empty() {
+                    return Err(eyre!(
+                        "{} comparison runner(s) failed; first evidence retained at {}",
+                        operational_errors.len(),
+                        operational_errors[0].comparison_path().display()
+                    ));
+                }
+                if interrupted {
+                    return Err(eyre!(
+                        "differential sweep interrupted after draining admitted comparisons; \
+                         queued comparisons were not started and retained evidence remains under \
+                         {}",
+                        output.display()
+                    ));
+                }
+                Ok(())
+            },
+            interrupt,
+        )
+        .await??;
         Ok(())
     }
+}
+
+fn validate_pair_memory_limit(
+    task_name: &str,
+    arm_memory_mb: u64,
+    max_memory_mb: u64,
+) -> Result<()> {
+    let pair_memory_mb = arm_memory_mb.checked_mul(2).ok_or_else(|| {
+        eyre!("task {task_name} pair memory overflows while applying --max-memory-mb")
+    })?;
+    if pair_memory_mb > max_memory_mb {
+        return Err(eyre!(
+            "task {task_name} requires {pair_memory_mb} MiB for its two arms, exceeding the \
+             {max_memory_mb} MiB --max-memory-mb ceiling; raise the ceiling or schedule this task \
+             in a separate process"
+        ));
+    }
+    Ok(())
 }
 
 fn write_json(value: &impl serde::Serialize) -> Result<()> {
@@ -246,13 +320,26 @@ mod tests {
 
     use clap::Parser;
 
-    use super::Diff;
+    use super::{Diff, validate_pair_memory_limit};
     use crate::eval::run::DEFAULT_TRIALS;
 
     #[derive(Parser)]
     struct TestCli {
         #[command(flatten)]
         diff: Diff,
+    }
+
+    #[test]
+    fn differential_memory_ceiling_is_strict_for_a_pair() {
+        validate_pair_memory_limit("terminal-bench/small", 2_048, 4_096).unwrap();
+
+        let error = validate_pair_memory_limit("terminal-bench/large", 8_192, 12_288).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "task terminal-bench/large requires 16384 MiB for its two arms, exceeding the 12288 \
+             MiB --max-memory-mb ceiling; raise the ceiling or schedule this task in a separate \
+             process"
+        );
     }
 
     #[test]
