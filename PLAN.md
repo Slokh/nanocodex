@@ -300,9 +300,10 @@ that over-admission structurally impossible rather than relying on manual
 arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the latest cells for 43 controlled tasks Nanocodex is 164/215
-in the normal-stock cohort and 157/215 in the Code-Mode-Only-stock cohort,
-normal stock Codex is 167/215, and Code-Mode-Only stock Codex is 178/215.
+active; across the latest valid cells for 48 controlled tasks Nanocodex is
+188/240 in the normal-stock cohort and 182/240 in the Code-Mode-Only-stock
+cohort, normal stock Codex is 194/240, and Code-Mode-Only stock Codex is
+198/240.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
@@ -345,17 +346,22 @@ drift in Responses `client_metadata`. Commit `d3d01b7d` now preserves the same
 installation, session/window, logical-turn, and per-send timestamp lifetimes
 as pinned stock Codex while retaining the newer Lite-only Code Mode tool-name
 metadata. Focused API and agent tests, warnings-denied Clippy, rustfmt, and
-crate-boundary checks pass, and an exact remote binary is staged as a new
-cohort. Its VM smoke and k=5 affected-task reruns remain pending capacity; it
-will not be mixed into the active older cohorts.
+crate-boundary checks pass. An exact remote binary passed a fresh excluded
+k=1 deployment/metadata smoke on both arms; its raw captures validate the
+ported identity lifetimes. Fresh matched k=5 affected-task cohorts are now
+running and are not mixed with older runners.
 
-The exact all-task accounting is now 43 latest controlled tasks, nine
-additional tasks that will become controlled when the active k5g/k5l/k5m/k5n
-cells close, and 37 tasks queued for their first controlled k=5 cells. Those
-37 comprise twenty-eight 2,048 MiB-per-arm tasks, five 4,096 MiB-per-arm
-tasks, and four 8,192 MiB-per-arm tasks. The next broad launch should use one
-large work-conserving queue per stock mode instead of creating more
-five-task process-local memory partitions.
+The first controlled cells for five more tasks have closed, bringing the
+latest valid table to 48 tasks. Thirty-three of the 37 previously queued tasks
+are now running as one large k=5 work-conserving queue per stock mode. The
+remaining four each declare 8,192 MiB per arm and require a whole 16 GiB pair
+partition. Alongside the older finishing cohorts and the metadata-parity
+affected-task reruns, the seven live processes sum to the exact 48 GiB
+configured future ceiling. The broad launch also exposed eager all-task image
+materialization as a time-to-first-result bottleneck: cold cache preparation
+currently completes before any comparison can be admitted. Preserve cache
+locking and task validation, but move toward overlapped or lazy preparation so
+large sweeps can use their admitted attempt capacity while later images warm.
 
 ## Current execution order
 
