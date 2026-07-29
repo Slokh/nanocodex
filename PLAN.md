@@ -300,10 +300,10 @@ that over-admission structurally impossible rather than relying on manual
 arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the latest valid cells for 48 controlled tasks Nanocodex is
-188/240 in the normal-stock cohort and 182/240 in the Code-Mode-Only-stock
-cohort, normal stock Codex is 194/240, and Code-Mode-Only stock Codex is
-198/240.
+active; across the latest valid cells for 49 controlled tasks Nanocodex is
+193/245 in the normal-stock cohort and 187/245 in the Code-Mode-Only-stock
+cohort, normal stock Codex is 199/245, and Code-Mode-Only stock Codex is
+206/245.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
@@ -363,8 +363,8 @@ drain, preserving its partial evidence. Fresh `75bc9fac` broad queues and
 matched normal/Code-Mode-Only Video repetitions are now running from new
 roots.
 
-The first controlled cells for five more tasks have closed, bringing the
-latest valid table to 48 tasks. Thirty-three of the 37 previously queued tasks
+The first controlled cells for six more tasks have closed, bringing the
+latest valid table to 49 tasks. Thirty-three of the 37 previously queued tasks
 are running as one large k=5 work-conserving queue per stock mode. The
 remaining four each declare 8,192 MiB per arm and require a whole 16 GiB pair
 partition. At 2026-07-29 17:36 UTC, six live processes again summed to the
@@ -391,7 +391,8 @@ the next generic time-to-first-result improvement.
 
 The first clean direct-IP Video repetition exposed a separate transient
 whole-gvproxy-route loss after several minutes of successful stock work.
-Subsequent trials completed, while the failed trial is retained and excluded.
+Two stock trials lost that route, while the other three completed; the failed
+attempts are retained and the incomplete normal-mode cell is excluded.
 The prior owner silently discarded gvproxy's exit status, so the current
 follow-up appends unexpected early exit status/signal and lifetime to the
 attempt log and tracing. This strengthens the next causal diagnosis without
