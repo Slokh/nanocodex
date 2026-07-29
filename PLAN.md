@@ -294,11 +294,14 @@ across concurrently running mode processes; cross-process admission is not
 implemented.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the first 15 controlled tasks Nanocodex is 38/75 in both
-independent cohorts, normal stock Codex is 37/75, and Code-Mode-Only stock
-Codex is 49/75. `gcode-to-text` is the clearest completed mode cell so
-far: stock is 2/5 with direct outer tools and 5/5 in Code-Mode-Only, while
-Nanocodex is 3/5 and 4/5 across its identically configured cohorts.
+active; across the first 17 controlled tasks Nanocodex is 45/85 in the
+normal-stock cohort and 43/85 in the Code-Mode-Only-stock cohort, normal
+stock Codex is 46/85, and Code-Mode-Only stock Codex is 55/85.
+`gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
+2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
+clearest counterexample at 5/5 with direct outer tools versus 3/5 in
+Code-Mode-Only. Nanocodex is 3/5 versus 4/5 on G-code and 4/5 in both
+independent Regex cohorts.
 
 ## Current execution order
 
