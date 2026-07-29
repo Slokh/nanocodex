@@ -791,9 +791,12 @@ Snapshot: 2026-07-29 10:02 UTC.
   | `video-processing` | 2/5 | 1/5 | 0/5 | 3/5 |
   | `dna-assembly` | 0/5 | 2/5 | 1/5 | 1/5 |
   | `build-pov-ray` | 3/5 | 3/5 | 4/5 | 5/5 |
+  | `largest-eigenval` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `llm-inference-batching-scheduler` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `qemu-startup` | 5/5 | 4/5 | 5/5 | 5/5 |
 
-  Across these nine high-signal tasks, Nanocodex is 13/45 in both independent
-  cohorts. Stock Codex is 14/45 in normal Code Mode and 21/45 in
+  Across these 12 controlled tasks, Nanocodex is 28/60 in both independent
+  cohorts. Stock Codex is 28/60 in normal Code Mode and 36/60 in
   `code_mode_only`. Because Nanocodex has the same Code-Mode-Only
   configuration in both cohorts, its exact aggregate tie is a useful
   stochastic control. Stock `code_mode_only` now has the materially stronger
@@ -861,6 +864,34 @@ Snapshot: 2026-07-29 10:02 UTC.
   `/app/povray-2.2`. Both agents make both choices across samples, including
   mirrored one-sided failures. This is archive/layout strategy stochasticity,
   not an event-loop advantage.
+- `largest-eigenval` and `llm-inference-batching-scheduler` pass on all 20
+  arms in each task's two mode cohorts. Nanocodex's median agent time is
+  182.0 versus 211.0 seconds in normal `largest-eigenval` and 173.7 versus
+  272.4 seconds in Code-Mode-Only. For the batching scheduler, it is 180.6
+  versus 291.2 seconds and 317.4 versus 339.9 seconds. Nanocodex also uses
+  fewer median tokens in three of those four cells; normal
+  `largest-eigenval` is the exception (192,407 versus 166,104). These are
+  score-parity controls with a consistent Nanocodex wall-time advantage, not
+  evidence for exposing direct tools.
+- `qemu-startup` finishes 5/5 versus 4/5 in the normal-Code-Mode cohort and
+  5/5 versus 5/5 on the verifier-score axis in Code-Mode-Only. Nanocodex's
+  median duration/generation-turn count is 178.0 seconds/13 turns versus
+  stock's 370.6 seconds/28 turns in normal mode, and 233.3 seconds/17 turns
+  versus 425.4 seconds/37 turns in Code-Mode-Only. Normal trial 4 is a real
+  stock score failure: stock moved QEMU's serial port to 6666 and put a
+  `nohup` Python relay on the required port 6665; stock process cleanup
+  removed the relay before verification, while QEMU itself remained on the
+  wrong port.
+- Code-Mode-Only qemu trial 3 is verifier-scored but not a clean stock agent
+  pass. Nanocodex completed in 105.9 seconds. Stock continued through 77
+  generation turns until the exact 900-second agent timeout; its in-progress
+  background setup nevertheless left a passing artifact. The retained raw API
+  stream records 68 stock-only tail turns and 2,450,852 tail tokens, while the
+  absent stock terminal summary reports zero usage and billing completeness
+  `unknown`. API-comparison schema v12 therefore adds per-arm total captured
+  usage and usage-completeness counts to both JSON and the human reanalysis
+  summary. This derives from already retained API payloads and requires no
+  model, VM, agent, or verifier rerun.
 - Three retained Filter attempts exposed a real measurement defect without a
   response-chain defect: normal trials 1 and 2 and Code-Mode-Only trial 3
   received `response.created` plus nonterminal output before the WebSocket
@@ -941,6 +972,37 @@ Snapshot: 2026-07-29 10:02 UTC.
   `10:18:55.233048Z`. All three pairs passed. Evidence:
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/scheduler-arm-release-smoke-0537dfd-20260729T101827Z`.
   This is k=1 infrastructure evidence, not benchmark score evidence.
+- A second production k=5 scheduler cohort started at 2026-07-29 10:22 UTC
+  from that exact release. It runs `configure-git-webserver`,
+  `gcode-to-text`, `regex-chess`, and `caffe-cifar-10` in both stock modes.
+  Each process uses `--concurrency 4` and a 12,288 MiB live-arm ceiling and
+  deliberately omits `--trials` to exercise the k=5 default. Each mode
+  initially admitted three 4,096 MiB `configure-git-webserver` pairs. Along
+  with the three remaining 8,192 MiB `qemu-startup` pairs from the first
+  cohort, the host again reached exactly 48 GiB of declared live-arm memory.
+  Retained roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5b-stock-code-mode-0537dfd-20260729T102209Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5b-code-mode-only-0537dfd-20260729T102209Z`.
+- This second cohort also provides production evidence for per-arm admission
+  release. In the Code-Mode-Only process, two completed Nanocodex arms returned
+  2,048 MiB each at `2026-07-29T10:24:53.391728Z` and
+  `10:25:00.889559Z`. The fourth waiting 4,096 MiB pair began at
+  `10:25:00.889682855Z`, about 124 microseconds after the second release,
+  while comparisons containing the slower stock arms were still live. This is
+  k=5 production scheduler evidence; the scores remain separate task evidence.
+- A third production k=5 cohort started at 2026-07-29 10:27 UTC from the same
+  pinned release. It runs `overfull-hbox`, `sparql-university`,
+  `sanitize-git-repo`, `sam-cell-seg`, `make-mips-interpreter`, and
+  `make-doom-for-mips` in both stock modes. Each process uses
+  `--concurrency 3`, an 8,192 MiB live-arm ceiling, and the default five
+  trials. Expensive tasks are ordered last. At launch, the two 12,288 MiB
+  second-cohort processes, these two 8,192 MiB processes, and one remaining
+  8,192 MiB first-cohort pair again totaled the campaign's exact 48 GiB
+  declared live-arm ceiling. Retained roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5c-stock-code-mode-0537dfd-20260729T102702Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5c-code-mode-only-0537dfd-20260729T102702Z`.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |
