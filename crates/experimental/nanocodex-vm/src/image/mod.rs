@@ -162,6 +162,7 @@ fi"#;
 pub struct VmImageBuilder {
     vmm: PathBuf,
     vmm_arguments: Vec<OsString>,
+    vmm_build_cache_identity: Option<String>,
     runtime_image: PathBuf,
     firmware_directory: Option<PathBuf>,
     cpus: u8,
@@ -188,6 +189,7 @@ impl VmImageBuilder {
         Self {
             vmm: vmm.into(),
             vmm_arguments: Vec::new(),
+            vmm_build_cache_identity: None,
             runtime_image: runtime_image.into(),
             firmware_directory: None,
             cpus: DEFAULT_BUILD_VM_CPUS,
@@ -237,6 +239,23 @@ impl VmImageBuilder {
     {
         self.vmm_arguments
             .extend(arguments.into_iter().map(Into::into));
+        self
+    }
+
+    /// Uses a caller-owned semantic identity for the Dockerfile build VMM.
+    ///
+    /// The default hashes the complete VMM executable, which is the safest
+    /// policy for arbitrary callers. An application whose VMM entry point is
+    /// embedded in a larger executable may use this override to keep unrelated
+    /// application changes from invalidating every built root disk.
+    ///
+    /// The identity must change whenever the configured VMM's execution
+    /// semantics can change a Dockerfile build result. VMM arguments, guest
+    /// runtime, firmware, resource policy, networking, resolver state, and
+    /// egress scope remain independent parts of the cache key.
+    #[must_use]
+    pub fn vmm_build_cache_identity(mut self, identity: impl Into<String>) -> Self {
+        self.vmm_build_cache_identity = Some(identity.into());
         self
     }
 
@@ -335,8 +354,12 @@ impl VmImageBuilder {
                 )?;
                 (vmm_digest, runtime_digest, "system-firmware".to_owned())
             };
+        let vmm_identity = self
+            .vmm_build_cache_identity
+            .as_ref()
+            .map_or(vmm_digest, |identity| format!("caller-owned:{identity}"));
         Ok(BuildCacheInputs {
-            vmm_digest,
+            vmm_identity,
             runtime_digest,
             firmware_digest,
             resolver: match self.egress.network() {
@@ -797,7 +820,7 @@ impl Default for ImageRuntimeConfig {
 
 #[derive(Clone)]
 struct BuildCacheInputs {
-    vmm_digest: String,
+    vmm_identity: String,
     runtime_digest: String,
     firmware_digest: String,
     resolver: Option<String>,
@@ -2060,7 +2083,7 @@ fn build_cache_key(
         hasher.update(argument.as_os_str().as_bytes());
     }
     for value in [
-        &inputs.vmm_digest,
+        &inputs.vmm_identity,
         &inputs.runtime_digest,
         &inputs.firmware_digest,
         &inputs.network,
@@ -2960,6 +2983,7 @@ mod tests {
         let builder = VmImageBuilder::new("/opt/nanocodex-vmm", "/cache/runtime.ext4")
             .firmware_directory("/opt/libkrunfw")
             .vmm_args(["run", "--private-config"])
+            .vmm_build_cache_identity("vm-process-v3")
             .cpus(6)
             .memory_mib(8_192)
             .run_timeout(Duration::from_mins(15))
@@ -2973,11 +2997,52 @@ mod tests {
             Some(Path::new("/opt/libkrunfw"))
         );
         assert_eq!(builder.vmm_arguments, ["run", "--private-config"]);
+        assert_eq!(
+            builder.vmm_build_cache_identity.as_deref(),
+            Some("vm-process-v3")
+        );
         assert_eq!(builder.cpus, 6);
         assert_eq!(builder.memory_mib, 8_192);
         assert_eq!(builder.run_timeout, Duration::from_mins(15));
         assert_eq!(builder.copy_timeout, Duration::from_mins(2));
         assert_eq!(builder.egress.network(), &Network::Disabled);
+    }
+
+    #[test]
+    fn caller_owned_vmm_identity_survives_unrelated_executable_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let vmm = directory.path().join("vmm");
+        let runtime_image = directory.path().join("runtime.ext4");
+        fs::write(&vmm, b"first evaluator build").unwrap();
+        fs::write(&runtime_image, b"stable guest runtime").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let default_inputs = || {
+            let builder = VmImageBuilder::new(&vmm, &runtime_image).egress(EgressLease::disabled());
+            runtime.block_on(builder.build_cache_inputs()).unwrap()
+        };
+        let inputs = |identity| {
+            let builder = VmImageBuilder::new(&vmm, &runtime_image)
+                .vmm_build_cache_identity(identity)
+                .egress(EgressLease::disabled());
+            runtime.block_on(builder.build_cache_inputs()).unwrap()
+        };
+        let default_first = default_inputs();
+        let first = inputs("vm-process-v1");
+        fs::write(&vmm, b"second evaluator build").unwrap();
+        let default_second = default_inputs();
+        let second = inputs("vm-process-v1");
+        let bumped = inputs("vm-process-v2");
+
+        assert_ne!(default_first.vmm_identity, default_second.vmm_identity);
+        assert_eq!(first.vmm_identity, "caller-owned:vm-process-v1");
+        assert_eq!(first.vmm_identity, second.vmm_identity);
+        assert_ne!(first.vmm_identity, bumped.vmm_identity);
+        assert_eq!(first.runtime_digest, second.runtime_digest);
+        assert_eq!(first.firmware_digest, second.firmware_digest);
     }
 
     #[test]
@@ -3149,7 +3214,7 @@ ENV LEGACY value with spaces
         )]);
         let builder = VmImageBuilder::new("/vmm", "/runtime");
         let inputs = BuildCacheInputs {
-            vmm_digest: "vmm-a".to_owned(),
+            vmm_identity: "vmm-a".to_owned(),
             runtime_digest: "runtime-a".to_owned(),
             firmware_digest: "firmware-a".to_owned(),
             resolver: Some("nameserver 192.0.2.1\\n".to_owned()),
@@ -3171,7 +3236,7 @@ ENV LEGACY value with spaces
 
         for changed in [
             BuildCacheInputs {
-                vmm_digest: "vmm-b".to_owned(),
+                vmm_identity: "vmm-b".to_owned(),
                 ..inputs.clone()
             },
             BuildCacheInputs {

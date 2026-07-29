@@ -355,20 +355,38 @@ eval-transport failure: guest DNS stopped resolving `host.containers.internal`
 while the host capture proxy remained alive. Commit `75bc9fac` now uses
 gvproxy's owned direct host-loopback route instead of DNS. Focused and complete
 eval/VM tests, doc tests, warnings-denied Clippy, formatting, and boundary
-checks pass; an exact remote release is staged for a fresh excluded connectivity
-smoke and clean normal-Video repetition as capacity returns.
+checks pass. An exact remote release completed a fresh excluded k=1
+connectivity smoke through `192.168.127.254`; both arms passed with a complete
+stock capture and verifier result. A same-cause DNS failure observed in a
+still-running older broad cohort caused every d3 cohort to stop admission and
+drain, preserving its partial evidence. Fresh `75bc9fac` broad queues and
+matched normal/Code-Mode-Only Video repetitions are now running from new
+roots.
 
 The first controlled cells for five more tasks have closed, bringing the
 latest valid table to 48 tasks. Thirty-three of the 37 previously queued tasks
-are now running as one large k=5 work-conserving queue per stock mode. The
+are running as one large k=5 work-conserving queue per stock mode. The
 remaining four each declare 8,192 MiB per arm and require a whole 16 GiB pair
-partition. Alongside the older finishing cohorts and the metadata-parity
-affected-task reruns, the seven live processes sum to the exact 48 GiB
-configured future ceiling. The broad launch also exposed eager all-task image
-materialization as a time-to-first-result bottleneck: cold cache preparation
-currently completes before any comparison can be admitted. Preserve cache
-locking and task validation, but move toward overlapped or lazy preparation so
-large sweeps can use their admitted attempt capacity while later images warm.
+partition. At 2026-07-29 17:36 UTC, six live processes again summed to the
+exact 48 GiB configured future ceiling.
+
+The broad launch exposed two separate image-startup costs. First,
+`VmResources::prepare` eagerly materializes every selected task image before
+admitting the first comparison, so a cold large sweep leaves its attempt
+capacity idle. Second, the build-cache key hashed the complete evaluator
+executable because that executable also hosts the `vm-run-config` entry point.
+Any unrelated agent, capture, reporting, or evaluator revision therefore
+invalidated every Dockerfile-built task image even when VM build semantics and
+all task inputs were unchanged. `VmImageBuilder` now retains executable-digest
+keying as the safe default but permits an embedding application to supply an
+explicit semantic VMM identity. The evaluator pins that identity to its narrow
+VM-process contract, whose arguments, runtime, firmware, resources, network,
+resolver, and egress inputs remain independently keyed. A focused regression
+proves that the default identity changes with executable bytes, the explicit
+identity survives unrelated bytes, and an explicit version bump invalidates
+it. Complete VM and eval tests and doc tests pass. This removes revision-wide
+cold-cache churn after one intentional namespace transition; overlapped or
+lazy preparation remains the next generic time-to-first-result improvement.
 
 ## Current execution order
 
