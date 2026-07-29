@@ -796,10 +796,10 @@ Snapshot: 2026-07-29 10:40 UTC.
   | `qemu-startup` | 5/5 | 4/5 | 5/5 | 5/5 |
   | `gcode-to-text` | 3/5 | 2/5 | 4/5 | 5/5 |
   | `sparql-university` | 5/5 | 5/5 | 5/5 | 5/5 |
-  | `configure-git-webserver` | 2/5 | 3/5 | 1/5 | 3/5 |
+  | `configure-git-webserver` | 2/5 | 2/5 | 1/5 | 3/5 |
 
   Across these 15 controlled tasks, Nanocodex is 38/75 in both independent
-  cohorts. Stock Codex is 38/75 in normal Code Mode and 49/75 in
+  cohorts. Stock Codex is 37/75 in normal Code Mode and 49/75 in
   `code_mode_only`. Nanocodex has the same Code-Mode-Only configuration in
   both cohorts, so its exact tie is a useful stochastic control. Stock
   `code_mode_only` now has the materially stronger directional result; normal
@@ -919,7 +919,7 @@ Snapshot: 2026-07-29 10:40 UTC.
   in Code-Mode-Only. Median token use is 87,120 versus 83,644 and 75,997
   versus 85,589, respectively. This is a score, latency, and usage parity
   control rather than a mode or runtime signal.
-- `configure-git-webserver` finishes 2/5 versus 3/5 in the normal-stock
+- `configure-git-webserver` finishes 2/5 versus 2/5 in the normal-stock
   cohort and 1/5 versus 3/5 in Code-Mode-Only. Both agents alternate between
   installing and validating live native Git/SSH/nginx services and writing an
   unstarted Docker scaffold into an environment without Docker. The latter
