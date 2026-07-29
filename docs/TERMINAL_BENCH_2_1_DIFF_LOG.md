@@ -1152,10 +1152,17 @@ Snapshot: 2026-07-29 10:40 UTC.
   is commit `64275906d7adb952cfc043dbc0b1150e6f4f0577`, with binary
   SHA-256
   `aa540e0e525f20eeeb2ec2642809b512ca461126353f62a953613aab3549d3f6`.
-  This retry did not determine the score:
-  Nanocodex completed normally and failed only because its separately tested
-  model accuracy was 9.82 percentage points below the final training
-  accuracy, while stock passed.
+  This retry did not determine the score. The exact model-visible strategy
+  did: after the official CIFAR-10 download failed, Nanocodex downloaded the
+  Fast.ai class-directory archive and built its test LMDB in class-sorted
+  order with `shuffle=false`; stock downloaded the official interleaved
+  binary archive. The verifier uses the first `accuracy =` match from
+  `caffe test`, which is the first per-batch value rather than the final
+  100-batch aggregate. Nanocodex's all-airplane first batch scored `0.4600`
+  while the training log's genuine aggregate was `0.5582`, producing the
+  reported 9.82-point gap. This is a data-ordering and verifier-observation
+  strategy divergence after identical initial context, not a retry, cache,
+  response-chain, or event-loop regression.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |
