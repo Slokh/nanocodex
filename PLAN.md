@@ -294,9 +294,9 @@ across concurrently running mode processes; cross-process admission is not
 implemented.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the first 17 controlled tasks Nanocodex is 45/85 in the
-normal-stock cohort and 43/85 in the Code-Mode-Only-stock cohort, normal
-stock Codex is 46/85, and Code-Mode-Only stock Codex is 55/85.
+active; across the first 18 controlled tasks Nanocodex is 49/90 in the
+normal-stock cohort and 45/90 in the Code-Mode-Only-stock cohort, normal
+stock Codex is 49/90, and Code-Mode-Only stock Codex is 58/90.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in

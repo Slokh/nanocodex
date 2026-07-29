@@ -799,14 +799,15 @@ Snapshot: 2026-07-29 10:40 UTC.
   | `configure-git-webserver` | 2/5 | 2/5 | 1/5 | 3/5 |
   | `regex-chess` | 4/5 | 5/5 | 4/5 | 3/5 |
   | `sanitize-git-repo` | 3/5 | 4/5 | 1/5 | 3/5 |
+  | `make-mips-interpreter` | 4/5 | 3/5 | 2/5 | 3/5 |
 
-  Across these 17 controlled tasks, Nanocodex is 45/85 in the normal-stock
-  cohort and 43/85 in the Code-Mode-Only-stock cohort. Stock Codex is 46/85
-  in normal Code Mode and 55/85 in `code_mode_only`. Nanocodex has the same
-  Code-Mode-Only configuration in both independent cohorts, so its two-score
-  spread is a useful estimate of sampling noise. Stock `code_mode_only`
-  retains the stronger aggregate result, although `regex-chess` is a real
-  task-level counterexample.
+  Across these 18 controlled tasks, Nanocodex is 49/90 in the normal-stock
+  cohort and 45/90 in the Code-Mode-Only-stock cohort. Stock Codex is 49/90
+  in normal Code Mode and 58/90 in `code_mode_only`. Nanocodex has the same
+  Code-Mode-Only configuration in both independent cohorts, so its four-score
+  spread is a useful estimate of task-sampling variance. Stock
+  `code_mode_only` retains the stronger aggregate result, although
+  `regex-chess` is a real task-level counterexample.
 - Every failed `torch-pipeline-parallelism` arm passes the two structural tests
   and fails both world-size correctness tests. The common signature is a
   backward-activation mismatch on microbatch 0, usually at `lm_head.bwd`.
@@ -966,6 +967,20 @@ Snapshot: 2026-07-29 10:40 UTC.
   also matches, and every pair first diverges in generated model output. This
   is a stochastic strategy disadvantage for Nanocodex, not evidence of
   context, response-chain, cache, or tool-result drift.
+- `make-mips-interpreter` finishes 4/5 versus 3/5 in the normal-stock cohort
+  and 2/5 versus 3/5 in Code-Mode-Only. Stock's identical 3/5 score in both
+  modes provides no direct-tool advantage; Nanocodex's two-score swing across
+  its identically configured cohorts is sampling variance in fallback
+  resource choice. Every failed arm boots and renders but uses an absent,
+  invalid, Freedoom, or otherwise incompatible IWAD, producing only
+  0.6759–0.8065 image similarity against the required 0.95. Passing arms
+  recover an official `DOOM1.WAD`. All initial text sections match within
+  each pair, Code-Mode-Only nested tool definitions match exactly, and first
+  divergence is generated model output. Median Nanocodex/stock duration and
+  token use are 588.9/498.9 seconds and 1,711,394/1,976,796 tokens in the
+  normal-stock cohort, versus 514.8/525.8 seconds and
+  1,367,704/2,059,973 tokens in Code-Mode-Only. This repeats the discovery
+  run's WAD-selection diagnosis rather than exposing an event-loop regression.
 - Three retained Filter attempts exposed a real measurement defect without a
   response-chain defect: normal trials 1 and 2 and Code-Mode-Only trial 3
   received `response.created` plus nonterminal output before the WebSocket
@@ -1133,7 +1148,11 @@ Snapshot: 2026-07-29 10:40 UTC.
   action, and exact error, but `progress.jsonl` emitted only the bare
   `model.attempt.failed` and `model.attempt.retrying` kinds. The differ now
   includes those typed fields in bounded live summaries, and similarly
-  explains connection failures. This retry did not determine the score:
+  explains connection failures. The pushed and separately deployed release
+  is commit `64275906d7adb952cfc043dbc0b1150e6f4f0577`, with binary
+  SHA-256
+  `aa540e0e525f20eeeb2ec2642809b512ca461126353f62a953613aab3549d3f6`.
+  This retry did not determine the score:
   Nanocodex completed normally and failed only because its separately tested
   model accuracy was 9.82 percentage points below the final training
   accuracy, while stock passed.
