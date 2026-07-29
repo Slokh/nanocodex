@@ -102,7 +102,7 @@ pub(crate) struct Diff {
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     concurrency: Option<u16>,
 
-    /// Maximum task-declared memory across both arms of admitted pairs.
+    /// Maximum task-declared memory across live arms; both are charged at pair start.
     #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u64).range(1..))]
     max_memory_mb: Option<u64>,
 
@@ -163,7 +163,7 @@ impl Diff {
             concurrency,
             max_memory_mb.map_or_else(
                 || "unbounded declared memory".to_owned(),
-                |memory| format!("{memory} MiB pair-memory ceiling")
+                |memory| format!("{memory} MiB live-arm memory ceiling")
             )
         );
         let thinking = self.agent.thinking().unwrap_or(Thinking::Medium);

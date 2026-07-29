@@ -98,11 +98,12 @@ let reports = DifferentialEvaluator::builder(nanocodex)
 ```
 
 The library stages the Codex release once per evaluator, admits each pair
-against both arms' declared memory, creates matched isolated backends, runs
-both arms concurrently, streams the live divergence record, projects ATIF,
-compares API event loops, and returns typed retained reports with explicit
-one-indexed trial coordinates. Clap, observability installation, process build
-metadata, terminal formatting, and exit-code policy stay in the binary.
+against both arms' declared memory, releases each arm's charge after its
+evaluator and VM cleanup finish, creates matched isolated backends, runs both
+arms concurrently, streams the live divergence record, projects ATIF, compares
+API event loops, and returns typed retained reports with explicit one-indexed
+trial coordinates. Clap, observability installation, process build metadata,
+terminal formatting, and exit-code policy stay in the binary.
 
 ## CLI
 

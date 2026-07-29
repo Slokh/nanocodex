@@ -36,7 +36,7 @@ use crate::{
     EvalExceptionKind, EvalOutcome, EvalStatus, Evaluator, EvaluatorBuilder,
     MeasurementCompleteness, ResponsesCaptureProxy, ResponsesCaptureProxyConfig,
     ResponsesModelCatalogOverride, Task, UsageTotals,
-    evaluator::AdmissionController,
+    evaluator::{AdmissionController, AdmissionPermit},
     project_codex_atif,
     vm::{
         SharedDirectory, VmAttempt, VmAttemptError, VmBackend, VmCommand, VmEnvironment,
@@ -188,6 +188,7 @@ struct DifferentialComparison {
     codex_tool_mode: CodexToolMode,
     nanocodex_build: ExecutableIdentity,
     schedule: DifferentialSchedule,
+    admission: AdmissionPermit,
 }
 
 /// Deliberate policy and required components for [`DifferentialEvaluator`].
@@ -393,9 +394,61 @@ const fn differential_pair_memory_mb(task: &Task) -> u64 {
     task.resources().memory_mb.saturating_mul(2)
 }
 
+fn releasable_differential_arm_memory_mb(task: &Task, max_memory_mb: Option<u64>) -> u64 {
+    let pair_memory_mb = differential_pair_memory_mb(task);
+    if max_memory_mb.is_some_and(|limit| pair_memory_mb <= limit) {
+        task.resources().memory_mb
+    } else {
+        0
+    }
+}
+
 fn differential_comparison_name(task: &Task, trial: usize, id: Uuid) -> String {
     let short_name = task.name().rsplit('/').next().unwrap_or(task.name());
     format!("{short_name}__{trial:03}__{}", id.simple())
+}
+
+fn release_differential_arm_memory(
+    admission: &mut AdmissionPermit,
+    arm_memory_mb: u64,
+    arm: &'static str,
+) {
+    let released_mb = admission.release_memory(arm_memory_mb);
+    if released_mb > 0 {
+        info!(
+            comparison_arm = arm,
+            scheduler.memory.released_mb = released_mb,
+            "released completed differential arm memory"
+        );
+    }
+}
+
+async fn join_differential_arms<N, C>(
+    mut admission: AdmissionPermit,
+    arm_memory_mb: u64,
+    nanocodex: N,
+    codex: C,
+) -> (N::Output, C::Output)
+where
+    N: Future,
+    C: Future,
+{
+    tokio::pin!(nanocodex);
+    tokio::pin!(codex);
+    tokio::select! {
+        nanocodex_result = &mut nanocodex => {
+            release_differential_arm_memory(&mut admission, arm_memory_mb, "nanocodex");
+            let codex_result = codex.await;
+            release_differential_arm_memory(&mut admission, arm_memory_mb, "codex");
+            (nanocodex_result, codex_result)
+        }
+        codex_result = &mut codex => {
+            release_differential_arm_memory(&mut admission, arm_memory_mb, "codex");
+            let nanocodex_result = nanocodex.await;
+            release_differential_arm_memory(&mut admission, arm_memory_mb, "nanocodex");
+            (nanocodex_result, codex_result)
+        }
+    }
 }
 
 /// Result of rebuilding derived trajectory and API comparisons from retained evidence.
@@ -2459,7 +2512,7 @@ impl DifferentialEvaluator {
             .inner
             .max_memory_mb
             .map_or(requested_memory_mb, |limit| requested_memory_mb.min(limit));
-        let _permit = self
+        let admission = self
             .inner
             .admission
             .acquire(requested_memory_mb)
@@ -2491,6 +2544,7 @@ impl DifferentialEvaluator {
                 max_concurrency: inner.max_concurrency,
                 max_memory_mb: inner.max_memory_mb,
             },
+            admission,
         }
         .run()
         .await
@@ -2580,7 +2634,7 @@ impl DifferentialEvaluator {
         self.inner.max_concurrency
     }
 
-    /// Returns the optional ceiling on task-declared memory across both arms.
+    /// Returns the optional ceiling on task-declared memory across live arms.
     #[must_use]
     pub fn max_memory_mb(&self) -> Option<u64> {
         self.inner.max_memory_mb
@@ -2625,6 +2679,7 @@ impl DifferentialComparison {
             codex_tool_mode,
             nanocodex_build,
             schedule,
+            admission,
         } = self;
         let codex_path = codex_release.root.join("codex");
         let started_at = Utc::now();
@@ -2678,7 +2733,10 @@ impl DifferentialComparison {
         let projection = TrajectoryProjection::Codex {
             version: CodexVersion::Guest(Arc::clone(&guest_codex_version)),
         };
-        let (nanocodex_arm, codex_arm) = tokio::join!(
+        let arm_memory_mb = releasable_differential_arm_memory_mb(&task, schedule.max_memory_mb);
+        let (nanocodex_arm, codex_arm) = join_differential_arms(
+            admission,
+            arm_memory_mb,
             run_arm(
                 task.clone(),
                 nanocodex_evaluator,
@@ -2693,7 +2751,8 @@ impl DifferentialComparison {
                 true,
                 progress.clone(),
             ),
-        );
+        )
+        .await;
         let codex_version = guest_codex_version
             .get()
             .cloned()
@@ -2843,9 +2902,10 @@ impl DifferentialEvaluatorBuilder {
         self
     }
 
-    /// Bounds the sum of task-declared memory across both arms of every
-    /// concurrently running pair. A task whose pair declaration exceeds the
-    /// ceiling runs alone.
+    /// Bounds the sum of task-declared memory across live arms. Both arms are
+    /// charged when a pair starts; each charge is released after that arm's
+    /// evaluator and VM cleanup finish. A task whose pair declaration exceeds
+    /// the ceiling runs alone.
     #[must_use]
     pub const fn max_memory_mb(mut self, max_memory_mb: u64) -> Self {
         self.max_memory_mb = Some(max_memory_mb);
@@ -5789,7 +5849,7 @@ mod tests {
 
     use crate::{
         AgentStatus, AtifStep, AtifTrajectory, AttemptAgent, EvalAttemptOutcome, EvalEventKind,
-        EvalStatus, VerifierResult,
+        EvalStatus, VerifierResult, evaluator::AdmissionController,
     };
 
     use super::{
@@ -5801,8 +5861,9 @@ mod tests {
         compare_api_exchanges, detected_code_mode_empty_stdin_calls, detected_polling_turn,
         diff_json, differential_comparison_name, differential_pair_memory_mb,
         event_loop_difference_categories, heartbeat_needed, heartbeat_summary,
-        inspect_api_exchanges, newly_completed_lines, read_api_request_payloads,
-        read_optional_codex_cloud_config_cache, reanalyze, run_arm, stage_diff_codex_ca_bundle,
+        inspect_api_exchanges, join_differential_arms, newly_completed_lines,
+        read_api_request_payloads, read_optional_codex_cloud_config_cache, reanalyze,
+        releasable_differential_arm_memory_mb, run_arm, stage_diff_codex_ca_bundle,
         validate_differential_profile,
     };
 
@@ -5831,10 +5892,55 @@ mod tests {
         let id = uuid::Uuid::from_u128(0x1234);
 
         assert_eq!(differential_pair_memory_mb(&task), 512);
+        assert_eq!(releasable_differential_arm_memory_mb(&task, Some(512)), 256);
+        assert_eq!(releasable_differential_arm_memory_mb(&task, Some(511)), 0);
+        assert_eq!(releasable_differential_arm_memory_mb(&task, None), 0);
         assert_eq!(
             differential_comparison_name(&task, 5, id),
             format!("write-greeting__005__{}", id.simple())
         );
+    }
+
+    #[test]
+    fn differential_releases_a_finished_arm_without_releasing_the_pair_slot() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let admission = std::sync::Arc::new(AdmissionController::new(2, Some(4)));
+            let pair = admission.acquire(4).await.unwrap();
+            let (nanocodex_send, nanocodex_receive) = tokio::sync::oneshot::channel();
+            let (codex_send, codex_receive) = tokio::sync::oneshot::channel();
+            let joined = tokio::spawn(join_differential_arms(
+                pair,
+                2,
+                async move { nanocodex_receive.await.unwrap() },
+                async move { codex_receive.await.unwrap() },
+            ));
+
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(5), admission.acquire(2))
+                    .await
+                    .is_err()
+            );
+            nanocodex_send.send("nanocodex").unwrap();
+            let backfill =
+                tokio::time::timeout(std::time::Duration::from_millis(100), admission.acquire(2))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert!(!joined.is_finished());
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(5), admission.acquire(0))
+                    .await
+                    .is_err()
+            );
+
+            drop(backfill);
+            codex_send.send("codex").unwrap();
+            assert_eq!(joined.await.unwrap(), ("nanocodex", "codex"));
+        });
     }
 
     #[test]
