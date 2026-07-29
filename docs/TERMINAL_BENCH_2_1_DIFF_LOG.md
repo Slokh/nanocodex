@@ -1124,6 +1124,19 @@ Snapshot: 2026-07-29 10:40 UTC.
   with an explicit retained-evidence interruption error. Evidence:
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/safety-drain-b0714f6-20260729T110600Z`.
   These are infrastructure smokes, not benchmark score samples.
+- Code-Mode-Only `caffe-cifar-10` trial 1 exposed one more live-progress
+  omission. Nanocodex model call 6 received a WebSocket reset before a
+  provider terminal event, marked billing uncertain, opened a replacement
+  socket, replayed complete committed history, and recovered on its second
+  attempt after 210 milliseconds. The retained agent event contained the
+  failure phase, class, retryability, billing state, replay mode, socket
+  action, and exact error, but `progress.jsonl` emitted only the bare
+  `model.attempt.failed` and `model.attempt.retrying` kinds. The differ now
+  includes those typed fields in bounded live summaries, and similarly
+  explains connection failures. This retry did not determine the score:
+  Nanocodex completed normally and failed only because its separately tested
+  model accuracy was 9.82 percentage points below the final training
+  accuracy, while stock passed.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |
