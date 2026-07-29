@@ -321,9 +321,9 @@ arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
 active; across the latest valid cells for 50 controlled tasks Nanocodex is
-200/250 in the normal-stock cohort and 192/250 in the Code-Mode-Only-stock
+200/250 in the normal-stock cohort and 194/250 in the Code-Mode-Only-stock
 cohort, normal stock Codex is 205/250, and Code-Mode-Only stock Codex is
-208/250.
+207/250.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
