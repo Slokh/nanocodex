@@ -1523,6 +1523,30 @@ Snapshot: 2026-07-29 15:23 UTC.
   with six poll-only turns. Score is unchanged, so this is another controlled
   stock-efficiency win for Code-Mode-Only rather than evidence for direct
   outer tools.
+- `train-fasttext` remains an incomplete k=5 cell and is excluded from the
+  controlled aggregate, but its first three trials in both stock modes expose
+  a high-signal provisional split. Stock passes all six completed samples;
+  Nanocodex passes Code-Mode-Only trials 1 and 3 and fails the other four.
+  The normal-mode Nanocodex trials take 1,341.7, 1,898.0, and 3,600.0 seconds
+  versus stock's 1,005.3, 1,772.2, and 1,293.5 seconds. The first two
+  Nanocodex artifacts narrowly miss the verifier's accuracy threshold at
+  0.619 versus the required 0.620. Normal trial 3 is a more consequential
+  stopping failure: Nanocodex spends the full one-hour deadline across 146
+  generation calls, 96 poll-only calls, and 5,272,785 observed tokens,
+  finds but rejects or supersedes several candidate models, and starts
+  another training run with about one minute left. It never installs a final
+  `/app/model.bin`, so both verifier checks fail; stock leaves a valid model
+  after 1,293.5 seconds, 64 generations, 33 polls, and 2,537,051 tokens.
+  Nanocodex's two typed reconnects in that trial each replay complete history
+  successfully and add only about one second of connection/backoff time.
+  Both runtimes permit 300-second empty process polls, and the model
+  explicitly chooses 30-second waits, so this tail is deadline/stopping
+  strategy rather than a polling-cap or broken-chain defect. The complete
+  k=5 cells and a new metadata-parity cohort are required before deciding on
+  a generic deadline-awareness experiment. Retained roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5g-stock-code-mode-a90ee26-20260729T125536Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5g-code-mode-only-a90ee26-20260729T125536Z`.
 - Both `circuit-fibsqrt` cells close 5/5 for both agents. With normal stock
   Code Mode, Nanocodex/stock medians are 241.4/252.4 seconds,
   137,723/146,378 tokens, 10/10 generation turns, and 2/1 poll-only turns;
