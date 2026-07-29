@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 13:15 UTC.
+Snapshot: 2026-07-29 13:46 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -811,13 +811,18 @@ Snapshot: 2026-07-29 13:15 UTC.
   | `write-compressor` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `overfull-hbox` | 2/5 | 4/5 | 3/5 | 3/5 |
   | `sam-cell-seg` | 2/5 | 5/5 | 2/5 | 4/5 |
+  | `compile-compcert` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `build-pmars` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `mailman` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `schemelike-metacircular-eval` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `mteb-leaderboard` | 4/5 | 4/5 | 3/5 | 5/5 |
 
-  Across these 25 latest controlled task cells, Nanocodex is 75/125 in the
-  normal-stock cohort and 72/125 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 81/125 in normal Code Mode and 88/125 in `code_mode_only`.
+  Across these 30 latest controlled task cells, Nanocodex is 99/150 in the
+  normal-stock cohort and 95/150 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 105/150 in normal Code Mode and 113/150 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
-  cohorts, so its three-score spread is sampling variance. Stock
-  `code_mode_only` is numerically seven scores higher than normal Code Mode,
+  cohorts, so its four-score spread is sampling variance. Stock
+  `code_mode_only` is numerically eight scores higher than normal Code Mode,
   but these are not paired model samples and the fresh Overfull repetition
   alone moves Nanocodex by three normal-mode passes and two Code-Mode-Only
   passes without a runtime change. The aggregate therefore does not yet
@@ -1379,7 +1384,57 @@ Snapshot: 2026-07-29 13:15 UTC.
   Nanocodex sample contributes a 1,147,822-token tail, while normal stock is
   slower overall. Direct outer tools do not improve score here, and the
   independent samples trade latency and tokens in opposite directions.
-- The next planned matched k=5 cohort uses exact runner `b2dff4be` and targets
+- Both `mailman` cells also close 5/5 for both agents. With normal stock Code
+  Mode, Nanocodex/stock medians are 222.7/270.0 seconds, 419,023/702,037
+  tokens, 17/24 generation turns, and 0/1 poll-only turns. Five-trial totals
+  are 2,343,945/3,627,429 tokens and 1,380.4/1,394.2 agent-seconds. With
+  stock Code-Mode-Only, medians are 246.7/260.6 seconds,
+  493,502/489,101 tokens, 19/19 generation turns, and zero poll-only turns;
+  totals are 3,406,890/2,591,199 tokens and 1,480.9/1,242.3 agent-seconds.
+  Relative to the independent Nanocodex shift, Code-Mode-Only saves stock
+  2,099,175 tokens, 252.4 agent-seconds, and 34 generation turns. Score is
+  unchanged, so this cell favors Code-Mode-Only on every measured efficiency
+  axis and shows that CompCert's direct-tool token benefit is not universal.
+  Every sample has matching initial text, stable cache keys, zero broken
+  response links, and a first-generation divergence classified only as model
+  output; all five Code-Mode-Only nested catalogs match exactly.
+- Both `schemelike-metacircular-eval` cells close 5/5 for both agents. With
+  normal stock Code Mode, Nanocodex/stock medians are 179.3/231.3 seconds,
+  208,146/293,395 tokens, 10/13 generation turns, and 1/1 poll-only turns;
+  five-trial totals are 1,524,533/1,896,782 tokens and
+  1,165.9/1,323.3 agent-seconds. With stock Code-Mode-Only, medians are
+  241.0/198.3 seconds, 324,657/258,929 tokens, 14/11 generation turns, and
+  1/2 poll-only turns; totals are 1,931,949/1,543,300 tokens and
+  1,324.2/1,187.2 agent-seconds. Relative to the independent Nanocodex shift,
+  Code-Mode-Only saves stock 760,898 tokens, 294.4 agent-seconds, and 28
+  generation turns. Score is unchanged. Like `mailman`, this cell favors
+  Code-Mode-Only for stock efficiency and argues against exposing direct
+  outer tools merely because CompCert used fewer model roundtrips with them.
+- The normal-Code-Mode `mteb-leaderboard` cell closes 4/5 versus 4/5.
+  Trial 1 is stock-only, trial 2 is Nanocodex-only, and trials 3 through 5
+  pass on both arms. The failed artifacts choose plausible but incorrect
+  leaderboard models (`Salesforce/SFR-Embedding-2_R` and
+  `intfloat/multilingual-e5-base`) instead of `GritLM/GritLM-7B`.
+  Nanocodex/stock medians are 295.7/414.7 seconds, 1,196,137/1,412,952
+  tokens, 29/45 generation turns, and 1/2 poll-only turns. Five-trial totals
+  are 6,083,336/8,721,194 tokens and 1,648.1/2,218.4 agent-seconds. The
+  winner-flipping failures and three shared passes make this strategy
+  variance, while normal stock's direct tools do not provide an efficiency
+  advantage.
+- The matched Code-Mode-Only `mteb-leaderboard` cell closes 3/5 versus 5/5.
+  Trials 1 and 5 are stock-only; Nanocodex chooses
+  `Salesforce/SFR-Embedding-2_R` and `jealk/TTC-L2V-supervised-2` instead of
+  `GritLM/GritLM-7B`. Nanocodex/stock medians are 263.3/332.3 seconds,
+  868,495/1,320,440 tokens, 32/42 generation turns, and 2/0 poll-only turns.
+  Five-trial totals are 4,485,677/7,841,261 tokens and
+  1,647.0/1,796.2 agent-seconds. Relative to the independent Nanocodex
+  control, Code-Mode-Only saves stock 421.1 agent-seconds and 25 generation
+  turns, while the normal-mode score tie becomes a two-pass stock edge.
+  Normal outer tools therefore show no score or efficiency benefit on this
+  task. The wrong-model choices and winner-flipping normal cell remain model
+  strategy variance rather than a loop defect, but both controlled cells
+  favor keeping stock Code-Mode-Only.
+- The next matched k=5 cohort uses exact runner `b2dff4be` and targets
   not-yet-k=5 score-parity tasks with first-sample Nanocodex latency or
   roundtrip regressions: `pytorch-model-cli`, `git-leak-recovery`,
   `polyglot-c-py`, `query-optimize`, and `custom-memory-heap-crash`.
@@ -1406,8 +1461,35 @@ Snapshot: 2026-07-29 13:15 UTC.
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5i-stock-code-mode-b2dff4be-20260729T131326Z`
   and
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5i-code-mode-only-b2dff4be-20260729T131326Z`.
-  Both task sets will relaunch under fresh retained roots as MTEB releases
-  capacity. Cold bootstrap remains separate from warm agent time.
+  These partials are never resumed; any scored repetition requires fresh
+  retained roots. Cold bootstrap remains separate from warm agent time, and
+  the planned k5h set remains queued for a later release.
+- When the Nanocodex arm of final normal-mode MTEB trial 5 completed, its
+  per-arm admission release returned 8,192 MiB while the stock arm remained
+  live. The warm-cache control set relaunched immediately as a fresh k5j
+  cohort with one 4,096 MiB pair per mode, the default five trials, and exact
+  runner `b2dff4be`. The excluded k5i partials are not resumed or counted.
+  Retained roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5j-stock-code-mode-b2dff4be-20260729T133209Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5j-code-mode-only-b2dff4be-20260729T133209Z`.
+- The corrected k5h task set relaunched under fresh retained k5k roots after
+  per-arm releases made its full 8,192 MiB per mode admissible. Both commands
+  deliberately omit `--trials`, and stderr records `5 task(s) × k=5`.
+  Normal Code Mode began first while rebuilding the invalidated
+  `custom-memory-heap-crash` image; the Code-Mode-Only process then joined
+  against the same content-addressed cache:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5k-stock-code-mode-b2dff4be-20260729T133421Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5k-code-mode-only-b2dff4be-20260729T134329Z`.
+- Completion of the final Code-Mode-Only MTEB arm released another 8,192 MiB.
+  It was immediately backfilled with a fresh normal-Code-Mode k5l cohort for
+  unrepeated high-signal loop and efficiency cases:
+  `adaptive-rejection-sampler`, `crack-7z-hash`,
+  `extract-moves-from-video`, `install-windows-3.11`, and
+  `path-tracing-reverse`. This process also defaults to k=5, uses exact
+  runner `b2dff4be`, and has an 8,192 MiB live-arm ceiling. Retained root:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5l-stock-code-mode-b2dff4be-20260729T134602Z`.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
