@@ -17,6 +17,7 @@ use chrono::{DateTime, Utc};
 use futures_util::{StreamExt as _, stream};
 use nanocodex_agent::{NanocodexBuilder, Thinking, events::AgentEventKind};
 use nanocodex_oai_api::MODEL;
+use nanocodex_vm::host::Gvproxy;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
@@ -123,7 +124,6 @@ const API_COMPARISON_SCHEMA_VERSION: u32 = 14;
 const DIFF_CODEX_SHARE_TAG: &str = "nanoeval-codex";
 const DIFF_CODEX_SHARE_MOUNT: &str = "/run/nanoeval-codex";
 const DIFF_CODEX_GUEST_BINARY: &str = "/run/nanoeval-codex/codex";
-const DIFF_CAPTURE_PROXY_VM_HOST: &str = "host.containers.internal";
 const DIFF_CAPTURE_PROXY_API_UPSTREAM: &str = "https://api.openai.com/v1";
 const DIFF_CAPTURE_PROXY_CHATGPT_UPSTREAM: &str = "https://chatgpt.com/backend-api/codex";
 const DIFF_CAPTURE_PROXY_STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -2212,7 +2212,7 @@ impl DiffVmCodexRunner {
         };
         let capture_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let capture_port = capture_listener.local_addr()?.port();
-        let capture_base_url = format!("http://{DIFF_CAPTURE_PROXY_VM_HOST}:{capture_port}");
+        let capture_base_url = capture_proxy_vm_base_url(capture_port);
         Ok(Self {
             session,
             workspace: environment.workspace().to_owned(),
@@ -2379,6 +2379,10 @@ impl DiffVmCodexRunner {
         );
         Ok(())
     }
+}
+
+fn capture_proxy_vm_base_url(port: u16) -> String {
+    format!("http://{}:{port}", Gvproxy::HOST_IPV4)
 }
 
 fn read_optional_codex_cloud_config_cache(
@@ -6331,15 +6335,23 @@ mod tests {
         DIFF_CODEX_CLOUD_CONFIG_CACHE_FILENAME, DIFF_CODEX_SSL_CERT_FILE_ENVIRONMENT,
         DetectedEmptyStdinCalls, DiffCodexCaSource, DiffProgress, DifferentialBuildError,
         DifferentialEvaluator, Evaluator, LaneProgressState, ShellPollingSummary, Task,
-        TrajectoryProjection, build_event_loop_trace, compare_api_exchanges,
-        detected_code_mode_empty_stdin_calls, detected_polling_turn, diff_json,
-        differential_comparison_name, differential_pair_memory_mb,
+        TrajectoryProjection, build_event_loop_trace, capture_proxy_vm_base_url,
+        compare_api_exchanges, detected_code_mode_empty_stdin_calls, detected_polling_turn,
+        diff_json, differential_comparison_name, differential_pair_memory_mb,
         event_loop_difference_categories, first_client_metadata_difference, heartbeat_needed,
         heartbeat_summary, inspect_api_exchanges, join_differential_arms, newly_completed_lines,
         read_api_request_payloads, read_optional_codex_cloud_config_cache, reanalyze,
         releasable_differential_arm_memory_mb, run_arm, stage_diff_codex_ca_bundle,
         summarize_client_metadata, summarize_nanocodex, validate_differential_profile,
     };
+
+    #[test]
+    fn capture_proxy_uses_the_direct_gvproxy_host_route() {
+        assert_eq!(
+            capture_proxy_vm_base_url(4312),
+            "http://192.168.127.254:4312"
+        );
+    }
 
     #[test]
     fn differential_scheduler_rejects_zero_limits_before_asset_work() {
