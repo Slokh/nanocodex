@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 15:23 UTC.
+Snapshot: 2026-07-29 15:52 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -814,7 +814,7 @@ Snapshot: 2026-07-29 15:23 UTC.
   | `torch-pipeline-parallelism` | 2/5 | 2/5 | 1/5 | 1/5 |
   | `filter-js-from-html` | 0/5 | 0/5 | 1/5 | 1/5 |
   | `video-processing` | 2/5 | 1/5 | 0/5 | 3/5 |
-  | `dna-assembly` | 0/5 | 2/5 | 1/5 | 1/5 |
+  | `dna-assembly` | 3/5 | 0/5 | 0/5 | 1/5 |
   | `build-pov-ray` | 3/5 | 3/5 | 4/5 | 5/5 |
   | `largest-eigenval` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `llm-inference-batching-scheduler` | 5/5 | 5/5 | 5/5 | 5/5 |
@@ -850,17 +850,17 @@ Snapshot: 2026-07-29 15:23 UTC.
   | `custom-memory-heap-crash` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `adaptive-rejection-sampler` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 42 latest controlled task cells, Nanocodex is 156/210 in the
-  normal-stock cohort and 153/210 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 164/210 in normal Code Mode and 173/210 in `code_mode_only`.
+  Across these 42 latest controlled task cells, Nanocodex is 159/210 in the
+  normal-stock cohort and 152/210 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 162/210 in normal Code Mode and 173/210 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
-  cohorts, so its three-score spread is sampling variance. Stock
-  `code_mode_only` is numerically nine scores higher than normal Code Mode,
-  but these are not paired model samples and the fresh Overfull repetition
-  alone moves Nanocodex by three normal-mode passes and two Code-Mode-Only
-  passes without a runtime change. The aggregate therefore does not yet
-  causally identify a stock tool-mode effect; task-level results and repeated
-  cells remain decisive.
+  cohorts, so its seven-score spread is sampling variance. Stock
+  `code_mode_only` is numerically eleven scores higher than normal Code Mode,
+  but these are not paired model samples; the fresh DNA repetition alone
+  moves Nanocodex by three normal-mode passes and one Code-Mode-Only pass and
+  moves normal stock by two passes without a runtime change. The aggregate
+  therefore does not yet causally identify a stock tool-mode effect;
+  task-level results and repeated cells remain decisive.
 - Every failed `torch-pipeline-parallelism` arm passes the two structural tests
   and fails both world-size correctness tests. The common signature is a
   backward-activation mismatch on microbatch 0, usually at `lm_head.bwd`.
@@ -902,17 +902,35 @@ Snapshot: 2026-07-29 15:23 UTC.
   `DEFAULT_STREAM_IDLE_TIMEOUT_MS` to 300,000 and Nanocodex uses the same
   five-minute limit for its socket, HTTP, and host transports. No timeout
   change is justified by these samples.
-- `dna-assembly` finishes 0/5 versus 2/5 in the normal-Code-Mode cohort and
-  1/5 versus 1/5 in the Code-Mode-Only cohort. Every one of the 16 failed arms
-  hits the same forward/reverse-primer Tm-delta assertion. Both agents usually
-  validate only the explicit binding suffix and miss that a BsaI overhang
-  suffix can also match the adjacent template, extending the actual annealing
-  tract used by the verifier. Passing samples account for that overlap. The
-  last Code-Mode-Only stock pass took 44 generation requests, 1,125,146
-  tokens, and 674.0 seconds after its paired Nanocodex failure had already
-  completed; continuous progress showed local primer/assembly validation, not
-  a stall. Initial context, response chains, cache identity, tool-result
-  links, and polling are healthy.
+- Fresh k5n `dna-assembly` repetitions replace the older cells in the current
+  table. Nanocodex/stock now finish 3/5 versus 0/5 with normal stock Code Mode
+  and 0/5 versus 1/5 with stock Code-Mode-Only. Normal-mode medians are
+  386.8/273.5 seconds, 383,812/315,342 tokens, and 19/18 generation turns;
+  five-trial totals are 1,839.8/1,550.9 agent-seconds and
+  2,183,252/1,594,448 tokens. Code-Mode-Only medians are 298.3/385.2 seconds,
+  286,662/533,372 tokens, and 17/23 generations; totals are
+  1,543.7/1,950.3 seconds and 1,556,960/2,635,785 tokens. No arm polls.
+- Every new failure still lands on the same generated-primer boundary as the
+  older cohort: all but one violate the paired forward/reverse Tm-delta gate
+  by producing a difference between 5.002 and 6.624 degrees C; the remaining
+  stock artifact extends a reverse annealing tract to 47 bases against a
+  45-base maximum. Both agents often validate only the explicit binding
+  suffix and miss that a BsaI overhang suffix can also match adjacent
+  template, extending the annealing tract used by the verifier. Passing
+  samples account for that overlap. Every initial task section matches, the
+  Code-Mode-Only nested catalog matches exactly, each first generation
+  divergence is model output, cache keys stay stable, and there are no
+  replays or broken response/tool-result links.
+- The previous profile-valid cells were 0/5 versus 2/5 and 1/5 versus 1/5.
+  With no Nanocodex runtime change, the latest independent normal cohort
+  moves Nanocodex up three passes and stock down two, while the latest
+  Code-Mode-Only Nanocodex control moves down one. This winner reversal is
+  direct solution-variance evidence and prevents treating either the new
+  stock score or its mode delta as a loop/tool-exposure effect. Retained
+  roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5n-stock-code-mode-b2dff4be-20260729T145959Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5n-code-mode-only-b2dff4be-20260729T145455Z`.
 - `build-pov-ray` finishes 3/5 versus 3/5 in the normal-Code-Mode cohort and
   4/5 versus 5/5 in the Code-Mode-Only cohort. The official directory offers
   both Unix `TAR.Z` archives and ZIP archives. The tar files contain the exact
