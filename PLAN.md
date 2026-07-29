@@ -320,10 +320,16 @@ that over-admission structurally impossible rather than relying on manual
 arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the latest valid cells for 64 controlled tasks Nanocodex is
-260/320 in the normal-stock cohort and 257/320 in the Code-Mode-Only-stock
-cohort, normal stock Codex is 267/320, and Code-Mode-Only stock Codex is
-268/320.
+active; across the latest valid cells for 81 controlled tasks Nanocodex is
+336/405 in the normal-stock cohort and 334/405 in the Code-Mode-Only-stock
+cohort, normal stock Codex is 333/405, and Code-Mode-Only stock Codex is
+331/405. The 810-pair pool is 670/810 versus 664/810, with 63
+Nanocodex-only and 57 stock-only outcomes (`p=0.6483`, exploratory paired
+sign test). Initial model-visible text matches in 809/810 pairs, every
+Code-Mode-Only nested catalog matches, cache identities stay stable, all
+response/tool-result chains are valid, and the 45 replayed pairs split
+exclusive outcomes evenly. The current score difference is therefore not
+evidence of a broken Nanocodex event loop.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
@@ -357,9 +363,32 @@ context, cache, chains, and polling.
 `fix-ocaml-gc` is 5/5 on every arm in its first controlled cells; Nanocodex
 is slightly faster and uses fewer total tokens and generation turns in both
 stock modes, with healthy model-selected compiler polling.
-That is directional evidence for Code-Mode-Only, not yet a broad causal
-winner: each mode uses independent model samples, and repeated tasks continue
-to show substantial within-configuration variance.
+The deepest current stock-favored trajectories are generated
+interpretation/validation gaps. On Video, four stock-only pairs use robust
+silhouette/contact or calibrated crossing detectors while Nanocodex chooses a
+wrong stride, over-filters the hidden runner, or misses the takeoff upper
+bound by one frame. On Raman, stock retains the physically correct reciprocal
+axis in 5/10 samples versus Nanocodex in 1/10; all three stock passes are in
+that subset, with remaining misses due to fit baseline/width. On cancellation,
+Nanocodex's semaphore-plus-`gather` design double-cancels active jobs during
+asynchronous cleanup when a queued job exists; stock's bounded `TaskGroup`
+workers test and pass that topology. On MTEB retrieval, stock chooses the
+required query/passage prompt types in three of four discordant samples,
+whereas the loser treats retrieval as symmetric STS encoding. These are
+model-selected solution and stopping differences after the first output
+divergence, not cache or transport failures.
+Three service tasks are a separate product mechanism. Nanocodex is 29/30 and
+stock is 4/30 across `hf-model-inference`, `kv-store-grpc`, and `pypi-server`
+because the evaluator-owned VM tool session can retain Nanocodex foreground
+guest commands after agent shutdown; stock runs inside the guest and must
+explicitly daemonize a service before its process exits. Excluding those three
+tasks post-hoc leaves stock 660/780 versus Nanocodex 641/780, but that
+stratum was chosen after seeing results and is diagnostic rather than
+confirmatory.
+Service lifetime must remain visible as a real capability without being
+mistaken for conversation-loop parity evidence. There is still no broad
+causal tool-mode winner: each mode uses independent model samples, and
+repeated tasks continue to show substantial within-configuration variance.
 
 The API differ also exposed a remaining non-model-visible request-envelope
 drift in Responses `client_metadata`. Commit `d3d01b7d` now preserves the same
@@ -383,13 +412,12 @@ drain, preserving its partial evidence. Fresh `75bc9fac` broad queues and
 matched normal/Code-Mode-Only Video repetitions are now running from new
 roots.
 
-The latest valid table now covers 53 tasks. Thirty-three of the previously
-queued tasks are running as one large k=5 work-conserving queue per stock
-mode. Four tasks each declare 8,192 MiB per arm and require a whole 16 GiB
-pair partition; their normal-mode queue is active and the matched
-Code-Mode-Only queue is pending that partition. Fresh matched
-`train-fasttext` mode cells use the remaining two 8 GiB partitions. At
-2026-07-29 18:43 UTC, five live processes again sum to the exact 48 GiB
+The latest valid table now covers 81 tasks; 8/89 still lack at least one
+complete k=5 mode cell and remain outside the denominator. At
+2026-07-29 20:51 UTC, the retained broad queues contain 154 normal-mode and
+156 Code-Mode-Only comparisons, with their remaining partial tasks still
+running. The heavy-task lane and both fresh `train-fasttext` mode cells are
+also active. The five admitted eval processes again sum to the exact 48 GiB
 configured future ceiling.
 
 The broad launch exposed two separate image-startup costs. First,
