@@ -2261,6 +2261,27 @@ impl Drop for AdmissionPermit {
     }
 }
 
+impl AdmissionPermit {
+    /// Releases part of a running admission's memory charge while retaining
+    /// its concurrency slot.
+    pub(crate) fn release_memory(&mut self, memory_mb: u64) -> u64 {
+        let released = self.memory_mb.min(memory_mb);
+        if released == 0 {
+            return 0;
+        }
+        self.memory_mb -= released;
+        let mut state = self
+            .controller
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.memory_mb = state.memory_mb.saturating_sub(released);
+        drop(state);
+        self.controller.changed.notify_waiters();
+        released
+    }
+}
+
 impl AttemptAgent {
     /// Uses `nanocodex` for one attempt with the default native verifier.
     #[must_use]

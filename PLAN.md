@@ -270,15 +270,18 @@ from mode comparison.
 
 The current per-attempt VM adapter has sustained a 48 GiB declared guest
 budget. The eval-owned multi-task differential scheduler now defaults to k=5,
-preserves task/trial and queue coordinates, charges both arms against one
-work-conserving memory ceiling, and stages the stock release once per sweep;
-its deterministic tests and CLI gates pass. Deployment and a representative
-throughput run on `dev-georgios` remain, and the lower-overhead task-worker
-allocation described above is not implemented, so no final host-saturation or
-reduced-VM-overhead claim is complete. The typed `CodexToolMode` policy and
-`--codex-tool-mode` selector are implemented, and the normal-Code-Mode versus
-Code-Mode-Only experiment is active but not yet broad enough to select a
-winner.
+preserves task/trial and queue coordinates, charges both arms when a pair
+starts, releases each arm's memory charge after evaluator and VM cleanup, and
+stages the stock release once per sweep. The initial retained production run
+demonstrated that pair-lifetime charging stranded capacity during long
+unpaired tails; the per-arm release closes that gap without weakening paired
+starts or VM isolation. Deployment and a representative throughput rerun on
+`dev-georgios` remain, and the lower-overhead task-worker allocation described
+above is not implemented, so no final reduced-VM-overhead claim is complete.
+The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
+implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
+active; the first nine controlled tasks directionally favor Code-Mode-Only
+stock Codex.
 
 ## Current execution order
 
