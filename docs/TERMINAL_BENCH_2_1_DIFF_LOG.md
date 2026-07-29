@@ -800,11 +800,12 @@ Snapshot: 2026-07-29 10:40 UTC.
   | `regex-chess` | 4/5 | 5/5 | 4/5 | 3/5 |
   | `sanitize-git-repo` | 3/5 | 4/5 | 1/5 | 3/5 |
   | `make-mips-interpreter` | 4/5 | 3/5 | 2/5 | 3/5 |
+  | `caffe-cifar-10` | 5/5 | 5/5 | 4/5 | 5/5 |
 
-  Across these 18 controlled tasks, Nanocodex is 49/90 in the normal-stock
-  cohort and 45/90 in the Code-Mode-Only-stock cohort. Stock Codex is 49/90
-  in normal Code Mode and 58/90 in `code_mode_only`. Nanocodex has the same
-  Code-Mode-Only configuration in both independent cohorts, so its four-score
+  Across these 19 controlled tasks, Nanocodex is 54/95 in the normal-stock
+  cohort and 49/95 in the Code-Mode-Only-stock cohort. Stock Codex is 54/95
+  in normal Code Mode and 63/95 in `code_mode_only`. Nanocodex has the same
+  Code-Mode-Only configuration in both independent cohorts, so its five-score
   spread is a useful estimate of task-sampling variance. Stock
   `code_mode_only` retains the stronger aggregate result, although
   `regex-chess` is a real task-level counterexample.
@@ -1163,6 +1164,46 @@ Snapshot: 2026-07-29 10:40 UTC.
   reported 9.82-point gap. This is a data-ordering and verifier-observation
   strategy divergence after identical initial context, not a retry, cache,
   response-chain, or event-loop regression.
+- The complete controlled `caffe-cifar-10` cells are 5/5 versus 5/5 in the
+  normal-Code-Mode cohort and 4/5 versus 5/5 in the Code-Mode-Only cohort.
+  In the normal cohort, Nanocodex/stock medians are 500.3/584.9 seconds,
+  2,746,994/2,737,601 tokens, 53/51 generation turns, and 20/20 detected
+  poll-only turns. Across all five trials, Nanocodex uses 13,466,267 tokens
+  and 2,734.1 agent-seconds versus stock's 14,192,864 tokens and 2,935.4
+  agent-seconds. In the Code-Mode-Only cohort, the medians are 515.3/560.0
+  seconds, 2,470,973/1,770,618 tokens, 51/37 generation turns, and 18/3
+  poll-only turns. The corresponding five-trial totals are 14,300,917 versus
+  9,892,574 tokens, 285 versus 209 generation turns, 102 versus 38 poll-only
+  turns, and 2,879.3 versus 2,829.5 agent-seconds.
+- Stock's direct outer tools do not improve Caffe accuracy: both stock modes
+  pass 5/5. Its Code-Mode-Only samples are nevertheless more roundtrip- and
+  token-efficient than its normal-Code-Mode samples. Nanocodex has the same
+  Code-Mode-Only runtime in the two independent cohorts and also shows
+  ordinary sample spread, but Code-Mode-Only trial 4 is a genuine long-tail
+  outlier: 73 generation turns and 33 poll-only turns versus stock's 37 and
+  1. Nanocodex repeatedly waits on package installation, downloads, builds,
+  and training, while stock chooses alternative mirrors and more often gives
+  a command the full 30-second initial yield. The reviewed Codex process
+  manager and Nanocodex both clamp an empty poll to at least 5 seconds and
+  both accept a 30-second initial yield, so this is generated execution
+  strategy after the first model-output divergence, not a hidden polling-
+  timeout mismatch. Every prompt-cache key remains stable, all previous-
+  response and tool-result links are intact, and the observed reconnects
+  replay complete committed history. No runtime change is justified by this
+  cell alone.
+- A fifth production k=5 cohort began at 2026-07-29 11:50 UTC from exact
+  commit `64275906d7adb952cfc043dbc0b1150e6f4f0577`. Each stock-mode process
+  uses `--concurrency 4`, a strict 16,384 MiB process ceiling, and the CLI's
+  default five trials. The normal cohort runs `regex-log`,
+  `write-compressor`, `compile-compcert`, and `mteb-leaderboard`; the
+  Code-Mode-Only cohort additionally performs the clean full
+  `password-recovery` rerun that the drained fourth cohort could not finish.
+  Both processes initially admitted four 4,096 MiB pairs, so their 32 GiB
+  partition plus the two 8 GiB third-cohort partitions restores the exact
+  48 GiB campaign ceiling. Retained roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5e-stock-code-mode-6427590-20260729T115027Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5e-code-mode-only-6427590-20260729T115027Z`.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |
