@@ -680,7 +680,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 14:43 UTC.
+Snapshot: 2026-07-29 14:46 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -1582,6 +1582,21 @@ Snapshot: 2026-07-29 14:43 UTC.
   `path-tracing-reverse`. This process also defaults to k=5, uses exact
   runner `b2dff4be`, and has an 8,192 MiB live-arm ceiling. Retained root:
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5l-stock-code-mode-b2dff4be-20260729T134602Z`.
+- Both k5k processes completed and released 16,384 MiB of configured future
+  capacity. The exact k5l task set immediately gained its missing
+  Code-Mode-Only counterpart at the default five trials, exact runner
+  `b2dff4be`, two-pair concurrency, and an 8,192 MiB ceiling. Retained root:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5l-code-mode-only-b2dff4be-20260729T144431Z`.
+- The remaining 8,192 MiB was backfilled with matched k5m mode processes for
+  `fix-ocaml-gc`, `reshard-c4-data`, `count-dataset-tokens`,
+  `feal-linear-cryptanalysis`, and `path-tracing`. Each task declares
+  2,048 MiB per arm; each mode admits one 4,096 MiB pair at a time and
+  defaults to k=5. These processes use exact runner `b2dff4be` and bring the
+  sum of all active processes' configured future maxima back to the 48 GiB
+  host ceiling. Retained roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5m-stock-code-mode-b2dff4be-20260729T144533Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5m-code-mode-only-b2dff4be-20260729T144533Z`.
 - The normal-Code-Mode `adaptive-rejection-sampler` cell in k5l closes 5/5
   for both agents. Nanocodex/stock medians are 239.1/289.9 seconds,
   274,998/379,529 tokens, 12/16 generation turns, and 4/4 poll-only turns;
