@@ -676,7 +676,7 @@ Snapshot: 2026-07-29 07:14 UTC.
 
 ## Context-parity validation and targeted repeats
 
-Snapshot: 2026-07-29 10:40 UTC.
+Snapshot: 2026-07-29 12:01 UTC.
 
 - Commit `139fa186` removes the irrelevant bundled-skills injection and makes
   the six nested Code Mode tool names, order, descriptions, and schemas
@@ -801,11 +801,12 @@ Snapshot: 2026-07-29 10:40 UTC.
   | `sanitize-git-repo` | 3/5 | 4/5 | 1/5 | 3/5 |
   | `make-mips-interpreter` | 4/5 | 3/5 | 2/5 | 3/5 |
   | `caffe-cifar-10` | 5/5 | 5/5 | 4/5 | 5/5 |
+  | `make-doom-for-mips` | 2/5 | 3/5 | 3/5 | 3/5 |
 
-  Across these 19 controlled tasks, Nanocodex is 54/95 in the normal-stock
-  cohort and 49/95 in the Code-Mode-Only-stock cohort. Stock Codex is 54/95
-  in normal Code Mode and 63/95 in `code_mode_only`. Nanocodex has the same
-  Code-Mode-Only configuration in both independent cohorts, so its five-score
+  Across these 20 controlled tasks, Nanocodex is 56/100 in the normal-stock
+  cohort and 52/100 in the Code-Mode-Only-stock cohort. Stock Codex is 57/100
+  in normal Code Mode and 66/100 in `code_mode_only`. Nanocodex has the same
+  Code-Mode-Only configuration in both independent cohorts, so its four-score
   spread is a useful estimate of task-sampling variance. Stock
   `code_mode_only` retains the stronger aggregate result, although
   `regex-chess` is a real task-level counterexample.
@@ -1204,6 +1205,40 @@ Snapshot: 2026-07-29 10:40 UTC.
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5e-stock-code-mode-6427590-20260729T115027Z`
   and
   `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5e-code-mode-only-6427590-20260729T115027Z`.
+- The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
+  Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
+  Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
+  two already-valid artifacts still pass verification. Code-Mode-Only stock
+  times out once, again with a passing artifact. Nanocodex times out only on
+  normal trial 5, where neither artifact passes. Agent lifecycle and retained
+  artifact score therefore remain separate axes.
+- In normal mode, Nanocodex/stock medians are 766.8/900.0 seconds, 7,362,538/
+  8,236,899 captured tokens, 88/89 generation turns, and 10/9 poll-only
+  turns. In Code-Mode-Only they are 719.5/762.0 seconds, 5,498,844/8,620,003
+  captured tokens, 76/91 generation turns, and 10/13 poll-only turns. The
+  three timed-out normal-stock captures retain observed token lower bounds of
+  7,518,738, 9,090,423, and 7,463,317; the timed-out Code-Mode-Only capture
+  retains 9,768,950. This cohort predates commit `05ef13da`, so its terminal
+  stock summary writes zero usage after a CLI timeout even though the API
+  stream is intact. That commit, already present in the `6427590` runner,
+  serializes captured usage and completeness independently of the CLI
+  terminal summary.
+- Doom's score failures are model-visible execution choices and a task-
+  verifier race. Some trajectories render 320x200 instead of the required
+  640x400; both agents sometimes choose Freedoom and produce about 0.793
+  similarity against the 0.95 threshold. In several otherwise valid
+  artifacts, agent testing leaves `/tmp/frame.bmp` behind. The verifier sees
+  that stale file immediately, waits only one second, terminates its new
+  process before the required initialization line appears, and fails the
+  stdout assertion even when frame similarity passes. One final stock
+  artifact never produces a frame. Every Code-Mode-Only sample has identical
+  initial input, generation context, and nested tool definitions; first
+  generation divergence is model output on request 2, cache keys are stable,
+  and no previous-response or tool-result link is broken. Normal-mode initial
+  text also matches, with only the intended outer-tool treatment difference.
+  Direct outer tools therefore do not improve the Doom score and coincide
+  with more stock lifecycle timeouts; there is no demonstrated Nanocodex loop
+  fix to make from this cell.
 
 | # | Task | Nanocodex | stock Codex | First-sample classification |
 | ---: | --- | --- | --- | --- |
