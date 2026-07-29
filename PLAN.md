@@ -291,17 +291,26 @@ reuses the standard eval interrupt machinery so the first Ctrl-C closes
 admission and drains already admitted comparisons, while a second Ctrl-C
 forces cancellation. Operators still have to partition one host-wide budget
 across concurrently running mode processes; cross-process admission is not
-implemented.
+implemented. The live campaign demonstrated the exact remaining hazard: an
+operator initially counted an 8,192 MiB-per-arm MTEB task as a 4,096 MiB pair
+and launched two additional mode processes. The first pair in each process
+was cancelled and excluded from scores after briefly taking the host from
+48 to 56 GiB of declared live-arm memory. A host-wide scheduler must make
+that over-admission structurally impossible rather than relying on manual
+arithmetic.
 The typed `CodexToolMode` policy and `--codex-tool-mode` selector are
 implemented, and the normal-Code-Mode versus Code-Mode-Only experiment is
-active; across the first 18 controlled tasks Nanocodex is 49/90 in the
-normal-stock cohort and 45/90 in the Code-Mode-Only-stock cohort, normal
-stock Codex is 49/90, and Code-Mode-Only stock Codex is 58/90.
+active; across the latest cells for 25 controlled tasks Nanocodex is 75/125
+in the normal-stock cohort and 72/125 in the Code-Mode-Only-stock cohort,
+normal stock Codex is 81/125, and Code-Mode-Only stock Codex is 88/125.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
 Code-Mode-Only. Nanocodex is 3/5 versus 4/5 on G-code and 4/5 in both
-independent Regex cohorts.
+independent Regex cohorts. CompCert is 5/5 for every arm in both modes:
+normal outer tools have a stock-specific token/roundtrip benefit after
+controlling for the independent Nanocodex sample, but no score or relative
+wall-time win.
 
 ## Current execution order
 
