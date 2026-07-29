@@ -836,9 +836,9 @@ Snapshot: 2026-07-29 15:55 UTC.
   | `extract-elf` | 1/5 | 3/5 | 2/5 | 5/5 |
   | `torch-pipeline-parallelism` | 2/5 | 2/5 | 1/5 | 1/5 |
   | `filter-js-from-html` | 0/5 | 0/5 | 1/5 | 1/5 |
-  | `video-processing` | 2/5 | 1/5 | 0/5 | 3/5 |
+  | `video-processing` | 2/5 | 1/5 | 1/5 | 0/5 |
   | `dna-assembly` | 3/5 | 0/5 | 0/5 | 1/5 |
-  | `build-pov-ray` | 3/5 | 3/5 | 4/5 | 5/5 |
+  | `build-pov-ray` | 2/5 | 5/5 | 4/5 | 4/5 |
   | `largest-eigenval` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `llm-inference-batching-scheduler` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `qemu-startup` | 5/5 | 4/5 | 5/5 | 5/5 |
@@ -873,18 +873,23 @@ Snapshot: 2026-07-29 15:55 UTC.
   | `custom-memory-heap-crash` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `adaptive-rejection-sampler` | 5/5 | 5/5 | 5/5 | 5/5 |
   | `fix-ocaml-gc` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `extract-moves-from-video` | 5/5 | 5/5 | 4/5 | 4/5 |
+  | `path-tracing-reverse` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `count-dataset-tokens` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `feal-linear-cryptanalysis` | 5/5 | 5/5 | 5/5 | 5/5 |
+  | `reshard-c4-data` | 5/5 | 5/5 | 5/5 | 5/5 |
 
-  Across these 43 latest controlled task cells, Nanocodex is 164/215 in the
-  normal-stock cohort and 157/215 in the Code-Mode-Only-stock cohort. Stock
-  Codex is 167/215 in normal Code Mode and 178/215 in `code_mode_only`.
+  Across these 48 latest controlled task cells, Nanocodex is 188/240 in the
+  normal-stock cohort and 182/240 in the Code-Mode-Only-stock cohort. Stock
+  Codex is 194/240 in normal Code Mode and 198/240 in `code_mode_only`.
   Nanocodex has the same Code-Mode-Only configuration in both independent
-  cohorts, so its seven-score spread is sampling variance. Stock
-  `code_mode_only` is numerically eleven scores higher than normal Code Mode,
-  but these are not paired model samples; the fresh DNA repetition alone
-  moves Nanocodex by three normal-mode passes and one Code-Mode-Only pass and
-  moves normal stock by two passes without a runtime change. The aggregate
-  therefore does not yet causally identify a stock tool-mode effect;
-  task-level results and repeated cells remain decisive.
+  cohorts, so its six-score spread is sampling variance. Stock
+  `code_mode_only` is numerically four scores higher than normal Code
+  Mode, but these are not paired model samples; the fresh DNA repetition
+  alone moves Nanocodex by three normal-mode passes and one Code-Mode-Only
+  pass and moves normal stock by two passes without a runtime change. The
+  aggregate therefore does not yet causally identify a stock tool-mode
+  effect; task-level results and repeated cells remain decisive.
 - Every failed `torch-pipeline-parallelism` arm passes the two structural tests
   and fails both world-size correctness tests. The common signature is a
   backward-activation mismatch on microbatch 0, usually at `lm_head.bwd`.
@@ -1440,9 +1445,17 @@ Snapshot: 2026-07-29 15:55 UTC.
   `d3d01b7dcd31fab2b3466a9fd88b8e8f96ac8aec`, build timestamp
   `2026-07-29T15:11:49.411755509Z`, and binary SHA-256
   `9b937825b875fa17865b7e3c9b25c549ba94021eb81e24649a345947f4298452`.
-  Its first live eval remains gated on a whole-process memory release because
-  the eight active processes already sum to the exact 48 GiB configured
-  future ceiling.
+  A fresh excluded k=1 smoke completed successfully on both arms at
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/metadata-smoke-codeonly-d3d01b7-20260729T165242Z`.
+  This smoke validates deployment and metadata only; it is not benchmark
+  score evidence. Raw captures show the intended stable UUIDv4 installation
+  identity, shared UUIDv7 session/thread identity, `<session>:0` window,
+  empty prewarm turn identity, stable UUIDv7 logical-turn identity and start
+  timestamp across physical sends, and a fresh request-start timestamp on
+  every send. The prewarm/turn request kinds, user thread source, and `none`
+  sandbox also match stock. The remaining semantic-shape difference is the
+  expected newer Responses-Lite-only `code_mode_tool_names` field, which
+  stock 0.145 predates.
 - Both `sam-cell-seg` k=5 cells are complete. Nanocodex/stock score 2/5 versus
   5/5 with normal stock Code Mode and 2/5 versus 4/5 with stock
   Code-Mode-Only. Normal-mode Nanocodex/stock medians are 268.1/242.0
@@ -1879,6 +1892,116 @@ Snapshot: 2026-07-29 15:55 UTC.
   declare 4,096 MiB, and four declare 8,192 MiB. The next broad cohort should
   schedule this as one large work-conserving queue per stock mode rather than
   another collection of five-task process-local pools.
+- The first whole-process releases were backfilled at 2026-07-29 16:53 UTC
+  with matched d3 metadata-parity k=5 cohorts for `train-fasttext`,
+  `sam-cell-seg`, `adaptive-rejection-sampler`, and `build-pmars`. Both use
+  two-pair concurrency, an 8,192 MiB ceiling, and the default five trials.
+  The old Code-Mode-Only FastText trial 5 remains excluded because its stock
+  arm ended in a guest-disk `ENOSPC` infrastructure failure; this fresh
+  cohort is a complete retained rerun, not a resume. Roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5o-metadata-stock-code-mode-d3d01b7-20260729T165358Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5o-metadata-code-mode-only-d3d01b7-20260729T165454Z`.
+- The 33 non-heavy queued tasks then launched as the planned large
+  work-conserving queues, one per stock mode, at the default k=5, two-pair
+  concurrency, and 8,192 MiB per-process ceiling. Twenty-eight tasks declare
+  2,048 MiB per arm and five declare 4,096 MiB per arm. Roots:
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5p-broad-stock-code-mode-d3d01b7-20260729T165645Z`
+  and
+  `/mnt/nanocodex-evals/part2-0a101e3/pr61-eval-diff/output/k5p-broad-code-mode-only-d3d01b7-20260729T165615Z`.
+  The remaining four 8,192 MiB-per-arm tasks are `gpt2-codegolf`,
+  `mcmc-sampling-stan`, `rstan-to-pystan`, and
+  `torch-tensor-parallelism`; each needs an entire 16 GiB pair partition and
+  will launch when one becomes free. The seven still-live processes now sum
+  to the exact 48 GiB configured future ceiling.
+- Broad-sweep startup exposed another throughput cost: `VmResources::prepare`
+  eagerly materializes every selected task image before admitting the first
+  comparison. The two 33-task processes consequently report no task progress
+  while one process builds cold content-addressed images and the other waits
+  on the shared cache locks. This is healthy image preparation, not a stuck
+  evaluator, but it delays time-to-first-result and leaves the broad queues'
+  attempt capacity idle. A warm cache makes the cost one-time; the generic
+  follow-up is to overlap or lazily admit image preparation without weakening
+  task-package validation, cache locking, or the VM memory boundary.
+- The matched Code-Mode-Only `extract-moves-from-video` cell has now closed
+  4/5 versus 4/5, complementing the already complete 5/5-versus-5/5 normal
+  cell. Code-Mode-Only Nanocodex/stock medians are 1,248.2/1,338.9 seconds,
+  3,668,950/3,841,218 observed API tokens, 72/99 generation turns, and 15/23
+  poll-only turns. Five-trial totals are 6,638.4/6,732.1 agent-seconds,
+  21,978,770/22,807,152 tokens, 409/547 generations, and 124/204 polls.
+  Trials 2 and 3 reach Nanocodex's 1,800-second deadline; the trial-2 artifact
+  still passes while trial 3 fails. Stock reaches the same deadline on trial
+  5 and fails, after a 70-turn unpaired tail containing 41 poll-only turns and
+  5,179,012 observed tokens. The mirrored timeout outcomes produce equal
+  score, but Nanocodex has the smaller total model/poll tail in both mode
+  cohorts. Initial task sections and the nested catalog match, first
+  generation divergence is model output, and no response/tool-result link is
+  broken.
+- `path-tracing-reverse` closes 5/5 for every arm. Normal-mode
+  Nanocodex/stock medians are 304.5/288.6 seconds, 1,282,319/1,629,886
+  observed tokens, and 23/29 generations; Code-Mode-Only medians are
+  277.1/373.4 seconds, 1,726,402/1,999,325 tokens, and 27/33 generations.
+  Five-trial totals are 1,599.5/1,583.4 and 1,548.5/1,753.2 agent-seconds,
+  with 6,571,695/8,568,304 and 8,395,976/9,590,843 tokens respectively. No
+  arm polls, replays history, or breaks a chain. Direct outer tools add no
+  score and the independent efficiency cells trade a small normal-mode stock
+  wall-time edge for a larger Code-Mode-Only Nanocodex edge.
+- `count-dataset-tokens` also closes 5/5 everywhere. Normal-mode medians are
+  83.6/91.3 seconds, 140,559/146,035 tokens, and 13/13 generations;
+  Code-Mode-Only medians are 81.5/83.9 seconds, 142,681/140,765 tokens, and
+  12/12 generations. No arm polls or has a broken chain. One normal stock
+  sample performs a healthy replay. The task is a compact score-parity and
+  loop-health control with no meaningful tool-mode advantage.
+- `feal-linear-cryptanalysis` closes 5/5 everywhere while exposing a strong
+  normal-mode Nanocodex efficiency win. Normal Nanocodex/stock medians are
+  130.4/234.1 seconds, 119,010/299,429 tokens, and 9/18 generations;
+  five-trial totals are 670.2/1,117.8 seconds, 572,526/1,494,827 tokens, and
+  42/88 generations. Code-Mode-Only narrows the stock tail to medians of
+  121.6/178.2 seconds, 136,640/141,972 tokens, and 10/11 generations, with
+  totals of 669.0/824.1 seconds and 694,577/739,680 tokens. There are only
+  three stock polls across all twenty arms, no replay, and no broken chain.
+  Direct outer tools add no score and are a large stock-efficiency regression
+  in this independent cell.
+- `reshard-c4-data` closes 5/5 everywhere. Normal-mode medians are
+  248.6/324.5 seconds, 189,858/283,776 tokens, 13/17 generations, and 2/2
+  polls; Code-Mode-Only medians are 293.8/285.5 seconds,
+  269,451/307,834 tokens, 14/18 generations, and 2/3 polls. Nanocodex uses
+  fewer total tokens and generations in both cells; normal mode is also
+  faster, while Code-Mode-Only stock is eight seconds faster at the median.
+  No replay or chain defect occurs.
+- Fresh valid k5n `build-pov-ray` cells supersede its previous table row.
+  Nanocodex/stock now score 2/5 versus 5/5 in normal mode and 4/5 versus 4/5
+  in Code-Mode-Only. Normal medians are 136.4/170.3 seconds,
+  653,210/882,962 tokens, 19/27 generations, and 0/2 polls;
+  Code-Mode-Only medians are 147.4/162.0 seconds, 506,367/496,994 tokens,
+  18/18 generations, and no polls. Every artifact renders and reports the
+  correct version. All five failures are again canonical-source layout
+  choices: one keeps required files only under a `povsrc/` subdirectory and
+  another leaves them uppercased at the source root, while the verifier
+  requires lowercase files directly under `/app/povray-2.2`. Both agents make
+  the same losing subdirectory choice in different samples. One Nanocodex
+  sample in each mode performs a healthy replay; no chain breaks. The winner
+  moves substantially from the prior independent repetition without a runtime
+  change, so this is model strategy variance, not a loop regression.
+- Fresh k5n `largest-eigenval` remains 5/5 everywhere. Normal-mode
+  Nanocodex/stock medians are 145.0/155.1 seconds, 147,582/167,357 tokens, and
+  12/13 generations; Code-Mode-Only medians are 99.6/176.1 seconds,
+  142,817/331,140 tokens, and 12/18 generations. No arm polls, replays, or
+  breaks a chain. This is a stable score-parity control, with especially
+  strong Nanocodex time/token efficiency in the latest Code-Mode-Only cell.
+- The fresh k5n Code-Mode-Only `video-processing` cell is valid and replaces
+  that mode's previous row: Nanocodex/stock score 1/5 versus 0/5. Medians are
+  300.1/267.8 seconds, 299,983/313,421 tokens, and 15/16 generations; no arm
+  polls, and one Nanocodex sample performs a healthy replay. Every failure
+  still passes the public example and misses only the hidden-video
+  takeoff/landing generalization. The matched fresh normal-mode root is
+  preserved but excluded as a k=5 score cell because stock trials 2 and 5
+  ended in Responses-proxy disconnects. Its two real stock passes and all
+  five Nanocodex verifier failures are evidence, but infrastructure failures
+  cannot be counted as model losses. The table therefore retains the prior
+  valid 2/5-versus-1/5 normal cell and uses the new valid 1/5-versus-0/5
+  Code-Mode-Only cell. A fresh normal repetition is required before making
+  another Video mode claim.
 - The complete `make-doom-for-mips` cells are 2/5 versus 3/5 in the normal-
   Code-Mode cohort and 3/5 versus 3/5 in the matched Code-Mode-Only cohort.
   Normal-Code-Mode stock hits the 900-second agent deadline on three trials;
