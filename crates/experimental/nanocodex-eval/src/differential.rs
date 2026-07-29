@@ -1540,6 +1540,34 @@ fn summarize_nanocodex(kind: &AgentEventKind, payload: &serde_json::Value) -> St
             labeled_value(payload, "tools", "tool_calls"),
             value_preview_option(payload, "error"),
         ]),
+        AgentEventKind::ModelAttemptFailed => join_summary([
+            labeled_value(payload, "call", "model_call_index"),
+            labeled_value(payload, "attempt", "attempt"),
+            labeled_value(payload, "max", "max_attempts"),
+            value_string(payload, "failure_phase").map(|phase| format!("phase {phase}")),
+            value_string(payload, "error_class").map(|class| format!("class {class}")),
+            labeled_value(payload, "retryable", "retryable"),
+            labeled_value(payload, "billing uncertain", "billing_uncertain"),
+            value_preview_option(payload, "error"),
+        ]),
+        AgentEventKind::ModelAttemptRetrying => join_summary([
+            labeled_value(payload, "call", "model_call_index"),
+            labeled_value(payload, "attempt", "attempt"),
+            labeled_value(payload, "next", "next_attempt"),
+            labeled_value(payload, "max", "max_attempts"),
+            value_string(payload, "failure_phase").map(|phase| format!("phase {phase}")),
+            value_string(payload, "error_class").map(|class| format!("class {class}")),
+            labeled_duration_ns(payload, "delay", "delay_ns"),
+            labeled_value(payload, "new socket", "opens_new_socket"),
+            value_string(payload, "replay_mode").map(|mode| format!("replay {mode}")),
+            value_preview_option(payload, "error"),
+        ]),
+        AgentEventKind::ModelConnectionFailed => join_summary([
+            value_string(payload, "transport"),
+            labeled_value(payload, "attempt", "attempt"),
+            value_string(payload, "purpose").map(|purpose| format!("purpose {purpose}")),
+            value_preview_option(payload, "error"),
+        ]),
         AgentEventKind::RunError | AgentEventKind::RunFailed => value_preview(payload, "message"),
         AgentEventKind::RunCompleted => join_summary([
             labeled_value(payload, "model calls", "model_calls"),
@@ -1675,6 +1703,16 @@ fn labeled_value(value: &serde_json::Value, label: &str, key: &str) -> Option<St
     value
         .get(key)
         .and_then(|value| (!value.is_null()).then(|| format!("{label} {}", preview_json(value))))
+}
+
+fn labeled_duration_ns(value: &serde_json::Value, label: &str, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .map(|ns| {
+            let rounded_ms = ns.saturating_add(500_000) / 1_000_000;
+            format!("{label} {}", format_duration(rounded_ms))
+        })
 }
 
 fn value_string(value: &serde_json::Value, key: &str) -> Option<String> {
@@ -5866,7 +5904,7 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use nanocodex_agent::{Nanocodex, OpenAi};
+    use nanocodex_agent::{Nanocodex, OpenAi, events::AgentEventKind};
     use nanocodex_oai_api::MODEL;
     use tempfile::tempdir;
 
@@ -5887,7 +5925,7 @@ mod tests {
         inspect_api_exchanges, join_differential_arms, newly_completed_lines,
         read_api_request_payloads, read_optional_codex_cloud_config_cache, reanalyze,
         releasable_differential_arm_memory_mb, run_arm, stage_diff_codex_ca_bundle,
-        validate_differential_profile,
+        summarize_nanocodex, validate_differential_profile,
     };
 
     #[test]
@@ -6105,6 +6143,55 @@ mod tests {
         lanes.get_mut("nanocodex").unwrap().kind = "attempt.completed".to_owned();
         lanes.get_mut("codex").unwrap().kind = "attempt.completed".to_owned();
         assert!(!heartbeat_needed(&lanes));
+    }
+
+    #[test]
+    fn progress_explains_model_attempt_failures_and_retries() {
+        let failure = serde_json::json!({
+            "model_call_index": 6,
+            "attempt": 1,
+            "max_attempts": 5,
+            "failure_phase": "receive",
+            "error_class": "receive",
+            "retryable": true,
+            "billing_uncertain": true,
+            "error": "failed to receive a Responses WebSocket frame: connection reset"
+        });
+        assert_eq!(
+            summarize_nanocodex(&AgentEventKind::ModelAttemptFailed, &failure),
+            "call 6 · attempt 1 · max 5 · phase receive · class receive · retryable true · billing \
+             uncertain true · failed to receive a Responses WebSocket frame: connection reset"
+        );
+
+        let retry = serde_json::json!({
+            "model_call_index": 6,
+            "attempt": 1,
+            "next_attempt": 2,
+            "max_attempts": 5,
+            "failure_phase": "receive",
+            "error_class": "receive",
+            "delay_ns": 209_556_813_u64,
+            "opens_new_socket": true,
+            "replay_mode": "full_history",
+            "error": "failed to receive a Responses WebSocket frame: connection reset"
+        });
+        assert_eq!(
+            summarize_nanocodex(&AgentEventKind::ModelAttemptRetrying, &retry),
+            "call 6 · attempt 1 · next 2 · max 5 · phase receive · class receive · delay 210ms · \
+             new socket true · replay full_history · failed to receive a Responses WebSocket \
+             frame: connection reset"
+        );
+
+        let connection = serde_json::json!({
+            "transport": "responses_websocket_v2",
+            "attempt": 2,
+            "purpose": "reconnect",
+            "error": "TLS handshake failed"
+        });
+        assert_eq!(
+            summarize_nanocodex(&AgentEventKind::ModelConnectionFailed, &connection),
+            "responses_websocket_v2 · attempt 2 · purpose reconnect · TLS handshake failed"
+        );
     }
 
     #[tokio::test]
