@@ -126,6 +126,23 @@ impl<F> NanocodexBuilder<F> {
         self
     }
 
+    /// Uses an embedding-provided project-instruction snapshot instead of
+    /// discovering `AGENTS.md` through the embedding process's filesystem.
+    ///
+    /// Remote workspace adapters use this when model-visible tools execute in
+    /// a different filesystem. `None` deliberately records that the remote
+    /// workspace supplied no project instructions.
+    #[cfg(not(target_family = "wasm"))]
+    #[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn project_instructions_snapshot(mut self, instructions: Option<String>) -> Self {
+        self.codex
+            .context
+            .set_project_instructions_snapshot(instructions.map(Arc::from));
+        self
+    }
+
     /// Sets the root agent's `UUIDv7` session identity.
     ///
     /// The root identity also seeds its checkpoint lineage. Spawned siblings

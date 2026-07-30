@@ -104,6 +104,50 @@ const VERIFIER_NETWORK_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 const GVPROXY_VERSION: &str = "v0.8.9";
 const EVAL_IMAGE_RUN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const GUEST_PROJECT_INSTRUCTIONS_TIMEOUT: Duration = Duration::from_secs(5);
+const GUEST_PROJECT_INSTRUCTIONS_MAX_BYTES: usize = 32 * 1024;
+const GUEST_PROJECT_INSTRUCTION_PATHS_MAX_BYTES: usize = 1024 * 1024;
+const GUEST_PROJECT_INSTRUCTION_PATHS_SCRIPT: &str = r#"
+workspace=${1%/}
+[ -n "$workspace" ] || workspace=/
+case "$workspace" in
+    /*) ;;
+    *) exit 64 ;;
+esac
+
+cursor=$workspace
+project_root=
+while :; do
+    if [ -e "$cursor/.git" ]; then
+        project_root=$cursor
+        break
+    fi
+    [ "$cursor" = / ] && break
+    cursor=${cursor%/*}
+    [ -n "$cursor" ] || cursor=/
+done
+[ -n "$project_root" ] || project_root=$workspace
+
+cursor=$workspace
+while :; do
+    for filename in AGENTS.override.md AGENTS.md; do
+        if [ "$cursor" = / ]; then
+            candidate=/$filename
+        else
+            candidate=$cursor/$filename
+        fi
+        if [ -f "$candidate" ]; then
+            printf '%s\000' "$candidate"
+            break
+        fi
+    done
+    [ "$cursor" = "$project_root" ] && break
+    parent=${cursor%/*}
+    [ -n "$parent" ] || parent=/
+    [ "$parent" != "$cursor" ] || exit 65
+    cursor=$parent
+done
+"#;
 // `vm-run-config` is a thin executor for `VmProcessConfig`. Bump this identity
 // whenever that execution boundary can change Dockerfile build output. Agent,
 // evaluator, capture, or reporting changes must not invalidate task images.
@@ -1550,16 +1594,21 @@ impl VmAttempt {
         tool_mode: Option<nanocodex_tools::ToolMode>,
     ) -> Result<AttemptAgent, VmAttemptError> {
         let readiness = self.session_handle()?;
+        let context_session = readiness.clone();
+        let guest_workspace = self.verifier.launch.workspace.clone();
         let current_date = current_date(&self.timezone);
         let tools = match tool_mode {
             Some(tool_mode) => self.tools.into_builder().tool_mode(tool_mode).build()?,
             None => self.tools,
         };
-        Ok(AttemptAgent::new(
-            builder
-                .local_time_context(current_date, self.timezone)
-                .tools(tools),
-        )
+        let builder = builder
+            .local_time_context(current_date, self.timezone)
+            .tools(tools);
+        Ok(AttemptAgent::preparing_nanocodex(async move {
+            let project_instructions =
+                load_guest_project_instructions(&context_session, &guest_workspace).await?;
+            Ok::<_, VmAttemptError>(builder.project_instructions_snapshot(project_instructions))
+        })
         .ready(async move { readiness.ready().await })
         .verifier(self.verifier))
     }
@@ -1569,6 +1618,74 @@ impl VmAttempt {
     pub fn codex(self, codex: CodexExec) -> AttemptAgent {
         AttemptAgent::codex(codex).verifier(self.verifier)
     }
+}
+
+async fn load_guest_project_instructions(
+    session: &VmToolSessionHandle,
+    workspace: &str,
+) -> Result<Option<String>, VmAttemptError> {
+    let discovery = session
+        .command(
+            VmCommand::new("/bin/sh")
+                .arg("-c")
+                .arg(GUEST_PROJECT_INSTRUCTION_PATHS_SCRIPT)
+                .arg("nanocodex-agents-md")
+                .arg(workspace)
+                .current_directory(workspace)
+                .timeout(GUEST_PROJECT_INSTRUCTIONS_TIMEOUT)
+                .max_output_bytes(GUEST_PROJECT_INSTRUCTION_PATHS_MAX_BYTES),
+        )
+        .await?;
+    if discovery.exit_code != 0 {
+        return Err(io::Error::other(format!(
+            "guest AGENTS.md discovery exited {}: {}",
+            discovery.exit_code,
+            String::from_utf8_lossy(&discovery.stderr).trim()
+        ))
+        .into());
+    }
+
+    let mut paths = discovery
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            std::str::from_utf8(path)
+                .map(str::to_owned)
+                .map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("guest AGENTS.md path was not UTF-8: {error}"),
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.reverse();
+
+    let mut remaining = GUEST_PROJECT_INSTRUCTIONS_MAX_BYTES;
+    let mut documents = Vec::new();
+    for path in paths {
+        if remaining == 0 {
+            break;
+        }
+        let mut contents = session.read_file(&path).await?;
+        let truncated = contents.len() > remaining;
+        contents.truncate(remaining);
+        let included_bytes = contents.len();
+        if truncated {
+            warn!(
+                path,
+                remaining_bytes = remaining,
+                "guest project doc exceeds remaining budget; truncating"
+            );
+        }
+        let contents = String::from_utf8_lossy(&contents).into_owned();
+        if !contents.trim().is_empty() {
+            remaining = remaining.saturating_sub(included_bytes);
+            documents.push(contents);
+        }
+    }
+    Ok((!documents.is_empty()).then(|| documents.join("\n\n")))
 }
 
 struct VmVerifier {
@@ -3398,6 +3515,63 @@ mod tests {
         let bootstrap = super::vm_guest_bootstrap_script(workspace, "nameserver 192.168.127.1\\n");
         assert!(!bootstrap.contains('"'));
         assert!(bootstrap.contains(&quoted));
+    }
+
+    #[test]
+    fn guest_agents_discovery_stays_inside_the_selected_guest_project() {
+        let directory = tempfile::tempdir().unwrap();
+        let unrelated_parent = directory.path().join("host-parent");
+        let workspace = unrelated_parent.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(unrelated_parent.join("AGENTS.md"), "must not leak").unwrap();
+
+        let output = StdCommand::new("/bin/sh")
+            .args([
+                "-c",
+                GUEST_PROJECT_INSTRUCTION_PATHS_SCRIPT,
+                "nanocodex-agents-md",
+                workspace.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+
+    #[test]
+    fn guest_agents_discovery_prefers_overrides_and_returns_cwd_to_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("repo");
+        let nested = root.join("nested");
+        let workspace = nested.join("workspace");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(root.join("AGENTS.md"), "root").unwrap();
+        fs::write(nested.join("AGENTS.md"), "shadowed").unwrap();
+        fs::write(nested.join("AGENTS.override.md"), "override").unwrap();
+
+        let output = StdCommand::new("/bin/sh")
+            .args([
+                "-c",
+                GUEST_PROJECT_INSTRUCTION_PATHS_SCRIPT,
+                "nanocodex-agents-md",
+                workspace.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        let paths = output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| PathBuf::from(std::str::from_utf8(path).unwrap()))
+            .collect::<Vec<_>>();
+
+        assert!(output.status.success());
+        assert_eq!(
+            paths,
+            [nested.join("AGENTS.override.md"), root.join("AGENTS.md")]
+        );
     }
 
     #[test]

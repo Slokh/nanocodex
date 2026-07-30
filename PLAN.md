@@ -281,6 +281,24 @@ have profile-valid k=5 cells for `pytorch-model-recovery`, `raman-fitting`, and
 cohorts completed profile-valid `extract-elf` cells in both modes; every older
 pre-correction ELF sample remains excluded from mode comparison.
 
+A later local medium cohort exposed the same host/guest boundary in project
+instructions: Nanocodex discovered the checkout's host `AGENTS.md` by walking
+up from its retained host artifact directory, while stock Codex correctly saw
+no project instructions in the guest `/app` workspace. VM attempts now wait
+for guest readiness, discover the guest hierarchy and override precedence,
+read the selected guest documents under the shared 32 KiB budget, and install
+an explicit snapshot (including explicit absence) before the first model
+request. The retained affected cohort is diagnostic evidence only and must not
+enter score comparisons. API-comparison schema v15 also fingerprints every
+complete initial and first-generation visible tool definition, including
+description bytes, schemas, grammars, namespaces, and order; matched tool-mode
+profiles now fail validation on any drift. In the latest retained regular-Code-
+Mode captures, all 138 pairs with outbound requests already have identical
+complete tool arrays; the new gate makes that invariant executable for both
+regular Code Mode and Code-Mode-Only. Full agent/eval tests, Clippy with
+warnings denied, rustfmt, and crate-boundary checks pass locally. The next
+cohort is a fresh commit-pinned rerun of previously discordant tasks.
+
 The current per-attempt VM adapter has sustained a 48 GiB declared guest
 budget. The eval-owned multi-task differential scheduler now defaults to k=5,
 preserves task/trial and queue coordinates, charges both arms when a pair
