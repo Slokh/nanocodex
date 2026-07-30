@@ -259,6 +259,9 @@ struct InfrastructureReplacementState {
     profile: DifferentialProfile,
     next_trial: usize,
     remaining: usize,
+    target_valid: usize,
+    valid: usize,
+    outstanding: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3453,7 +3456,9 @@ fn resume_differential_schedule(
                 scheduled.task_index == task_index && scheduled.profile_index == profile_index
             })
             .count();
-        let mut needed = requested_trials.saturating_sub(valid_trials.len().saturating_add(queued));
+        replacement.target_valid = requested_trials;
+        replacement.valid = valid_trials.len().min(requested_trials);
+        replacement.outstanding = queued;
         for failed_trial in latest_by_trial
             .values()
             .filter(|summary| {
@@ -3464,14 +3469,10 @@ fn resume_differential_schedule(
             .map(|summary| summary.trial)
             .collect::<Vec<_>>()
         {
-            if needed == 0 {
-                break;
-            }
             let Some(scheduled) = replacement.next(task_index, profile_index, failed_trial) else {
                 break;
             };
             pending.push_back(scheduled);
-            needed -= 1;
         }
     }
     skipped
@@ -3873,34 +3874,45 @@ impl DifferentialEvaluator {
                     "confirmed OOM retained; scheduled both arms again with more guest memory"
                 );
                 pending.push_front(memory_retry);
-            } else if let Ok(report) = &result
-                && report.oom_detected()
-            {
-                warn!(
-                    task = report.task_name(),
-                    trial,
-                    guest_memory_mb = report.configured_guest_memory_mb(),
-                    "confirmed OOM persisted at the task-declared memory ceiling"
-                );
-            } else if let Ok(report) = &result
-                && report.has_infrastructure_failure()
-                && let Some(replacement_index) = task_index
+            } else {
+                let replacement_index = task_index
                     .checked_mul(profile_count)
-                    .and_then(|index| index.checked_add(profile_index))
-                && let Some(replacement) = replacements
-                    .get_mut(replacement_index)
-                    .and_then(|replacement| replacement.next(task_index, profile_index, trial))
-            {
-                info!(
-                    task = report.task_name(),
-                    failed_trial = trial,
-                    replacement_trial = replacement.trial,
-                    remaining_replacements = replacements
-                        .get(replacement_index)
-                        .map_or(0, |state| state.remaining),
-                    "scheduled a fresh pair to replace retained infrastructure failure"
-                );
-                pending.push_front(replacement);
+                    .and_then(|index| index.checked_add(profile_index));
+                if let Some(state) = replacement_index.and_then(|index| replacements.get_mut(index))
+                {
+                    let valid = result.as_ref().is_ok_and(|report| {
+                        !report.has_infrastructure_failure() && !report.has_operational_error()
+                    });
+                    state.complete(valid);
+                }
+
+                if let Ok(report) = &result
+                    && report.oom_detected()
+                {
+                    warn!(
+                        task = report.task_name(),
+                        trial,
+                        guest_memory_mb = report.configured_guest_memory_mb(),
+                        "confirmed OOM persisted at the task-declared memory ceiling"
+                    );
+                } else if let Ok(report) = &result
+                    && report.has_infrastructure_failure()
+                    && let Some(replacement_index) = replacement_index
+                    && let Some(replacement) = replacements
+                        .get_mut(replacement_index)
+                        .and_then(|replacement| replacement.next(task_index, profile_index, trial))
+                {
+                    info!(
+                        task = report.task_name(),
+                        failed_trial = trial,
+                        replacement_trial = replacement.trial,
+                        remaining_replacements = replacements
+                            .get(replacement_index)
+                            .map_or(0, |state| state.remaining),
+                        "scheduled a fresh pair to replace retained infrastructure failure"
+                    );
+                    pending.push_front(replacement);
+                }
             }
             results.push((task_index, profile_index, trial, memory_attempt, result));
         }
@@ -4072,6 +4084,9 @@ fn initial_differential_schedule(
                 profile,
                 next_trial: count.saturating_add(1),
                 remaining: max_infrastructure_replacements,
+                target_valid: count,
+                valid: 0,
+                outstanding: count,
             });
             pending.extend((1..=count).map(|trial| ScheduledComparison {
                 task_index,
@@ -4091,17 +4106,25 @@ fn initial_differential_schedule(
 }
 
 impl InfrastructureReplacementState {
+    fn complete(&mut self, valid: bool) {
+        self.outstanding = self.outstanding.saturating_sub(1);
+        if valid {
+            self.valid = self.valid.saturating_add(1).min(self.target_valid);
+        }
+    }
+
     fn next(
         &mut self,
         task_index: usize,
         profile_index: usize,
         infrastructure_replacement_for: usize,
     ) -> Option<ScheduledComparison> {
-        if self.remaining == 0 {
+        if self.remaining == 0 || self.valid.saturating_add(self.outstanding) >= self.target_valid {
             return None;
         }
         let trial = self.next_trial;
         self.remaining -= 1;
+        self.outstanding = self.outstanding.saturating_add(1);
         if let Some(next_trial) = trial.checked_add(1) {
             self.next_trial = next_trial;
         } else {
@@ -8429,6 +8452,9 @@ mod tests {
             ),
             next_trial: 6,
             remaining: 5,
+            target_valid: 5,
+            valid: 0,
+            outstanding: 0,
         };
 
         let coordinates = (1..=6)
@@ -8506,6 +8532,43 @@ mod tests {
                 None,
             ]
         );
+    }
+
+    #[test]
+    fn infrastructure_replacement_only_fills_an_uncovered_target_slot() {
+        let task =
+            Task::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tasks/write-greeting"))
+                .unwrap();
+        let mut replacements = InfrastructureReplacementState {
+            task,
+            profile: DifferentialProfile::new(
+                nanocodex_agent::Thinking::Medium,
+                ToolMode::CodeModeOnly,
+                CodexToolMode::CodeModeOnly,
+            ),
+            next_trial: 6,
+            remaining: 5,
+            target_valid: 5,
+            valid: 3,
+            outstanding: 2,
+        };
+
+        assert!(replacements.next(0, 0, 1).is_none());
+        assert_eq!(replacements.remaining, 5);
+
+        replacements.complete(false);
+        let replacement = replacements.next(0, 0, 2).unwrap();
+        assert_eq!(replacement.trial, 6);
+        assert_eq!(replacement.infrastructure_replacement_for, Some(2));
+        assert_eq!(replacements.valid, 3);
+        assert_eq!(replacements.outstanding, 2);
+        assert_eq!(replacements.remaining, 4);
+
+        replacements.complete(true);
+        assert!(replacements.next(0, 0, 3).is_none());
+        assert_eq!(replacements.valid, 4);
+        assert_eq!(replacements.outstanding, 1);
+        assert_eq!(replacements.remaining, 4);
     }
 
     #[test]
