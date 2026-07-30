@@ -18,6 +18,7 @@ use fs2::FileExt as _;
 use futures_util::{StreamExt as _, stream::FuturesUnordered};
 use nanocodex_agent::{NanocodexBuilder, Thinking, events::AgentEventKind};
 use nanocodex_oai_api::MODEL;
+use nanocodex_tools::ToolMode;
 use nanocodex_vm::host::Gvproxy;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -112,10 +113,10 @@ where
 
 const DEFAULT_OUTPUT_DIRECTORY: &str = ".nanocodex/eval-diff";
 const COMPARISON_FILE: &str = "comparison.json";
-const COMPARISON_SCHEMA_VERSION: u32 = 12;
+const COMPARISON_SCHEMA_VERSION: u32 = 13;
 const SWEEP_MANIFEST_FILE: &str = "differential-sweep.json";
 const SWEEP_LOCK_FILE: &str = ".differential-sweep.lock";
-const SWEEP_MANIFEST_SCHEMA_VERSION: u32 = 1;
+const SWEEP_MANIFEST_SCHEMA_VERSION: u32 = 2;
 const PROGRESS_FILE: &str = "progress.jsonl";
 const PROGRESS_SCHEMA_VERSION: u32 = 1;
 const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -178,6 +179,7 @@ struct DifferentialEvaluatorInner {
     output: PathBuf,
     thinking: Thinking,
     web_search: bool,
+    nanocodex_tool_mode: ToolMode,
     codex_tool_mode: CodexToolMode,
     nanocodex_build: ExecutableIdentity,
     admission: Arc<AdmissionController>,
@@ -191,15 +193,21 @@ struct DifferentialEvaluatorInner {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DifferentialProfile {
     thinking: Thinking,
+    nanocodex_tool_mode: ToolMode,
     codex_tool_mode: CodexToolMode,
 }
 
 impl DifferentialProfile {
-    /// Creates a matched reasoning-effort and stock-tool-exposure treatment.
+    /// Creates one reasoning-effort and paired tool-exposure treatment.
     #[must_use]
-    pub const fn new(thinking: Thinking, codex_tool_mode: CodexToolMode) -> Self {
+    pub const fn new(
+        thinking: Thinking,
+        nanocodex_tool_mode: ToolMode,
+        codex_tool_mode: CodexToolMode,
+    ) -> Self {
         Self {
             thinking,
+            nanocodex_tool_mode,
             codex_tool_mode,
         }
     }
@@ -210,6 +218,12 @@ impl DifferentialProfile {
         self.thinking
     }
 
+    /// Returns Nanocodex's model-visible tool exposure.
+    #[must_use]
+    pub const fn nanocodex_tool_mode(self) -> ToolMode {
+        self.nanocodex_tool_mode
+    }
+
     /// Returns stock Codex's model-visible tool exposure.
     #[must_use]
     pub const fn codex_tool_mode(self) -> CodexToolMode {
@@ -218,8 +232,9 @@ impl DifferentialProfile {
 
     fn name(self) -> String {
         format!(
-            "{}__{}",
+            "{}__nanocodex_{}__codex_{}",
             self.thinking.as_str(),
+            self.nanocodex_tool_mode.as_str(),
             self.codex_tool_mode.as_str()
         )
     }
@@ -482,6 +497,7 @@ struct DifferentialComparison {
     output: PathBuf,
     thinking: Thinking,
     web_search: bool,
+    nanocodex_tool_mode: ToolMode,
     codex_tool_mode: CodexToolMode,
     nanocodex_build: ExecutableIdentity,
     schedule: DifferentialSchedule,
@@ -497,6 +513,7 @@ pub struct DifferentialEvaluatorBuilder {
     output: PathBuf,
     thinking: Thinking,
     web_search: bool,
+    nanocodex_tool_mode: ToolMode,
     codex_tool_mode: CodexToolMode,
     nanocodex_build: Option<ExecutableIdentity>,
     max_concurrency: usize,
@@ -704,6 +721,7 @@ pub struct DifferentialReportSummary {
     task_content_digest: String,
     trial: usize,
     thinking: String,
+    nanocodex_tool_mode: ToolMode,
     codex_tool_mode: CodexToolMode,
     classification: DifferentialClassification,
     infrastructure_failure: bool,
@@ -739,6 +757,7 @@ struct DifferentialSweepTask {
 #[derive(Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct DifferentialSweepProfile {
     thinking: String,
+    nanocodex_tool_mode: String,
     codex_tool_mode: String,
 }
 
@@ -773,6 +792,8 @@ struct RetainedTaskIdentity {
 #[derive(Deserialize)]
 struct RetainedComparisonPolicy {
     web_search: bool,
+    #[serde(default)]
+    nanocodex_tool_mode: ToolMode,
     codex_tool_mode: CodexToolMode,
 }
 
@@ -920,11 +941,11 @@ struct ComparisonPolicy {
     codex_ephemeral: bool,
     codex_approval_policy: &'static str,
     codex_sandbox: &'static str,
-    nanocodex_tool_mode: &'static str,
+    nanocodex_tool_mode: ToolMode,
     codex_tool_mode: CodexToolMode,
     multi_agent: &'static str,
     reasoning_summary: &'static str,
-    expected_nanocodex_visible_tools: [&'static str; 2],
+    expected_nanocodex_visible_tools: Vec<&'static str>,
 }
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -3150,6 +3171,7 @@ fn differential_sweep_manifest(
         .iter()
         .map(|profile| DifferentialSweepProfile {
             thinking: profile.thinking.as_str().to_owned(),
+            nanocodex_tool_mode: profile.nanocodex_tool_mode.as_str().to_owned(),
             codex_tool_mode: profile.codex_tool_mode.as_str().to_owned(),
         })
         .collect::<Vec<_>>();
@@ -3275,6 +3297,7 @@ fn retained_differential_summary(
     });
     let profile_matches = manifest.profiles.iter().any(|profile| {
         profile.thinking == report.thinking
+            && profile.nanocodex_tool_mode == report.policy.nanocodex_tool_mode.as_str()
             && profile.codex_tool_mode == report.policy.codex_tool_mode.as_str()
     });
     if !task_matches
@@ -3315,6 +3338,7 @@ fn retained_differential_summary(
         task_content_digest: report.task.content_digest,
         trial: report.trial,
         thinking: report.thinking,
+        nanocodex_tool_mode: report.policy.nanocodex_tool_mode,
         codex_tool_mode: report.policy.codex_tool_mode,
         classification: report.classification,
         infrastructure_failure,
@@ -3464,6 +3488,7 @@ impl DifferentialEvaluator {
             output: PathBuf::from(DEFAULT_OUTPUT_DIRECTORY),
             thinking: Thinking::Medium,
             web_search: false,
+            nanocodex_tool_mode: ToolMode::CodeModeOnly,
             codex_tool_mode: CodexToolMode::CodeModeOnly,
             nanocodex_build: None,
             max_concurrency: 1,
@@ -3483,7 +3508,11 @@ impl DifferentialEvaluator {
         self.run_task(
             task,
             1,
-            DifferentialProfile::new(self.inner.thinking, self.inner.codex_tool_mode),
+            DifferentialProfile::new(
+                self.inner.thinking,
+                self.inner.nanocodex_tool_mode,
+                self.inner.codex_tool_mode,
+            ),
             None,
         )
         .await
@@ -3557,6 +3586,7 @@ impl DifferentialEvaluator {
             output: inner.output.clone(),
             thinking: profile.thinking,
             web_search: inner.web_search,
+            nanocodex_tool_mode: profile.nanocodex_tool_mode,
             codex_tool_mode: profile.codex_tool_mode,
             nanocodex_build: inner.nanocodex_build.clone(),
             schedule: DifferentialSchedule {
@@ -3637,6 +3667,7 @@ impl DifferentialEvaluator {
             count,
             vec![DifferentialProfile::new(
                 self.inner.thinking,
+                self.inner.nanocodex_tool_mode,
                 self.inner.codex_tool_mode,
             )],
         )
@@ -3659,6 +3690,7 @@ impl DifferentialEvaluator {
             1,
             vec![DifferentialProfile::new(
                 self.inner.thinking,
+                self.inner.nanocodex_tool_mode,
                 self.inner.codex_tool_mode,
             )],
         )
@@ -3892,6 +3924,7 @@ impl DifferentialEvaluator {
             (
                 &left.task_root,
                 &left.thinking,
+                left.nanocodex_tool_mode.as_str(),
                 left.codex_tool_mode.as_str(),
                 left.trial,
                 left.memory_attempt,
@@ -3900,6 +3933,7 @@ impl DifferentialEvaluator {
                 .cmp(&(
                     &right.task_root,
                     &right.thinking,
+                    right.nanocodex_tool_mode.as_str(),
                     right.codex_tool_mode.as_str(),
                     right.trial,
                     right.memory_attempt,
@@ -3935,6 +3969,7 @@ impl DifferentialEvaluator {
             count,
             vec![DifferentialProfile::new(
                 self.inner.thinking,
+                self.inner.nanocodex_tool_mode,
                 self.inner.codex_tool_mode,
             )],
         )
@@ -3961,7 +3996,13 @@ impl DifferentialEvaluator {
     ) -> DifferentialResult<DifferentialSweepResults> {
         let profiles = codex_tool_modes
             .into_iter()
-            .map(|tool_mode| DifferentialProfile::new(self.inner.thinking, tool_mode))
+            .map(|tool_mode| {
+                DifferentialProfile::new(
+                    self.inner.thinking,
+                    self.inner.nanocodex_tool_mode,
+                    tool_mode,
+                )
+            })
             .collect();
         self.run_tasks(tasks, count, profiles).await
     }
@@ -3969,7 +4010,7 @@ impl DifferentialEvaluator {
     /// Runs one centrally scheduled task × profile × trial matrix.
     ///
     /// Profiles are semantic identities: both arms receive the profile's
-    /// reasoning effort and stock Codex receives its selected tool exposure.
+    /// reasoning effort and each arm receives its selected tool exposure.
     /// Images, staged executables, admission limits, and completion handling
     /// are shared by the complete matrix.
     ///
@@ -4155,6 +4196,7 @@ impl DifferentialComparison {
             output,
             thinking,
             web_search,
+            nanocodex_tool_mode,
             codex_tool_mode,
             nanocodex_build,
             schedule,
@@ -4167,7 +4209,7 @@ impl DifferentialComparison {
         let comparison_id = Uuid::now_v7();
         let comparison_directory = output.join(differential_comparison_name(
             &task,
-            DifferentialProfile::new(thinking, codex_tool_mode),
+            DifferentialProfile::new(thinking, nanocodex_tool_mode, codex_tool_mode),
             trial,
             comparison_id,
         ));
@@ -4184,8 +4226,9 @@ impl DifferentialComparison {
             "runner",
             "comparison.started",
             format!(
-                "{} · {MODEL} / {thinking} · stock {}",
+                "{} · {MODEL} / {thinking} · nanocodex {} · stock {}",
                 task.name(),
+                nanocodex_tool_mode.as_str(),
                 codex_tool_mode.as_str()
             ),
         );
@@ -4214,7 +4257,7 @@ impl DifferentialComparison {
                 vm_resources.nanocodex_backend(),
                 move |_attempt, builder, runtime| {
                     let _ = nanocodex_memory_slot.set(runtime.memory_observation());
-                    runtime.nanocodex(builder)
+                    runtime.nanocodex_with_tool_mode(builder, nanocodex_tool_mode)
                 },
             );
         let codex_backend = vm_resources.codex_backend();
@@ -4307,7 +4350,9 @@ impl DifferentialComparison {
             &api_comparison,
             MODEL,
             thinking.as_str(),
+            nanocodex_tool_mode,
             codex_tool_mode,
+            web_search,
         );
         progress.emit("runner", "comparison.completed", classification.as_str());
         let progress_error = progress_recorder
@@ -4336,11 +4381,14 @@ impl DifferentialComparison {
                 codex_ephemeral: true,
                 codex_approval_policy: "never",
                 codex_sandbox: "danger_full_access",
-                nanocodex_tool_mode: "code_mode_only",
+                nanocodex_tool_mode,
                 codex_tool_mode,
                 multi_agent: "disabled",
                 reasoning_summary: "auto",
-                expected_nanocodex_visible_tools: ["exec", "wait"],
+                expected_nanocodex_visible_tools: expected_nanocodex_visible_tools(
+                    nanocodex_tool_mode,
+                    web_search,
+                ),
             },
             started_at,
             finished_at: Utc::now(),
@@ -4410,10 +4458,14 @@ impl DifferentialEvaluatorBuilder {
         self
     }
 
+    /// Selects Nanocodex's model-visible tool exposure.
+    #[must_use]
+    pub const fn nanocodex_tool_mode(mut self, tool_mode: ToolMode) -> Self {
+        self.nanocodex_tool_mode = tool_mode;
+        self
+    }
+
     /// Selects stock Codex's model-visible tool exposure.
-    ///
-    /// Nanocodex remains in Code Mode-only so normal Code Mode can be
-    /// evaluated as one deliberate stock-arm treatment.
     #[must_use]
     pub const fn codex_tool_mode(mut self, tool_mode: CodexToolMode) -> Self {
         self.codex_tool_mode = tool_mode;
@@ -4529,6 +4581,7 @@ impl DifferentialEvaluatorBuilder {
                 output,
                 thinking: self.thinking,
                 web_search: self.web_search,
+                nanocodex_tool_mode: self.nanocodex_tool_mode,
                 codex_tool_mode: self.codex_tool_mode,
                 nanocodex_build,
                 admission: Arc::new(AdmissionController::new(
@@ -4578,6 +4631,7 @@ impl DifferentialReportSummary {
             task_content_digest: report.task.content_digest.clone(),
             trial: report.trial,
             thinking: report.thinking.clone(),
+            nanocodex_tool_mode: report.policy.nanocodex_tool_mode,
             codex_tool_mode: report.policy.codex_tool_mode,
             classification: report.classification,
             infrastructure_failure: report.has_infrastructure_failure(),
@@ -4596,6 +4650,7 @@ impl DifferentialReportSummary {
             && self.task_name == task.name()
             && self.task_content_digest == task.content_digest()
             && self.thinking == profile.thinking.as_str()
+            && self.nanocodex_tool_mode == profile.nanocodex_tool_mode
             && self.codex_tool_mode == profile.codex_tool_mode
     }
 
@@ -4613,6 +4668,12 @@ impl DifferentialReportSummary {
     #[must_use]
     pub fn thinking(&self) -> &str {
         &self.thinking
+    }
+
+    /// Returns Nanocodex's tool-exposure treatment.
+    #[must_use]
+    pub const fn nanocodex_tool_mode(&self) -> ToolMode {
+        self.nanocodex_tool_mode
     }
 
     /// Returns stock Codex's tool-exposure treatment.
@@ -4681,6 +4742,12 @@ impl DifferentialReport {
     #[must_use]
     pub fn task_name(&self) -> &str {
         &self.task.name
+    }
+
+    /// Returns the Nanocodex tool treatment used by this coordinate.
+    #[must_use]
+    pub const fn nanocodex_tool_mode(&self) -> ToolMode {
+        self.policy.nanocodex_tool_mode
     }
 
     /// Returns the stock-Codex tool treatment used by this coordinate.
@@ -4784,6 +4851,13 @@ impl DifferentialReport {
         let mut output = String::new();
         let _ = writeln!(output, "{}", self.classification.as_str());
         let _ = writeln!(output, "task: {} · trial: {}", self.task.name, self.trial);
+        let _ = writeln!(
+            output,
+            "profile: {} · nanocodex {} · stock {}",
+            self.thinking,
+            self.policy.nanocodex_tool_mode.as_str(),
+            self.policy.codex_tool_mode.as_str(),
+        );
         let _ = writeln!(
             output,
             "memory: attempt {} · {} MiB guest/arm · {}+{} MiB host admission",
@@ -5841,12 +5915,24 @@ fn reanalyze_inner(path: &Path) -> InternalResult<DifferentialReanalysis> {
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
     let profile_validation_error = if let Some(summary) = api_summary.as_ref() {
+        let nanocodex_tool_mode = retained_nanocodex_tool_mode(&comparison)?;
         let codex_tool_mode = retained_codex_tool_mode(&comparison)?;
+        let web_search = comparison
+            .pointer("/policy/web_search")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         expected_model
             .as_deref()
             .zip(expected_effort.as_deref())
             .and_then(|(model, effort)| {
-                validate_differential_profile(summary, model, effort, codex_tool_mode)
+                validate_differential_profile(
+                    summary,
+                    model,
+                    effort,
+                    nanocodex_tool_mode,
+                    codex_tool_mode,
+                    web_search,
+                )
             })
     } else {
         None
@@ -6255,12 +6341,15 @@ fn validate_differential_profile(
     summary: &ApiComparisonSummary,
     expected_model: &str,
     expected_effort: &str,
+    nanocodex_tool_mode: ToolMode,
     codex_tool_mode: CodexToolMode,
+    web_search: bool,
 ) -> Option<String> {
     if !summary.comparable {
         return None;
     }
-    let expected_nanocodex = ["exec", "wait"];
+    let expected_nanocodex = expected_nanocodex_visible_tools(nanocodex_tool_mode, web_search);
+    let expected_code_mode_only = ["exec", "wait"];
     let expected_codex_code_mode = [
         "exec",
         "wait",
@@ -6278,39 +6367,37 @@ fn validate_differential_profile(
             && arm.initial_reasoning_effort.as_deref() == Some(expected_effort)
             && arm.initial_reasoning_summary.as_deref() == Some("auto")
     };
-    let code_mode_only_visible = |arm: &ApiEventLoopArmSummary| {
+    let visible_tools_match = |arm: &ApiEventLoopArmSummary, expected: &[&str]| {
         arm.initial_visible_tools
             .iter()
             .map(String::as_str)
-            .eq(expected_nanocodex)
+            .eq(expected.iter().copied())
     };
-    let nanocodex_matches = base_matches(nanocodex) && code_mode_only_visible(nanocodex);
+    let nanocodex_matches =
+        base_matches(nanocodex) && visible_tools_match(nanocodex, &expected_nanocodex);
     let codex_matches = base_matches(codex)
         && match codex_tool_mode {
-            CodexToolMode::CodeModeOnly => code_mode_only_visible(codex),
-            CodexToolMode::CodeMode => codex
-                .initial_visible_tools
-                .iter()
-                .map(String::as_str)
-                .eq(expected_codex_code_mode),
+            CodexToolMode::CodeModeOnly => visible_tools_match(codex, &expected_code_mode_only),
+            CodexToolMode::CodeMode => visible_tools_match(codex, &expected_codex_code_mode),
         };
     let model_input_matches = summary.event_loop.initial_input_text_sections_equal == Some(true)
         && summary
             .event_loop
             .initial_generation_input_text_sections_equal
             == Some(true);
-    let code_mode_catalog_matches = match codex_tool_mode {
-        CodexToolMode::CodeModeOnly => {
+    let code_mode_catalog_matches = match (nanocodex_tool_mode, codex_tool_mode) {
+        (ToolMode::CodeModeOnly, CodexToolMode::CodeModeOnly) => {
             summary.event_loop.initial_code_mode_tool_names_equal == Some(true)
                 && summary.event_loop.initial_code_mode_tool_definitions_equal == Some(true)
         }
-        CodexToolMode::CodeMode => true,
+        _ => true,
     };
     if nanocodex_matches && codex_matches && model_input_matches && code_mode_catalog_matches {
         return None;
     }
     Some(format!(
-        "expected Nanocodex Code Mode-only and stock Codex {} to use model={expected_model}, effort={expected_effort}, reasoning.summary=auto, the pinned visible-tool surfaces, and identical initial input text (plus identical nested definitions when both are Code Mode-only); nanocodex={}/{}/summary={}/[{}], codex={}/{}/summary={}/[{}], initial_input_text_equal={:?}, initial_generation_input_text_equal={:?}, nested_tool_names_equal={:?}, nested_tool_definitions_equal={:?}",
+        "expected Nanocodex {} and stock Codex {} to use model={expected_model}, effort={expected_effort}, reasoning.summary=auto, the pinned visible-tool surfaces, and identical initial input text (plus identical nested definitions when both are Code Mode-only); nanocodex={}/{}/summary={}/[{}], codex={}/{}/summary={}/[{}], initial_input_text_equal={:?}, initial_generation_input_text_equal={:?}, nested_tool_names_equal={:?}, nested_tool_definitions_equal={:?}",
+        nanocodex_tool_mode.as_str(),
         codex_tool_mode.as_str(),
         nanocodex.initial_model.as_deref().unwrap_or("unobserved"),
         nanocodex
@@ -6339,6 +6426,42 @@ fn validate_differential_profile(
         summary.event_loop.initial_code_mode_tool_names_equal,
         summary.event_loop.initial_code_mode_tool_definitions_equal,
     ))
+}
+
+fn expected_nanocodex_visible_tools(tool_mode: ToolMode, web_search: bool) -> Vec<&'static str> {
+    if tool_mode == ToolMode::CodeModeOnly {
+        return vec!["exec", "wait"];
+    }
+    let mut tools = vec![
+        "exec",
+        "wait",
+        "exec_command",
+        "write_stdin",
+        "update_plan",
+        "apply_patch",
+        "view_image",
+    ];
+    if web_search {
+        tools.push("web__run");
+    }
+    tools.push("image_gen__imagegen");
+    tools
+}
+
+fn retained_nanocodex_tool_mode(comparison: &serde_json::Value) -> InternalResult<ToolMode> {
+    match comparison
+        .pointer("/policy/nanocodex_tool_mode")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("code_mode") => Ok(ToolMode::CodeMode),
+        Some("code_mode_only") => Ok(ToolMode::CodeModeOnly),
+        Some(tool_mode) => Err(diff_error!(
+            "retained comparison has unsupported Nanocodex tool mode {tool_mode:?}"
+        )),
+        None => Err(diff_error!(
+            "retained comparison has no /policy/nanocodex_tool_mode"
+        )),
+    }
 }
 
 fn retained_codex_tool_mode(comparison: &serde_json::Value) -> InternalResult<CodexToolMode> {
@@ -7958,7 +8081,7 @@ mod tests {
         DifferentialMemoryProfile, DifferentialMemoryProfiles, DifferentialProfile,
         DifferentialReportSummary, DifferentialSweepManifest, DifferentialSweepProfile,
         DifferentialSweepTask, Evaluator, InfrastructureReplacementState, LaneProgressState,
-        ShellPollingSummary, Task, TrajectoryProjection, build_event_loop_trace,
+        ShellPollingSummary, Task, ToolMode, TrajectoryProjection, build_event_loop_trace,
         capture_proxy_vm_base_url, compare_api_exchanges, detected_code_mode_empty_stdin_calls,
         detected_polling_turn, diff_json, differential_comparison_name,
         differential_pair_memory_mb, event_loop_difference_categories,
@@ -8019,13 +8142,14 @@ mod tests {
                 &task,
                 DifferentialProfile::new(
                     nanocodex_agent::Thinking::Medium,
+                    ToolMode::CodeModeOnly,
                     CodexToolMode::CodeModeOnly,
                 ),
                 5,
                 id,
             ),
             format!(
-                "write-greeting__medium__code_mode_only__005__{}",
+                "write-greeting__medium__nanocodex_code_mode_only__codex_code_mode_only__005__{}",
                 id.simple()
             )
         );
@@ -8081,6 +8205,7 @@ mod tests {
                 .unwrap();
         let profile = DifferentialProfile::new(
             nanocodex_agent::Thinking::Medium,
+            ToolMode::CodeModeOnly,
             CodexToolMode::CodeModeOnly,
         );
         let (mut replacements, mut pending) =
@@ -8091,6 +8216,7 @@ mod tests {
             task_content_digest: task.content_digest().to_owned(),
             trial: 1,
             thinking: profile.thinking().as_str().to_owned(),
+            nanocodex_tool_mode: profile.nanocodex_tool_mode(),
             codex_tool_mode: profile.codex_tool_mode(),
             classification: DifferentialClassification::Incomplete,
             infrastructure_failure: true,
@@ -8136,6 +8262,7 @@ mod tests {
                 .unwrap();
         let profile = DifferentialProfile::new(
             nanocodex_agent::Thinking::Medium,
+            ToolMode::CodeModeOnly,
             CodexToolMode::CodeModeOnly,
         );
         let failed = DifferentialReportSummary {
@@ -8144,6 +8271,7 @@ mod tests {
             task_content_digest: task.content_digest().to_owned(),
             trial: 1,
             thinking: profile.thinking().as_str().to_owned(),
+            nanocodex_tool_mode: profile.nanocodex_tool_mode(),
             codex_tool_mode: profile.codex_tool_mode(),
             classification: DifferentialClassification::Incomplete,
             infrastructure_failure: true,
@@ -8214,6 +8342,7 @@ mod tests {
             }],
             profiles: vec![DifferentialSweepProfile {
                 thinking: "medium".to_owned(),
+                nanocodex_tool_mode: "code_mode_only".to_owned(),
                 codex_tool_mode: "code_mode_only".to_owned(),
             }],
             nanocodex_sha256: "nano-sha".to_owned(),
@@ -8243,7 +8372,11 @@ mod tests {
             "trial": 1,
             "model": MODEL,
             "thinking": "medium",
-            "policy": { "web_search": false, "codex_tool_mode": "code_mode_only" },
+            "policy": {
+                "web_search": false,
+                "nanocodex_tool_mode": "code_mode_only",
+                "codex_tool_mode": "code_mode_only"
+            },
             "schedule": {
                 "queued_at": "2026-07-29T00:00:00Z",
                 "admitted_at": "2026-07-29T00:00:01Z",
@@ -8283,6 +8416,7 @@ mod tests {
         write_json_atomic(&comparison_path, &report).unwrap();
 
         let summary = retained_differential_summary(&comparison_path, &manifest).unwrap();
+        assert_eq!(summary.nanocodex_tool_mode(), ToolMode::CodeModeOnly);
         assert!(summary.oom_detected());
         assert!(summary.has_infrastructure_failure());
         assert_eq!(summary.memory_attempt(), 1);
@@ -8299,6 +8433,7 @@ mod tests {
             task,
             profile: DifferentialProfile::new(
                 nanocodex_agent::Thinking::High,
+                ToolMode::CodeModeOnly,
                 CodexToolMode::CodeMode,
             ),
             next_trial: 6,
@@ -8328,6 +8463,7 @@ mod tests {
                     6,
                     DifferentialProfile::new(
                         nanocodex_agent::Thinking::High,
+                        ToolMode::CodeModeOnly,
                         CodexToolMode::CodeMode
                     ),
                     Some(1)
@@ -8338,6 +8474,7 @@ mod tests {
                     7,
                     DifferentialProfile::new(
                         nanocodex_agent::Thinking::High,
+                        ToolMode::CodeModeOnly,
                         CodexToolMode::CodeMode
                     ),
                     Some(2)
@@ -8348,6 +8485,7 @@ mod tests {
                     8,
                     DifferentialProfile::new(
                         nanocodex_agent::Thinking::High,
+                        ToolMode::CodeModeOnly,
                         CodexToolMode::CodeMode
                     ),
                     Some(3)
@@ -8358,6 +8496,7 @@ mod tests {
                     9,
                     DifferentialProfile::new(
                         nanocodex_agent::Thinking::High,
+                        ToolMode::CodeModeOnly,
                         CodexToolMode::CodeMode
                     ),
                     Some(4)
@@ -8368,6 +8507,7 @@ mod tests {
                     10,
                     DifferentialProfile::new(
                         nanocodex_agent::Thinking::High,
+                        ToolMode::CodeModeOnly,
                         CodexToolMode::CodeMode
                     ),
                     Some(5)
@@ -8381,9 +8521,14 @@ mod tests {
     fn differential_matrix_requires_distinct_tool_modes() {
         assert!(
             validate_differential_profiles(&[
-                DifferentialProfile::new(nanocodex_agent::Thinking::Low, CodexToolMode::CodeMode),
                 DifferentialProfile::new(
                     nanocodex_agent::Thinking::Low,
+                    ToolMode::CodeModeOnly,
+                    CodexToolMode::CodeMode,
+                ),
+                DifferentialProfile::new(
+                    nanocodex_agent::Thinking::Low,
+                    ToolMode::CodeModeOnly,
                     CodexToolMode::CodeModeOnly,
                 ),
             ])
@@ -8393,13 +8538,16 @@ mod tests {
             validate_differential_profiles(&[]).unwrap_err().to_string(),
             "differential matrix requires at least one profile"
         );
-        let duplicate =
-            DifferentialProfile::new(nanocodex_agent::Thinking::Low, CodexToolMode::CodeModeOnly);
+        let duplicate = DifferentialProfile::new(
+            nanocodex_agent::Thinking::Low,
+            ToolMode::CodeModeOnly,
+            CodexToolMode::CodeModeOnly,
+        );
         assert_eq!(
             validate_differential_profiles(&[duplicate, duplicate])
                 .unwrap_err()
                 .to_string(),
-            "differential matrix contains duplicate profile low__code_mode_only"
+            "differential matrix contains duplicate profile low__nanocodex_code_mode_only__codex_code_mode_only"
         );
     }
 
@@ -8409,8 +8557,16 @@ mod tests {
             Task::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tasks/write-greeting"))
                 .unwrap();
         let profiles = [
-            DifferentialProfile::new(nanocodex_agent::Thinking::Medium, CodexToolMode::CodeMode),
-            DifferentialProfile::new(nanocodex_agent::Thinking::High, CodexToolMode::CodeModeOnly),
+            DifferentialProfile::new(
+                nanocodex_agent::Thinking::Medium,
+                ToolMode::CodeMode,
+                CodexToolMode::CodeMode,
+            ),
+            DifferentialProfile::new(
+                nanocodex_agent::Thinking::High,
+                ToolMode::CodeModeOnly,
+                CodexToolMode::CodeModeOnly,
+            ),
         ];
 
         let (replacements, pending) = initial_differential_schedule(vec![task], 2, &profiles, 2);
@@ -9119,7 +9275,9 @@ mod tests {
                 &summary,
                 "gpt-test",
                 "medium",
+                ToolMode::CodeModeOnly,
                 CodexToolMode::CodeModeOnly,
+                false,
             )
             .is_none()
         );
@@ -9164,7 +9322,38 @@ mod tests {
                 &normal_code_mode,
                 "gpt-test",
                 "medium",
+                ToolMode::CodeModeOnly,
                 CodexToolMode::CodeMode,
+                false,
+            )
+            .is_none()
+        );
+        let mut both_normal_code_mode = normal_code_mode.clone();
+        both_normal_code_mode
+            .event_loop
+            .nanocodex
+            .as_mut()
+            .unwrap()
+            .initial_visible_tools = [
+            "exec",
+            "wait",
+            "exec_command",
+            "write_stdin",
+            "update_plan",
+            "apply_patch",
+            "view_image",
+            "image_gen__imagegen",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert!(
+            validate_differential_profile(
+                &both_normal_code_mode,
+                "gpt-test",
+                "medium",
+                ToolMode::CodeMode,
+                CodexToolMode::CodeMode,
+                false,
             )
             .is_none()
         );
@@ -9180,7 +9369,9 @@ mod tests {
                 &mismatched_profile,
                 "gpt-test",
                 "medium",
+                ToolMode::CodeModeOnly,
                 CodexToolMode::CodeModeOnly,
+                false,
             )
             .is_some()
         );

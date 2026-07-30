@@ -97,6 +97,9 @@ pub(crate) use nanocodex_oai_api::ImageDetail;
 #[cfg(all(not(target_family = "wasm"), feature = "native"))]
 #[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
 pub use nanocodex_tools_macros::tool;
+#[cfg(all(not(target_family = "wasm"), feature = "native"))]
+#[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
+pub use runtime::ToolMode;
 #[cfg(feature = "native")]
 pub use runtime::Tools;
 #[cfg(all(not(target_family = "wasm"), feature = "native"))]

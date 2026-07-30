@@ -6,6 +6,7 @@ use super::*;
 /// normally owned privately by the higher-level agent driver.
 pub struct ToolRuntime {
     pub(super) registry: Arc<ToolRegistry>,
+    tool_mode: ToolMode,
     code_mode: code_mode::CodeModeRuntime,
     sessions: Arc<ShellSessions>,
     current_turn: Arc<AtomicU64>,
@@ -107,6 +108,7 @@ impl ToolRuntime {
         }
         Self {
             registry: Arc::new(ToolRegistry::from_ordered(handlers)),
+            tool_mode: ToolMode::default(),
             code_mode: code_mode::CodeModeRuntime::new_with_turn(
                 code_mode_workspace,
                 Arc::clone(&current_turn),
@@ -126,6 +128,7 @@ impl ToolRuntime {
     #[must_use]
     pub fn with_tools(mut self, tools: &Tools) -> Self {
         tools.start_providers();
+        self.tool_mode = tools.tool_mode();
         let registry = Arc::make_mut(&mut self.registry);
         registry.extend(tools.registered.iter().cloned());
         registry.providers.extend(tools.providers.iter().cloned());
@@ -167,18 +170,47 @@ impl ToolRuntime {
     /// session.
     #[must_use]
     pub fn model_specs(&self, _session_id: &str) -> Vec<ToolDefinition> {
-        let (mut native, mut nested): (Vec<_>, Vec<_>) = self
+        let mut nested = self
             .registry
             .definitions()
             .iter()
+            .filter(|definition| !matches!(definition, ToolDefinition::ToolSearch { .. }))
             .cloned()
-            .partition(|definition| matches!(definition, ToolDefinition::ToolSearch { .. }));
+            .collect::<Vec<_>>();
+        let mut direct = self
+            .registry
+            .definitions()
+            .iter()
+            .filter(|definition| {
+                self.tool_mode == ToolMode::CodeMode
+                    && !matches!(definition, ToolDefinition::ToolSearch { .. })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if self.tool_mode == ToolMode::CodeMode {
+            direct = direct
+                .into_iter()
+                .map(code_mode::description::augment_definition_for_code_mode)
+                .collect();
+            crate::code_mode_order::sort_direct_definitions(&mut direct);
+        }
         crate::code_mode_order::sort_definitions(&mut nested);
-        native.extend([
-            code_mode::exec_spec(&nested, !self.registry.providers.is_empty()),
+        let mut native = vec![
+            code_mode::exec_spec(
+                &nested,
+                !self.registry.providers.is_empty(),
+                self.tool_mode == ToolMode::CodeModeOnly,
+            ),
             code_mode::wait_spec(),
-        ]);
-        native.sort_by(|left, right| left.name().cmp(right.name()));
+        ];
+        native.append(&mut direct);
+        native.extend(
+            self.registry
+                .definitions()
+                .iter()
+                .filter(|definition| matches!(definition, ToolDefinition::ToolSearch { .. }))
+                .cloned(),
+        );
         native
     }
 

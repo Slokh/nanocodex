@@ -16,10 +16,11 @@ SOURCE: /[\s\S]+/
 pub(crate) fn exec_spec(
     definitions: &[ToolDefinition],
     has_deferred_tools: bool,
+    code_mode_only: bool,
 ) -> ToolDefinition {
     ToolDefinition::custom(
         "exec",
-        description::exec_description(definitions, has_deferred_tools),
+        description::exec_description(definitions, has_deferred_tools, code_mode_only),
         CustomToolFormat::grammar("lark", GRAMMAR),
     )
 }

@@ -132,15 +132,12 @@ where
 }
 
 pub(super) fn unsupported_tool_message(tools: &ToolRuntime, call: &CodeCall) -> Option<String> {
-    if call.namespace.is_none() && matches!(call.name.as_str(), "exec" | "wait") {
+    let qualified_name = qualified_tool_name(call);
+    if (call.namespace.is_none() && matches!(call.name.as_str(), "exec" | "wait"))
+        || tools.contains(&qualified_name)
+    {
         return None;
     }
-    if call.namespace.is_some() && matches!(call.kind, CodeCallKind::Function) {
-        let qualified_name = qualified_tool_name(call);
-        return (!tools.contains(&qualified_name))
-            .then(|| format!("unsupported call: {qualified_name}"));
-    }
-    let qualified_name = qualified_tool_name(call);
     Some(match &call.kind {
         CodeCallKind::Custom => format!("unsupported custom tool call: {qualified_name}"),
         CodeCallKind::Function => format!("unsupported call: {qualified_name}"),

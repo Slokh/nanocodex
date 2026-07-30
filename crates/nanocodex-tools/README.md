@@ -14,7 +14,7 @@ The definition is the single source of truth for a tool's registry name. The
 macro derives its input and output schemas from the function:
 
 ```rust
-use nanocodex_tools::{Tools, tool};
+use nanocodex_tools::{ToolMode, Tools, tool};
 
 #[tool(
     name = "deployment_region",
@@ -28,11 +28,20 @@ async fn deployment_region(service: String) -> Result<String, std::io::Error> {
 # fn build() -> Result<(), nanocodex_tools::ToolsBuildError> {
 let tools = Tools::builder()
     .without_defaults()
+    .tool_mode(ToolMode::CodeMode)
     .tool(deployment_region)
     .build()?;
 # Ok(())
 # }
 ```
+
+`Tools` defaults to `ToolMode::CodeModeOnly`, where ordinary tools are
+available through `exec` and only Code Mode entrypoints are directly visible.
+Select `ToolMode::CodeMode` to expose the same ordinary tools directly as well
+as through `exec`. Matching Codex, normal Code Mode keeps `exec` terse and
+adds each typed `exec` declaration to the corresponding direct tool; Code
+Mode-only instead carries the complete nested catalog in `exec`. Selection
+changes model-visible exposure, not registration or dispatch behavior.
 
 Macro tools execute serially unless `parallel = true` explicitly marks their
 local effects as safe to overlap. This does not change the provider wire
@@ -134,7 +143,7 @@ tool implementation or an alternate mode for normal native applications.
 ## Going lower level
 
 The crate root intentionally contains only the normal registry path:
-[`Tools`], `ToolsBuilder`, `ToolsBuildError`, [`Tool`], `tool`, and the
+[`ToolMode`], [`Tools`], `ToolsBuilder`, `ToolsBuildError`, [`Tool`], `tool`, and the
 types required by the `Tool` methods, plus
 [`ambient_sensitive_environment`](crate::ambient_sensitive_environment) for
 deliberately restoring proxy-safe credential markers to tool subprocesses.

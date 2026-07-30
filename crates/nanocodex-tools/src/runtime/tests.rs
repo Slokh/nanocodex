@@ -13,7 +13,7 @@ use serde_json::{Value, json, value::to_raw_value};
 use crate::{ToolOutputBody, ToolResult, contract::DEFAULT_TOOL_OUTPUT_TOKENS};
 
 use super::{
-    DynamicToolProvider, ImageGenerationConfig, Tool, ToolContext, ToolInput, ToolOutput,
+    DynamicToolProvider, ImageGenerationConfig, Tool, ToolContext, ToolInput, ToolMode, ToolOutput,
     ToolRuntime, Tools, WebSearchConfig,
 };
 
@@ -474,6 +474,64 @@ fn model_description_is_stable_across_registration_order() {
     .unwrap();
 
     assert_eq!(first, second);
+}
+
+#[test]
+fn tool_mode_controls_direct_visibility_without_removing_code_mode_access() {
+    let code_mode_only = Tools::builder()
+        .without_defaults()
+        .tool(Double)
+        .build()
+        .unwrap();
+    assert_eq!(code_mode_only.tool_mode(), ToolMode::CodeModeOnly);
+    let code_mode_only = ToolRuntime::new_with_tools(".", None, None, &code_mode_only);
+    let code_mode_only_contract = code_mode_only.model_contract("test-session").1;
+    assert_eq!(
+        code_mode_only
+            .model_specs("test-session")
+            .iter()
+            .map(ToolDefinition::name)
+            .collect::<Vec<_>>(),
+        ["exec", "wait"]
+    );
+
+    let code_mode = Tools::builder()
+        .without_defaults()
+        .tool_mode(ToolMode::CodeMode)
+        .tool(Double)
+        .build()
+        .unwrap();
+    assert_eq!(code_mode.tool_mode(), ToolMode::CodeMode);
+    let code_mode = ToolRuntime::new_with_tools(".", None, None, &code_mode);
+    let code_mode_contract = code_mode.model_contract("test-session").1;
+    let specs = code_mode.model_specs("test-session");
+    assert_eq!(
+        specs.iter().map(ToolDefinition::name).collect::<Vec<_>>(),
+        ["exec", "wait", "double"]
+    );
+    let exec = specs
+        .iter()
+        .find(|definition| definition.name() == "exec")
+        .unwrap();
+    assert!(
+        !serde_json::to_value(exec).unwrap()["description"]
+            .as_str()
+            .is_some_and(|description| description.contains(
+                "declare const tools: { double(args: { value: number; }): Promise<unknown>; };"
+            )),
+        "normal Code Mode keeps exec terse like Codex"
+    );
+    let direct_double = specs
+        .iter()
+        .find(|definition| definition.name() == "double")
+        .unwrap();
+    assert!(
+        direct_double.description().contains(
+            "declare const tools: { double(args: { value: number; }): Promise<unknown>; };"
+        ),
+        "normal Code Mode augments each direct spec with its exec declaration"
+    );
+    assert_eq!(code_mode_contract, code_mode_only_contract);
 }
 
 #[test]

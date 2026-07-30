@@ -1,4 +1,28 @@
 use super::*;
+use serde::{Deserialize, Serialize};
+
+/// Nanocodex's model-visible tool exposure policy.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolMode {
+    /// Expose `exec` and `wait` before ordinary direct tools, while retaining
+    /// the same handlers for calls composed through Code Mode.
+    CodeMode,
+    /// Expose normal tools only through Code Mode's `exec` entrypoint.
+    #[default]
+    CodeModeOnly,
+}
+
+impl ToolMode {
+    /// Returns the stable serialized name for this tool mode.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CodeMode => "code_mode",
+            Self::CodeModeOnly => "code_mode_only",
+        }
+    }
+}
 
 /// A lazily populated family of Code Mode tools.
 ///
@@ -47,6 +71,7 @@ pub trait DynamicToolProvider: Send + Sync {
 /// Declarative selection of the built-in tools installed for an agent.
 #[derive(Clone)]
 pub struct Tools {
+    tool_mode: ToolMode,
     workspace: bool,
     web_search: bool,
     image_generation: bool,
@@ -61,6 +86,7 @@ pub struct Tools {
 impl Default for Tools {
     fn default() -> Self {
         Self {
+            tool_mode: ToolMode::default(),
             workspace: true,
             web_search: true,
             image_generation: true,
@@ -79,6 +105,7 @@ impl fmt::Debug for Tools {
         let remote_http_client_configured = self.remote_http_client.is_some();
         formatter
             .debug_struct("Tools")
+            .field("tool_mode", &self.tool_mode)
             .field("workspace", &self.workspace)
             .field("web_search", &self.web_search)
             .field("image_generation", &self.image_generation)
@@ -114,6 +141,12 @@ impl Tools {
     #[must_use]
     pub const fn into_builder(self) -> ToolsBuilder {
         ToolsBuilder { tools: self }
+    }
+
+    /// Returns the model-visible tool exposure policy.
+    #[must_use]
+    pub const fn tool_mode(&self) -> ToolMode {
+        self.tool_mode
     }
 
     /// Returns whether the standard workspace tools are enabled.
@@ -198,6 +231,13 @@ pub enum ToolsBuildError {
 }
 
 impl ToolsBuilder {
+    /// Selects whether registered tools are also exposed directly to the model.
+    #[must_use]
+    pub const fn tool_mode(mut self, tool_mode: ToolMode) -> Self {
+        self.tools.tool_mode = tool_mode;
+        self
+    }
+
     /// Starts from an empty built-in tool set.
     #[must_use]
     pub const fn without_defaults(mut self) -> Self {

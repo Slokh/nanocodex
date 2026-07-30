@@ -19,6 +19,19 @@ pub(crate) fn sort_definitions(definitions: &mut [ToolDefinition]) {
     });
 }
 
+/// Matches Codex's direct Code Mode prefix: shell, plan, patch, image view,
+/// then application and namespaced tools in their registration order.
+pub(crate) fn sort_direct_definitions(definitions: &mut [ToolDefinition]) {
+    definitions.sort_by_key(|definition| match definition.name() {
+        "exec_command" => 0,
+        "write_stdin" => 1,
+        "update_plan" => 2,
+        "apply_patch" => 3,
+        "view_image" => 4,
+        _ => 5,
+    });
+}
+
 fn namespace_and_name(name: &str) -> Option<(&str, &str)> {
     let (namespace, name) = name.split_once("__")?;
     (!namespace.is_empty() && !name.is_empty()).then_some((namespace, name))

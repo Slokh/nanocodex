@@ -158,8 +158,8 @@ After that baseline:
    `--codex-tool-mode code-mode-only`;
 2. determine whether direct model-visible tools outside Code Mode improve
    success, cost, latency, or robustness;
-3. implement that mixed tool exposure in Nanocodex only if the controlled stock
-   Codex result demonstrates a benefit;
+3. expose both normal Code Mode and Code-Mode-Only in Nanocodex so the
+   controlled matrix can measure the same treatment on either implementation;
 4. rerun the Nanocodex-versus-Codex differential matrix at each supported
    effort.
 
@@ -361,6 +361,12 @@ Code-Mode-Only nested catalog matches, cache identities stay stable, all
 response/tool-result chains are valid, and the 45 replayed pairs split
 exclusive outcomes evenly. The current score difference is therefore not
 evidence of a broken Nanocodex event loop.
+Nanocodex now has the corresponding typed `ToolMode` policy and
+`--nanocodex-tool-mode` differential selector. Normal Code Mode follows
+Codex's direct-tool order and description split while retaining the same
+handlers for direct and nested dispatch; paired mode lists let one sweep run
+the four Nanocodex/Codex × Code-Mode/Code-Mode-Only arms without duplicate
+treatments.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in
