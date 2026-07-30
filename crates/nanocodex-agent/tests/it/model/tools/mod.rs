@@ -5,6 +5,34 @@ mod panic;
 mod parallel;
 
 struct NativeToolSearch;
+struct NamespacedEcho;
+
+#[nanocodex_tools::contract::async_trait]
+impl nanocodex_tools::Tool for NamespacedEcho {
+    fn definition(&self) -> nanocodex_tools::ToolDefinition {
+        nanocodex_tools::ToolDefinition::function(
+            "test_namespace__echo",
+            "Echo one value.",
+            json!({
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+                "additionalProperties": false
+            }),
+        )
+    }
+
+    async fn execute(
+        &self,
+        input: nanocodex_tools::ToolInput,
+        _context: nanocodex_tools::ToolContext<'_>,
+    ) -> nanocodex_tools::ToolResult {
+        let arguments: Value = input.decode_json()?;
+        Ok(nanocodex_tools::ToolOutput::text(
+            arguments["value"].as_str().unwrap_or_default(),
+        ))
+    }
+}
 
 #[tokio::test]
 async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<()> {
@@ -32,8 +60,9 @@ async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<
                 "update_plan",
                 "apply_patch",
                 "view_image",
-                "web__run",
-                "image_gen__imagegen",
+                "web",
+                "image_gen",
+                "test_namespace",
             ]
         );
         let exec = visible_tools
@@ -56,6 +85,32 @@ async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<
                 .unwrap_or_default()
                 .contains("exec tool declaration:")
         );
+        let exec_command = visible_tools
+            .iter()
+            .find(|definition| definition["name"] == "exec_command")
+            .unwrap();
+        assert!(exec_command.get("output_schema").is_none());
+        let image_gen = visible_tools
+            .iter()
+            .find(|definition| definition["name"] == "image_gen")
+            .unwrap();
+        assert_eq!(image_gen["type"], "namespace");
+        assert_eq!(
+            image_gen["description"],
+            "Tools in the image_gen namespace."
+        );
+        assert_eq!(image_gen["tools"][0]["name"], "imagegen");
+        assert!(
+            image_gen["tools"][0]
+                .pointer("/parameters/properties/referenced_image_paths/maxItems")
+                .is_none()
+        );
+        assert!(
+            image_gen["tools"][0]["description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("image_gen__imagegen(args:")
+        );
         send_warmup(&mut socket, "resp-warmup").await?;
 
         let generation = next_json(&mut socket).await?;
@@ -76,6 +131,13 @@ async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<
                         "call_id": "call-patch",
                         "name": "apply_patch",
                         "input": "*** Begin Patch\n*** Add File: direct-tool.txt\n+direct dispatch worked\n*** End Patch"
+                    }),
+                    json!({
+                        "type": "function_call",
+                        "call_id": "call-namespaced",
+                        "namespace": "test_namespace",
+                        "name": "echo",
+                        "arguments": "{\"value\":\"namespaced direct dispatch worked\"}"
                     }),
                 ],
             ),
@@ -98,12 +160,16 @@ async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<
                 .contains("unsupported"),
             "{continuation}"
         );
+        assert_eq!(input[2]["type"], "function_call_output");
+        assert_eq!(input[2]["call_id"], "call-namespaced");
+        assert_eq!(input[2]["output"], "namespaced direct dispatch worked");
         send_final(&mut socket, "resp-final").await
     });
 
     let workspace = temporary_workspace("normal-code-mode-direct-tools")?;
     let tools = Tools::builder()
         .tool_mode(nanocodex_tools::ToolMode::CodeMode)
+        .tool(NamespacedEcho)
         .build()?;
     let openai = OpenAi::builder("test-key")
         .websocket_url(&endpoint)
@@ -130,6 +196,7 @@ async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<
     let output = String::from_utf8(output)?;
     assert!(output.contains(r#""tool":"update_plan""#));
     assert!(output.contains(r#""tool":"apply_patch""#));
+    assert!(output.contains(r#""tool":"test_namespace__echo""#));
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -585,7 +652,7 @@ async fn unsupported_direct_tools_return_failed_results_to_the_model() -> Result
         assert_eq!(input[1]["call_id"], "call-function");
         assert_eq!(
             input[1]["output"],
-            "unsupported call: example::missing_function"
+            "unsupported call: example::__missing_function"
         );
         assert_client_item_id(&input[1], "fco");
         send_final(&mut socket, "resp-final").await

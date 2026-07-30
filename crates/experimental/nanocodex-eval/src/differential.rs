@@ -113,7 +113,7 @@ where
 
 const DEFAULT_OUTPUT_DIRECTORY: &str = ".nanocodex/eval-diff";
 const COMPARISON_FILE: &str = "comparison.json";
-const COMPARISON_SCHEMA_VERSION: u32 = 13;
+const COMPARISON_SCHEMA_VERSION: u32 = 14;
 const SWEEP_MANIFEST_FILE: &str = "differential-sweep.json";
 const SWEEP_LOCK_FILE: &str = ".differential-sweep.lock";
 const SWEEP_MANIFEST_SCHEMA_VERSION: u32 = 2;
@@ -6350,16 +6350,7 @@ fn validate_differential_profile(
     }
     let expected_nanocodex = expected_nanocodex_visible_tools(nanocodex_tool_mode, web_search);
     let expected_code_mode_only = ["exec", "wait"];
-    let expected_codex_code_mode = [
-        "exec",
-        "wait",
-        "exec_command",
-        "write_stdin",
-        "update_plan",
-        "apply_patch",
-        "view_image",
-        "image_gen",
-    ];
+    let expected_codex_code_mode = expected_nanocodex_visible_tools(ToolMode::CodeMode, web_search);
     let nanocodex = summary.event_loop.nanocodex.as_ref()?;
     let codex = summary.event_loop.codex.as_ref()?;
     let base_matches = |arm: &ApiEventLoopArmSummary| {
@@ -6442,9 +6433,9 @@ fn expected_nanocodex_visible_tools(tool_mode: ToolMode, web_search: bool) -> Ve
         "view_image",
     ];
     if web_search {
-        tools.push("web__run");
+        tools.push("web");
     }
-    tools.push("image_gen__imagegen");
+    tools.push("image_gen");
     tools
 }
 
@@ -9342,7 +9333,7 @@ mod tests {
             "update_plan",
             "apply_patch",
             "view_image",
-            "image_gen__imagegen",
+            "image_gen",
         ]
         .map(str::to_owned)
         .to_vec();

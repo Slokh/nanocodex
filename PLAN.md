@@ -364,9 +364,11 @@ evidence of a broken Nanocodex event loop.
 Nanocodex now has the corresponding typed `ToolMode` policy and
 `--nanocodex-tool-mode` differential selector. Normal Code Mode follows
 Codex's direct-tool order and description split while retaining the same
-handlers for direct and nested dispatch; paired mode lists let one sweep run
-the four Nanocodex/Codex × Code-Mode/Code-Mode-Only arms without duplicate
-treatments.
+handlers for direct and nested dispatch. Flat Code Mode names are projected
+back into the same Responses namespaces as Codex for direct exposure (for
+example `image_gen__imagegen` becomes `image_gen.imagegen`) while remaining
+flat inside `exec`; paired mode lists let one sweep run the four
+Nanocodex/Codex × Code-Mode/Code-Mode-Only arms without duplicate treatments.
 `gcode-to-text` is the clearest completed Code-Mode-Only advantage: stock is
 2/5 with direct outer tools and 5/5 in Code-Mode-Only. `regex-chess` is the
 clearest counterexample at 5/5 with direct outer tools versus 3/5 in

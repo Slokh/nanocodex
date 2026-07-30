@@ -188,10 +188,7 @@ impl ToolRuntime {
             .cloned()
             .collect::<Vec<_>>();
         if self.tool_mode == ToolMode::CodeMode {
-            direct = direct
-                .into_iter()
-                .map(code_mode::description::augment_definition_for_code_mode)
-                .collect();
+            direct = group_direct_code_mode_definitions(direct);
             crate::code_mode_order::sort_direct_definitions(&mut direct);
         }
         crate::code_mode_order::sort_definitions(&mut nested);
@@ -323,6 +320,42 @@ impl ToolRuntime {
     ) -> ToolOutput {
         self.registry.execute_direct(name, input, context).await
     }
+}
+
+fn group_direct_code_mode_definitions(definitions: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+    let mut grouped = Vec::<ToolDefinition>::new();
+    for definition in definitions {
+        let canonical_name = definition.name().to_owned();
+        let mut definition = code_mode::description::augment_definition_for_code_mode(definition);
+        let Some((namespace, name)) = canonical_name.rsplit_once("__") else {
+            grouped.push(definition);
+            continue;
+        };
+        if namespace.is_empty() || name.is_empty() {
+            grouped.push(definition);
+            continue;
+        }
+        let ToolDefinition::Function {
+            name: direct_name, ..
+        } = &mut definition
+        else {
+            grouped.push(definition);
+            continue;
+        };
+        *direct_name = name.into();
+        if let Some(ToolDefinition::Namespace { tools, .. }) = grouped.iter_mut().find(
+            |group| matches!(group, ToolDefinition::Namespace { name, .. } if &**name == namespace),
+        ) {
+            tools.push(definition);
+        } else {
+            grouped.push(ToolDefinition::namespace(
+                namespace,
+                format!("Tools in the {namespace} namespace."),
+                [definition],
+            ));
+        }
+    }
+    grouped
 }
 
 impl ToolRuntimeControl {
