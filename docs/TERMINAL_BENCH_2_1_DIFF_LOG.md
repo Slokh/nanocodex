@@ -2941,3 +2941,29 @@ historical; the complete table above is authoritative.
 | 87 | `vulnerable-secret` |  |  |  | pending |  |  |  |
 | 88 | `winning-avg-corewars` | `gpt-5.6-sol` / medium; Code Mode-only | running | running | running concurrently | Fifth-wave `results/winning-avg-corewars` | Low-repetition prior control admitted. | Inspect complete retained evidence on completion. |
 | 89 | `write-compressor` |  |  |  | pending |  |  |  |
+
+## 2026-07-30 host/guest context correction
+
+- A retained local medium cohort showed that Nanocodex's first generation
+  contained the repository's host `AGENTS.md`, while stock Codex's guest
+  `/app` contained no project instructions. The benchmark packages themselves
+  contain no `AGENTS.md`; this was evaluator context contamination, not a task
+  or agent-strategy difference. Those results remain retained but are excluded
+  from score conclusions.
+- VM-backed Nanocodex attempts now discover project instructions through the
+  ready guest filesystem before building the agent. The guest walk honors the
+  nearest `.git` root, `AGENTS.override.md` precedence, root-to-cwd ordering,
+  and the shared 32 KiB budget. An explicit empty guest snapshot suppresses
+  host discovery.
+- API-comparison schema v15 fingerprints complete visible tool definitions for
+  warm-up and first generation. Matched Code Mode and Code-Mode-Only profiles
+  now reject any description, schema, grammar, namespace, or order drift. All
+  138 complete retained regular-Code-Mode pairs from the latest tool-shape
+  release have identical full tool arrays; fresh Code-Mode-Only runs will pass
+  through the stronger gate rather than relying only on nested-section hashes.
+- Focused regressions cover host-instruction suppression, guest hierarchy and
+  override discovery, verifier cleanup after asynchronous driver preparation,
+  and changed tool descriptions with unchanged names. The complete agent and
+  eval suites, Clippy with warnings denied, rustfmt, and crate-boundary checks
+  pass. The next run is a fresh commit-pinned cohort over tasks with previously
+  discordant verifier outcomes.

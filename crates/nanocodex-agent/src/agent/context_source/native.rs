@@ -3,13 +3,21 @@ use std::{
     sync::Arc,
 };
 
-use super::agents_md::{load_global_instructions, load_instructions};
+use super::agents_md::{combine_instructions, load_global_instructions, load_instructions};
 use crate::{NanocodexError, Result};
 
 #[derive(Clone, Default)]
 pub(crate) struct ContextSourceConfig {
     codex_home: Option<PathBuf>,
     local_time_context: Option<super::LocalTimeContext>,
+    project_instructions: ProjectInstructionsSource,
+}
+
+#[derive(Clone, Default)]
+enum ProjectInstructionsSource {
+    #[default]
+    Native,
+    Snapshot(Option<Arc<str>>),
 }
 
 impl ContextSourceConfig {
@@ -25,6 +33,10 @@ impl ContextSourceConfig {
         self.local_time_context = Some(context);
     }
 
+    pub(crate) fn set_project_instructions_snapshot(&mut self, instructions: Option<Arc<str>>) {
+        self.project_instructions = ProjectInstructionsSource::Snapshot(instructions);
+    }
+
     pub(crate) const fn local_time_context(&self) -> Option<&super::LocalTimeContext> {
         self.local_time_context.as_ref()
     }
@@ -33,6 +45,7 @@ impl ContextSourceConfig {
         ContextSource {
             global_instructions: load_global_instructions(self.codex_home()),
             local_time_context: self.local_time_context.clone(),
+            project_instructions: self.project_instructions.clone(),
         }
     }
 }
@@ -41,6 +54,7 @@ impl ContextSourceConfig {
 pub(crate) struct ContextSource {
     global_instructions: Option<Arc<str>>,
     local_time_context: Option<super::LocalTimeContext>,
+    project_instructions: ProjectInstructionsSource,
 }
 
 impl ContextSource {
@@ -64,7 +78,14 @@ impl ContextSource {
     }
 
     pub(crate) fn project_instructions(&self, workspace: &str) -> Option<String> {
-        load_instructions(Path::new(workspace), self.global_instructions.as_deref())
+        match &self.project_instructions {
+            ProjectInstructionsSource::Snapshot(project) => {
+                combine_instructions(self.global_instructions.as_deref(), project.as_deref())
+            }
+            ProjectInstructionsSource::Native => {
+                load_instructions(Path::new(workspace), self.global_instructions.as_deref())
+            }
+        }
     }
 
     pub(crate) fn global_instructions(&self) -> Option<Arc<str>> {
@@ -80,5 +101,26 @@ impl ContextSource {
             self.global_instructions = fallback;
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_project_snapshot_replaces_native_workspace_discovery() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("AGENTS.md"), "host instructions").unwrap();
+        let mut config = ContextSourceConfig::default();
+        config.set_project_instructions_snapshot(Some(Arc::from("guest instructions")));
+
+        assert_eq!(
+            config
+                .build()
+                .project_instructions(workspace.path().to_str().unwrap())
+                .as_deref(),
+            Some("guest instructions")
+        );
     }
 }

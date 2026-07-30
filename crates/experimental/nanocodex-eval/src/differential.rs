@@ -113,7 +113,7 @@ where
 
 const DEFAULT_OUTPUT_DIRECTORY: &str = ".nanocodex/eval-diff";
 const COMPARISON_FILE: &str = "comparison.json";
-const COMPARISON_SCHEMA_VERSION: u32 = 14;
+const COMPARISON_SCHEMA_VERSION: u32 = 15;
 const SWEEP_MANIFEST_FILE: &str = "differential-sweep.json";
 const SWEEP_LOCK_FILE: &str = ".differential-sweep.lock";
 const SWEEP_MANIFEST_SCHEMA_VERSION: u32 = 2;
@@ -126,7 +126,7 @@ const TRAJECTORY_FILE: &str = "agent/trajectory.json";
 const API_EXCHANGES_FILE: &str = "agent/api-exchanges.jsonl";
 const API_COMPARISON_FILE: &str = "api-comparison.json";
 const API_CAPTURE_SCHEMA_VERSION: u32 = 1;
-const API_COMPARISON_SCHEMA_VERSION: u32 = 14;
+const API_COMPARISON_SCHEMA_VERSION: u32 = 15;
 const DIFF_CODEX_SHARE_TAG: &str = "nanoeval-codex";
 const DIFF_CODEX_SHARE_MOUNT: &str = "/run/nanoeval-codex";
 const DIFF_CODEX_GUEST_BINARY: &str = "/run/nanoeval-codex/codex";
@@ -1206,6 +1206,8 @@ struct ApiEventLoopComparison {
     initial_generation_client_metadata_shape_equal: Option<bool>,
     initial_input_text_sections_equal: Option<bool>,
     initial_generation_input_text_sections_equal: Option<bool>,
+    initial_visible_tool_definitions_equal: Option<bool>,
+    initial_generation_visible_tool_definitions_equal: Option<bool>,
     initial_code_mode_tool_names_equal: Option<bool>,
     initial_code_mode_tool_definitions_equal: Option<bool>,
     aligned_turns: u64,
@@ -1271,6 +1273,8 @@ struct ApiEventLoopArmSummary {
     initial_generation_client_metadata: ApiClientMetadataSummary,
     initial_input_text_sections: Vec<ApiInputTextSectionSummary>,
     initial_generation_input_text_sections: Vec<ApiInputTextSectionSummary>,
+    initial_visible_tool_definitions: Vec<ApiVisibleToolDefinitionSummary>,
+    initial_generation_visible_tool_definitions: Vec<ApiVisibleToolDefinitionSummary>,
     initial_code_mode_tools: Option<Vec<String>>,
     initial_code_mode_tool_definitions: Option<Vec<ApiCodeModeToolDefinitionSummary>>,
     detected_poll_only_turns: u64,
@@ -1336,6 +1340,16 @@ struct ApiCodeModeToolDefinitionSummary {
     ordinal: u64,
     section_bytes: u64,
     section_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ApiVisibleToolDefinitionSummary {
+    name: String,
+    ordinal: u64,
+    description_bytes: Option<u64>,
+    description_sha256: Option<String>,
+    definition_bytes: u64,
+    definition_sha256: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -6248,6 +6262,20 @@ fn append_model_visible_tool_summary(output: &mut String, comparison: &ApiEventL
     );
     let _ = writeln!(
         output,
+        "initial complete model-visible tool definitions match: {}",
+        comparison
+            .initial_visible_tool_definitions_equal
+            .map_or("unavailable", |equal| if equal { "yes" } else { "no" }),
+    );
+    let _ = writeln!(
+        output,
+        "initial generation complete model-visible tool definitions match: {}",
+        comparison
+            .initial_generation_visible_tool_definitions_equal
+            .map_or("unavailable", |equal| if equal { "yes" } else { "no" }),
+    );
+    let _ = writeln!(
+        output,
         "model-visible tool sequence: nanocodex [{}] · codex [{}] · match {}",
         nanocodex.model_visible_tool_sequence.join(", "),
         codex.model_visible_tool_sequence.join(", "),
@@ -6399,6 +6427,17 @@ fn validate_differential_profile(
             .event_loop
             .initial_generation_input_text_sections_equal
             == Some(true);
+    let visible_tool_definitions_match = match (nanocodex_tool_mode, codex_tool_mode) {
+        (ToolMode::CodeModeOnly, CodexToolMode::CodeModeOnly)
+        | (ToolMode::CodeMode, CodexToolMode::CodeMode) => {
+            summary.event_loop.initial_visible_tool_definitions_equal == Some(true)
+                && summary
+                    .event_loop
+                    .initial_generation_visible_tool_definitions_equal
+                    == Some(true)
+        }
+        _ => true,
+    };
     let code_mode_catalog_matches = match (nanocodex_tool_mode, codex_tool_mode) {
         (ToolMode::CodeModeOnly, CodexToolMode::CodeModeOnly) => {
             summary.event_loop.initial_code_mode_tool_names_equal == Some(true)
@@ -6406,11 +6445,16 @@ fn validate_differential_profile(
         }
         _ => true,
     };
-    if nanocodex_matches && codex_matches && model_input_matches && code_mode_catalog_matches {
+    if nanocodex_matches
+        && codex_matches
+        && model_input_matches
+        && visible_tool_definitions_match
+        && code_mode_catalog_matches
+    {
         return None;
     }
     Some(format!(
-        "expected Nanocodex {} and stock Codex {} to use model={expected_model}, effort={expected_effort}, reasoning.summary=auto, the pinned visible-tool surfaces, and identical initial input text (plus identical nested definitions when both are Code Mode-only); nanocodex={}/{}/summary={}/[{}], codex={}/{}/summary={}/[{}], initial_input_text_equal={:?}, initial_generation_input_text_equal={:?}, nested_tool_names_equal={:?}, nested_tool_definitions_equal={:?}",
+        "expected Nanocodex {} and stock Codex {} to use model={expected_model}, effort={expected_effort}, reasoning.summary=auto, the pinned visible-tool surfaces, and identical initial input text and complete tool definitions when the tool modes match (plus identical nested definitions when both are Code Mode-only); nanocodex={}/{}/summary={}/[{}], codex={}/{}/summary={}/[{}], initial_input_text_equal={:?}, initial_generation_input_text_equal={:?}, initial_tool_definitions_equal={:?}, initial_generation_tool_definitions_equal={:?}, nested_tool_names_equal={:?}, nested_tool_definitions_equal={:?}",
         nanocodex_tool_mode.as_str(),
         codex_tool_mode.as_str(),
         nanocodex.initial_model.as_deref().unwrap_or("unobserved"),
@@ -6437,6 +6481,10 @@ fn validate_differential_profile(
         summary
             .event_loop
             .initial_generation_input_text_sections_equal,
+        summary.event_loop.initial_visible_tool_definitions_equal,
+        summary
+            .event_loop
+            .initial_generation_visible_tool_definitions_equal,
         summary.event_loop.initial_code_mode_tool_names_equal,
         summary.event_loop.initial_code_mode_tool_definitions_equal,
     ))
@@ -6667,6 +6715,22 @@ fn compare_api_exchanges(
             nanocodex.summary.initial_generation_input_text_sections
                 == codex.summary.initial_generation_input_text_sections
         });
+    let initial_visible_tool_definitions_equal = nanocodex_event_loop
+        .as_ref()
+        .zip(codex_event_loop.as_ref())
+        .map(|(nanocodex, codex)| {
+            nanocodex.summary.initial_visible_tool_definitions
+                == codex.summary.initial_visible_tool_definitions
+        });
+    let initial_generation_visible_tool_definitions_equal = nanocodex_event_loop
+        .as_ref()
+        .zip(codex_event_loop.as_ref())
+        .map(|(nanocodex, codex)| {
+            nanocodex
+                .summary
+                .initial_generation_visible_tool_definitions
+                == codex.summary.initial_generation_visible_tool_definitions
+        });
     let initial_code_mode_tool_names_equal = nanocodex_event_loop
         .as_ref()
         .zip(codex_event_loop.as_ref())
@@ -6704,6 +6768,8 @@ fn compare_api_exchanges(
         initial_generation_client_metadata_shape_equal,
         initial_input_text_sections_equal,
         initial_generation_input_text_sections_equal,
+        initial_visible_tool_definitions_equal,
+        initial_generation_visible_tool_definitions_equal,
         initial_code_mode_tool_names_equal,
         initial_code_mode_tool_definitions_equal,
         aligned_turns: u64::try_from(aligned_request_count).unwrap_or(u64::MAX),
@@ -6777,6 +6843,8 @@ impl ApiEventLoopComparison {
             initial_generation_client_metadata_shape_equal: None,
             initial_input_text_sections_equal: None,
             initial_generation_input_text_sections_equal: None,
+            initial_visible_tool_definitions_equal: None,
+            initial_generation_visible_tool_definitions_equal: None,
             initial_code_mode_tool_names_equal: None,
             initial_code_mode_tool_definitions_equal: None,
             aligned_turns: 0,
@@ -6903,6 +6971,13 @@ fn build_event_loop_trace(requests: &[ApiRequestPayload]) -> ApiEventLoopTrace {
         .map_or_else(Vec::new, |request| input_text_sections(&request.payload));
     let initial_generation_input_text_sections = initial_generation_request
         .map_or_else(Vec::new, |request| input_text_sections(&request.payload));
+    let initial_visible_tool_definitions = requests.first().map_or_else(Vec::new, |request| {
+        visible_tool_definition_summaries(&request.payload)
+    });
+    let initial_generation_visible_tool_definitions = initial_generation_request
+        .map_or_else(Vec::new, |request| {
+            visible_tool_definition_summaries(&request.payload)
+        });
     let initial_client_metadata = requests
         .first()
         .map_or_else(ApiClientMetadataSummary::missing, |request| {
@@ -7131,6 +7206,8 @@ fn build_event_loop_trace(requests: &[ApiRequestPayload]) -> ApiEventLoopTrace {
             initial_generation_client_metadata,
             initial_input_text_sections,
             initial_generation_input_text_sections,
+            initial_visible_tool_definitions,
+            initial_generation_visible_tool_definitions,
             initial_code_mode_tools,
             initial_code_mode_tool_definitions,
             detected_poll_only_turns,
@@ -7232,6 +7309,30 @@ fn visible_tools(request: &serde_json::Value) -> impl Iterator<Item = &serde_jso
                         .flatten()
                 }),
         )
+}
+
+fn visible_tool_definition_summaries(
+    request: &serde_json::Value,
+) -> Vec<ApiVisibleToolDefinitionSummary> {
+    visible_tools(request)
+        .enumerate()
+        .map(|(ordinal, definition)| {
+            let description = definition
+                .get("description")
+                .and_then(serde_json::Value::as_str);
+            let encoded = definition.to_string();
+            ApiVisibleToolDefinitionSummary {
+                name: visible_tool_name(definition).unwrap_or_else(|| "unnamed".to_owned()),
+                ordinal: u64::try_from(ordinal).unwrap_or(u64::MAX),
+                description_bytes: description
+                    .map(|description| u64::try_from(description.len()).unwrap_or(u64::MAX)),
+                description_sha256: description
+                    .map(|description| hex::encode(Sha256::digest(description.as_bytes()))),
+                definition_bytes: u64::try_from(encoded.len()).unwrap_or(u64::MAX),
+                definition_sha256: hex::encode(Sha256::digest(encoded.as_bytes())),
+            }
+        })
+        .collect()
 }
 
 fn code_mode_tool_definitions(
@@ -9296,6 +9397,16 @@ mod tests {
             Some(true)
         );
         assert_eq!(
+            summary.event_loop.initial_visible_tool_definitions_equal,
+            Some(true)
+        );
+        assert_eq!(
+            summary
+                .event_loop
+                .initial_generation_visible_tool_definitions_equal,
+            Some(true)
+        );
+        assert_eq!(
             summary.event_loop.initial_input_text_sections_equal,
             Some(true)
         );
@@ -9334,6 +9445,21 @@ mod tests {
                 false,
             )
             .is_none()
+        );
+        let mut mismatched_tool_definition = summary.clone();
+        mismatched_tool_definition
+            .event_loop
+            .initial_visible_tool_definitions_equal = Some(false);
+        assert!(
+            validate_differential_profile(
+                &mismatched_tool_definition,
+                "gpt-test",
+                "medium",
+                ToolMode::CodeModeOnly,
+                CodexToolMode::CodeModeOnly,
+                false,
+            )
+            .is_some()
         );
         let mut normal_code_mode = summary.clone();
         normal_code_mode
@@ -9448,7 +9574,7 @@ mod tests {
 
         let report: serde_json::Value =
             serde_json::from_reader(fs::File::open(report_path).unwrap()).unwrap();
-        assert_eq!(report["schema_version"], 14);
+        assert_eq!(report["schema_version"], 15);
         assert_eq!(report["aligned_requests"], 1);
         assert_eq!(report["codex_unpaired_requests"], 1);
         assert_eq!(report["equal_requests"], 1);
@@ -9540,6 +9666,36 @@ mod tests {
         assert_eq!(
             left.summary.model_visible_tool_sequence,
             right.summary.model_visible_tool_sequence
+        );
+    }
+
+    #[test]
+    fn event_loop_summary_fingerprints_complete_visible_tool_definitions() {
+        let left = event_loop_fixture("left-session", "left-cache", "left-response");
+        let mut right = event_loop_fixture("right-session", "right-cache", "right-response");
+        right[0].payload["input"][0]["tools"][0]["description"] = serde_json::json!(
+            "execute code\n\n### `exec_command`\nRun a command in a PTY.\n\n### `write_stdin`\nWrite input."
+        );
+
+        let left = build_event_loop_trace(&left);
+        let right = build_event_loop_trace(&right);
+
+        assert_eq!(left.summary.initial_visible_tools, ["exec"]);
+        assert_eq!(
+            left.summary.initial_visible_tools,
+            right.summary.initial_visible_tools
+        );
+        assert_ne!(
+            left.summary.initial_visible_tool_definitions,
+            right.summary.initial_visible_tool_definitions
+        );
+        assert_ne!(
+            left.summary.initial_visible_tool_definitions[0].description_sha256,
+            right.summary.initial_visible_tool_definitions[0].description_sha256
+        );
+        assert_ne!(
+            left.summary.initial_visible_tool_definitions[0].definition_sha256,
+            right.summary.initial_visible_tool_definitions[0].definition_sha256
         );
     }
 

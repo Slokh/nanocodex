@@ -145,12 +145,19 @@ type AttemptVerifierFuture<'a> = Pin<
 type AttemptVerifierCleanupFuture<'a> = Pin<Box<dyn Future<Output = CleanupPhase> + Send + 'a>>;
 type AttemptReadinessFuture =
     Pin<Box<dyn Future<Output = Result<(), AttemptError>> + Send + 'static>>;
+type AttemptDriverPreparationFuture =
+    Pin<Box<dyn Future<Output = Result<AttemptDriver, AttemptError>> + Send + 'static>>;
 
 /// The Nanocodex configuration and resources owned by one attempt.
 pub struct AttemptAgent {
-    driver: AttemptDriver,
+    driver: AttemptDriverSetup,
     readiness: Option<AttemptReadinessFuture>,
     verifier: Option<Box<dyn AttemptVerifier>>,
+}
+
+enum AttemptDriverSetup {
+    Ready(AttemptDriver),
+    Preparing(AttemptDriverPreparationFuture),
 }
 
 enum AttemptDriver {
@@ -1301,6 +1308,21 @@ impl Evaluator {
             }
             let readiness_timing = PhaseTiming::finished(readiness_started);
             let setup_started = Utc::now();
+            let driver = match driver {
+                AttemptDriverSetup::Ready(driver) => driver,
+                AttemptDriverSetup::Preparing(preparation) => match preparation.await {
+                    Ok(driver) => driver,
+                    Err(error) => {
+                        let error = RecordedEvalError::now(EvalError::AttemptAgent(error));
+                        let verifier_cleanup = shutdown_attempt_verifier(&mut verifier).await;
+                        return Err(AgentExecutionFailure::setup(
+                            error,
+                            verifier_cleanup,
+                            Some(readiness_timing),
+                        ));
+                    }
+                },
+            };
             match driver {
                 AttemptDriver::Nanocodex(builder) => match builder.build() {
                     Ok((agent, events)) => Ok(AgentSetup {
@@ -2333,7 +2355,24 @@ impl AttemptAgent {
     #[must_use]
     pub fn new(nanocodex: NanocodexBuilder) -> Self {
         Self {
-            driver: AttemptDriver::Nanocodex(nanocodex),
+            driver: AttemptDriverSetup::Ready(AttemptDriver::Nanocodex(nanocodex)),
+            readiness: None,
+            verifier: None,
+        }
+    }
+
+    pub(crate) fn preparing_nanocodex<F, E>(preparation: F) -> Self
+    where
+        F: Future<Output = Result<NanocodexBuilder, E>> + Send + 'static,
+        E: Error + Send + Sync + 'static,
+    {
+        Self {
+            driver: AttemptDriverSetup::Preparing(Box::pin(async move {
+                preparation
+                    .await
+                    .map(AttemptDriver::Nanocodex)
+                    .map_err(|error| Box::new(error) as AttemptError)
+            })),
             readiness: None,
             verifier: None,
         }
@@ -2347,7 +2386,7 @@ impl AttemptAgent {
     #[must_use]
     pub fn codex(codex: CodexExec) -> Self {
         Self {
-            driver: AttemptDriver::Codex(codex),
+            driver: AttemptDriverSetup::Ready(AttemptDriver::Codex(codex)),
             readiness: None,
             verifier: None,
         }
@@ -2383,7 +2422,7 @@ impl AttemptAgent {
     fn into_parts(
         self,
     ) -> (
-        AttemptDriver,
+        AttemptDriverSetup,
         Option<AttemptReadinessFuture>,
         Option<Box<dyn AttemptVerifier>>,
     ) {
@@ -3194,7 +3233,7 @@ mod lifecycle_tests {
 
     use async_trait::async_trait;
     use futures_util::{SinkExt, StreamExt};
-    use nanocodex_agent::{Nanocodex, OpenAi, Tools};
+    use nanocodex_agent::{Nanocodex, NanocodexBuilder, OpenAi, Tools};
     use nanocodex_oai_api::{
         pricing::CostStatus,
         responses::{InputTokenDetails, OutputTokenDetails, Usage},
@@ -3916,6 +3955,56 @@ mod lifecycle_tests {
         let failure = outcome
             .unscored()
             .expect("readiness failure must be returned as unscored");
+
+        assert_eq!(
+            failure.exception.kind,
+            crate::EvalExceptionKind::Environment
+        );
+        assert_eq!(failure.cleanup.agent.status, CleanupStatus::NotRequired);
+        assert_eq!(failure.cleanup.verifier.status, CleanupStatus::Completed);
+        assert_eq!(verifier_shutdowns.load(Ordering::Acquire), 1);
+        assert!(
+            failure
+                .cleanup
+                .verifier
+                .timing
+                .as_ref()
+                .is_some_and(|timing| { failure.exception.occurred_at <= timing.started_at })
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn verifier_is_joined_after_attempt_driver_preparation_failure() {
+        let output = tempdir().unwrap();
+        let verifier_shutdowns = Arc::new(AtomicUsize::new(0));
+        let verifier_shutdowns_for_attempt = Arc::clone(&verifier_shutdowns);
+        let nanocodex = Nanocodex::builder(OpenAi::new("test").unwrap());
+        let (evaluator, _events) = Evaluator::builder(nanocodex)
+            .output_directory(output.path())
+            .attempt_agent(move |_attempt, builder| {
+                Ok::<_, Infallible>(
+                    AttemptAgent::preparing_nanocodex(async move {
+                        drop(builder);
+                        Err::<NanocodexBuilder, _>(std::io::Error::other(
+                            "deterministic attempt preparation failure",
+                        ))
+                    })
+                    .verifier(ShutdownProbeVerifier {
+                        shutdowns: Arc::clone(&verifier_shutdowns_for_attempt),
+                    }),
+                )
+            })
+            .build()
+            .unwrap();
+        let task = Task::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tasks/write-greeting"),
+        )
+        .unwrap();
+
+        let outcome = evaluator.task(task).await.unwrap();
+        let failure = outcome
+            .unscored()
+            .expect("preparation failure must be returned as unscored");
 
         assert_eq!(
             failure.exception.kind,
