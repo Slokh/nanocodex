@@ -261,6 +261,7 @@ impl Diff {
             }
             return Ok(());
         }
+        run::raise_eval_open_file_limit()?;
 
         let tasks = run::load_tasks(self.tasks, self.suites)?;
         let requested_trials = usize::from(self.trials);

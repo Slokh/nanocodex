@@ -24,7 +24,6 @@ tempo = [
     "dep:hudsucker",
     "dep:mpp",
     "dep:nanousd",
-    "dep:nix",
     "dep:rand",
     "dep:tempo-alloy",
 ]
@@ -53,7 +52,7 @@ nanocodex-browser.workspace = true
 nanocodex-eval.workspace = true
 nanocodex-observability.workspace = true
 nanocodex-voice.workspace = true
-nix = { workspace = true, optional = true }
+nix.workspace = true
 nanousd = { workspace = true, optional = true }
 pulldown-cmark.workspace = true
 mpp = { workspace = true, optional = true, features = ["client", "tempo", "reqwest-rustls-tls-no-provider"] }
@@ -98,7 +97,6 @@ vergen = { workspace = true, features = ["build", "git", "gitcl"] }
 axum.workspace = true
 criterion.workspace = true
 nanocodex-tools.workspace = true
-nix.workspace = true
 reqwest = { workspace = true, features = ["query"] }
 tokio-tungstenite.workspace = true
 tracing-subscriber.workspace = true
