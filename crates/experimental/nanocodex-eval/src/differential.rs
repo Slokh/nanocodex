@@ -120,7 +120,7 @@ const COMPARISON_FILE: &str = "comparison.json";
 const COMPARISON_SCHEMA_VERSION: u32 = 15;
 const SWEEP_MANIFEST_FILE: &str = "differential-sweep.json";
 const SWEEP_LOCK_FILE: &str = ".differential-sweep.lock";
-const SWEEP_MANIFEST_SCHEMA_VERSION: u32 = 2;
+const SWEEP_MANIFEST_SCHEMA_VERSION: u32 = 3;
 const PROGRESS_FILE: &str = "progress.jsonl";
 const PROGRESS_SCHEMA_VERSION: u32 = 1;
 const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -134,6 +134,7 @@ const API_COMPARISON_SCHEMA_VERSION: u32 = 15;
 const DIFF_CODEX_SHARE_TAG: &str = "nanoeval-codex";
 const DIFF_CODEX_SHARE_MOUNT: &str = "/run/nanoeval-codex";
 const DIFF_CODEX_GUEST_BINARY: &str = "/run/nanoeval-codex/codex";
+const DIFF_CODEX_CODE_MODE_HOST_FILENAME: &str = "codex-code-mode-host";
 const DIFF_CAPTURE_PROXY_API_UPSTREAM: &str = "https://api.openai.com/v1";
 const DIFF_CAPTURE_PROXY_CHATGPT_UPSTREAM: &str = "https://chatgpt.com/backend-api/codex";
 const DIFF_CAPTURE_PROXY_STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -758,6 +759,7 @@ struct DifferentialSweepManifest {
     profiles: Vec<DifferentialSweepProfile>,
     nanocodex_sha256: String,
     codex_sha256: String,
+    codex_code_mode_host_sha256: Option<String>,
 }
 
 #[derive(Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -959,6 +961,7 @@ struct ComparisonPolicy {
     multi_agent: &'static str,
     reasoning_summary: &'static str,
     expected_nanocodex_visible_tools: Vec<&'static str>,
+    codex_code_mode_host_sha256: Option<String>,
     verifier: &'static str,
     stable_bench_docs_sha: Option<String>,
     stable_bench_mcp_url: Option<String>,
@@ -2472,6 +2475,7 @@ struct DiffVmResources {
 struct DiffCodexRelease {
     root: PathBuf,
     ca_bundle: Option<DiffCodexCaBundle>,
+    code_mode_host_sha256: Option<String>,
 }
 
 fn prepare_diff_codex_release(
@@ -2487,12 +2491,27 @@ fn prepare_diff_codex_release(
     let mut header = [0_u8; 20];
     fs::File::open(&staged_codex)?.read_exact(&mut header)?;
     validate_vm_guest_elf(&header, &staged_codex)?;
+    let code_mode_host = codex_binary.with_file_name(DIFF_CODEX_CODE_MODE_HOST_FILENAME);
+    let code_mode_host_sha256 = if code_mode_host.is_file() {
+        let staged = temporary.path().join(DIFF_CODEX_CODE_MODE_HOST_FILENAME);
+        reflink_or_sparse_copy(&code_mode_host, &staged)?;
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))?;
+        fs::File::open(&staged)?.read_exact(&mut header)?;
+        validate_vm_guest_elf(&header, &staged)?;
+        Some(file_sha256(&staged)?)
+    } else {
+        None
+    };
     let ca_bundle = resolve_diff_codex_ca_source()?
         .as_ref()
         .map(|source| stage_diff_codex_ca_bundle(source, temporary.path()))
         .transpose()?;
     let root = temporary.keep();
-    Ok(DiffCodexRelease { root, ca_bundle })
+    Ok(DiffCodexRelease {
+        root,
+        ca_bundle,
+        code_mode_host_sha256,
+    })
 }
 
 async fn prepare_diff_vm_resources(
@@ -3268,6 +3287,7 @@ fn differential_sweep_manifest(
         profiles,
         nanocodex_sha256: inner.nanocodex_build.sha256.clone(),
         codex_sha256: inner.codex_sha256.clone(),
+        codex_code_mode_host_sha256: inner.codex_release.code_mode_host_sha256.clone(),
     }
 }
 
@@ -4518,6 +4538,7 @@ impl DifferentialComparison {
                     nanocodex_tool_mode,
                     web_search,
                 ),
+                codex_code_mode_host_sha256: codex_release.code_mode_host_sha256.clone(),
                 verifier: if verifier_profile == VmVerifierProfile::StableBenchV1 {
                     "stable_bench_correctness+nanocodex_quality"
                 } else {
@@ -8320,24 +8341,24 @@ mod tests {
     use super::{
         ApiEventLoopTailSummary, ApiRequestPayload, ApiTokenUsageSummary, ArmStatus, CodexExec,
         CodexToolMode, CodexVersion, DIFF_CODEX_CA_BUNDLE_FILENAME,
-        DIFF_CODEX_CLOUD_CONFIG_CACHE_FILENAME, DIFF_CODEX_SSL_CERT_FILE_ENVIRONMENT,
-        DetectedEmptyStdinCalls, DiffCodexCaSource, DiffProgress, DifferentialBuildError,
-        DifferentialClassification, DifferentialEvaluator, DifferentialMemoryPlanner,
-        DifferentialMemoryProfile, DifferentialMemoryProfiles, DifferentialProfile,
-        DifferentialReportSummary, DifferentialSweepManifest, DifferentialSweepProfile,
-        DifferentialSweepTask, Evaluator, InfrastructureReplacementState, LaneProgressState,
-        ShellPollingSummary, Task, ToolMode, TrajectoryProjection, build_event_loop_trace,
-        capture_proxy_vm_base_url, compare_api_exchanges, detected_code_mode_empty_stdin_calls,
-        detected_polling_turn, diff_json, differential_comparison_name,
-        differential_pair_memory_mb, event_loop_difference_categories,
-        first_client_metadata_difference, heartbeat_needed, heartbeat_summary,
-        initial_differential_schedule, inspect_api_exchanges, join_differential_arms,
-        memory_with_slack, newly_completed_lines, next_guest_memory_after_oom,
-        read_api_request_payloads, read_optional_codex_cloud_config_cache, reanalyze,
-        releasable_differential_arm_memory_mb, resume_differential_schedule,
-        retained_differential_summary, run_arm, stage_diff_codex_ca_bundle,
-        summarize_client_metadata, summarize_nanocodex, validate_differential_profile,
-        validate_differential_profiles, write_json_atomic,
+        DIFF_CODEX_CLOUD_CONFIG_CACHE_FILENAME, DIFF_CODEX_CODE_MODE_HOST_FILENAME,
+        DIFF_CODEX_SSL_CERT_FILE_ENVIRONMENT, DetectedEmptyStdinCalls, DiffCodexCaSource,
+        DiffProgress, DifferentialBuildError, DifferentialClassification, DifferentialEvaluator,
+        DifferentialMemoryPlanner, DifferentialMemoryProfile, DifferentialMemoryProfiles,
+        DifferentialProfile, DifferentialReportSummary, DifferentialSweepManifest,
+        DifferentialSweepProfile, DifferentialSweepTask, Evaluator, InfrastructureReplacementState,
+        LaneProgressState, ShellPollingSummary, Task, ToolMode, TrajectoryProjection,
+        VM_GUEST_ELF_MACHINE, build_event_loop_trace, capture_proxy_vm_base_url,
+        compare_api_exchanges, detected_code_mode_empty_stdin_calls, detected_polling_turn,
+        diff_json, differential_comparison_name, differential_pair_memory_mb,
+        event_loop_difference_categories, file_sha256, first_client_metadata_difference,
+        heartbeat_needed, heartbeat_summary, initial_differential_schedule, inspect_api_exchanges,
+        join_differential_arms, memory_with_slack, newly_completed_lines,
+        next_guest_memory_after_oom, prepare_diff_codex_release, read_api_request_payloads,
+        read_optional_codex_cloud_config_cache, reanalyze, releasable_differential_arm_memory_mb,
+        resume_differential_schedule, retained_differential_summary, run_arm,
+        stage_diff_codex_ca_bundle, summarize_client_metadata, summarize_nanocodex,
+        validate_differential_profile, validate_differential_profiles, write_json_atomic,
     };
 
     #[test]
@@ -8592,6 +8613,7 @@ mod tests {
             }],
             nanocodex_sha256: "nano-sha".to_owned(),
             codex_sha256: "codex-sha".to_owned(),
+            codex_code_mode_host_sha256: Some("codex-code-mode-host-sha".to_owned()),
         };
         let clean_arm = serde_json::json!({
             "operational_error": null,
@@ -9009,6 +9031,35 @@ mod tests {
         assert_eq!(
             read_optional_codex_cloud_config_cache(&auth_file).unwrap(),
             Some(b"signed cloud config".to_vec())
+        );
+    }
+
+    #[test]
+    fn codex_release_stages_the_packaged_code_mode_host() {
+        let source = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let mut elf = vec![0_u8; 32];
+        elf[..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2;
+        elf[5] = 1;
+        elf[18..20].copy_from_slice(&VM_GUEST_ELF_MACHINE.to_le_bytes());
+        let codex = source.path().join("codex");
+        let host = source.path().join(DIFF_CODEX_CODE_MODE_HOST_FILENAME);
+        fs::write(&codex, &elf).unwrap();
+        elf.push(1);
+        fs::write(&host, &elf).unwrap();
+
+        let release = prepare_diff_codex_release(output.path(), &codex).unwrap();
+        let staged_host = release.root.join(DIFF_CODEX_CODE_MODE_HOST_FILENAME);
+
+        assert_eq!(fs::read(&staged_host).unwrap(), elf);
+        assert_eq!(
+            release.code_mode_host_sha256.as_deref(),
+            Some(file_sha256(&staged_host).unwrap().as_str())
+        );
+        assert_eq!(
+            fs::metadata(staged_host).unwrap().permissions().mode() & 0o777,
+            0o755
         );
     }
 

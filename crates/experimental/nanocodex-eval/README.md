@@ -172,6 +172,73 @@ nanocodex eval diff \
   --trials 5
 ```
 
+On Apple Silicon, build the same image sources for Linux arm64 and publish
+them through a loopback registry. Nanoeval resolves loopback HTTP registries,
+so the images do not need to be published externally:
+
+```sh
+cd /data/tempo-evals
+docker run -d --name nanoeval-registry -p 5100:5000 registry:2
+docker build --platform linux/arm64 \
+  --tag localhost:5100/stable-bench/agent:v1-arm64 \
+  --file shared/global/docker/agent/Dockerfile .
+docker build --platform linux/arm64 \
+  --build-arg AGENT_IMAGE=localhost:5100/stable-bench/agent:v1-arm64 \
+  --tag localhost:5100/stable-bench/verifier:v1-arm64 \
+  --file shared/global/docker/verifier/Dockerfile .
+docker push localhost:5100/stable-bench/agent:v1-arm64
+docker push localhost:5100/stable-bench/verifier:v1-arm64
+```
+
+Rewrite only the generated task copies to those architecture-equivalent
+images, leaving the checked-in benchmark and verifier untouched:
+
+```sh
+uv run python - <<'PY'
+from pathlib import Path
+
+suite = Path(".cache/nanocodex-stable-bench-v1/tasks/tempo-v1")
+images = {
+    "environment": "localhost:5100/stable-bench/agent:v1-arm64",
+    "tests": "localhost:5100/stable-bench/verifier:v1-arm64",
+}
+for role, image in images.items():
+    for dockerfile in suite.glob(f"*/{role}/Dockerfile"):
+        lines = dockerfile.read_text().splitlines()
+        index = next(i for i, line in enumerate(lines) if line.startswith("FROM "))
+        lines[index] = f"FROM {image}"
+        dockerfile.write_text("\n".join(lines) + "\n")
+PY
+```
+
+The stock arm must also be a Linux arm64 Codex release, rather than the macOS
+host executable. For example, extract the platform package for the release
+being compared and pass its vendored ELF. Nanoeval also stages and hashes the
+package's adjacent `codex-code-mode-host` when it is present:
+
+```sh
+mkdir -p /tmp/nanoeval-codex-linux-arm64
+cd /tmp/nanoeval-codex-linux-arm64
+npm pack '@openai/codex@0.146.0-linux-arm64'
+tar -xzf openai-codex-0.146.0-linux-arm64.tgz
+CODEX_BIN=$PWD/package/vendor/aarch64-unknown-linux-musl/bin/codex
+
+cd /path/to/nanocodex
+ulimit -n 10240
+cargo run -p nanocodex-bin -- eval diff \
+  --task /data/tempo-evals/.cache/nanocodex-stable-bench-v1/tasks/tempo-v1/transfer-with-memo \
+  --codex-bin "$CODEX_BIN" \
+  --stable-bench-v1 \
+  --guest-memory-mb 4096 \
+  --trials 1 \
+  --concurrency 1 \
+  --prepare-concurrency 1
+```
+
+Four GiB avoids the Node/npm heap pressure observed in this task's install and
+typecheck cycle. Replace `--task` with `--suite` and raise the scheduler limits
+for a complete sweep.
+
 Add the exact Tempo MCP endpoint to both arms for the MCP treatment:
 
 ```sh
