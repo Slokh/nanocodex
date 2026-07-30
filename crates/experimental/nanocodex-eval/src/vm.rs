@@ -1961,6 +1961,7 @@ struct VmVerifier {
     memory: VmAttemptMemory,
     profile: VmVerifierProfile,
     _network: Option<AttemptGvproxy>,
+    _verifier_network: Option<AttemptGvproxy>,
 }
 
 #[derive(Clone)]
@@ -2082,7 +2083,21 @@ fn vm_attempt_inner(
             .map(|network| network.socket().to_path_buf()),
         shared_directories,
     };
-    let separate_launch = prepare_separate_verifier_launch(environment, &launch, host, attempt)?;
+    // A gvproxy process owns a network stack for one VM. A separately imaged
+    // verifier therefore cannot reconnect to the agent VM's gvproxy after the
+    // agent shuts down; give it an independent stack for its complete
+    // lifecycle instead.
+    let verifier_network = if environment.verifier.is_some() {
+        spawn_attempt_network(
+            attempt.task().network(),
+            host.gvproxy,
+            &attempt.directory().join("verifier-vm").join("gvproxy.log"),
+        )?
+    } else {
+        None
+    };
+    let separate_launch =
+        prepare_separate_verifier_launch(environment, host, attempt, verifier_network.as_ref())?;
     let verifier_directory = attempt.directory().join("verifier");
     fs::create_dir_all(&verifier_directory)?;
     let attempt_cache = verifier_cache
@@ -2122,6 +2137,7 @@ fn vm_attempt_inner(
             memory,
             profile: host.verifier_profile,
             _network: network,
+            _verifier_network: verifier_network,
         },
     })
 }
@@ -2185,9 +2201,9 @@ fn materialize_attempt_root(
 
 fn prepare_separate_verifier_launch(
     environment: &VmEnvironment,
-    agent: &VmLaunch,
     host: VmAttemptHost<'_>,
     attempt: EvalAttempt<'_>,
+    network: Option<&AttemptGvproxy>,
 ) -> Result<Option<VmLaunch>, VmAttemptError> {
     environment
         .verifier
@@ -2207,9 +2223,10 @@ fn prepare_separate_verifier_launch(
                     host.max_guest_memory_mb,
                 ),
                 ext4: true,
-                resolver_configuration: agent.resolver_configuration.clone(),
+                resolver_configuration: network
+                    .map_or_else(String::new, |_| GUEST_PUBLIC_RESOLV_CONF.to_owned()),
                 environment: verifier.environment.clone(),
-                network_socket: agent.network_socket.clone(),
+                network_socket: network.map(|network| network.socket().to_path_buf()),
                 shared_directories: Vec::new(),
             })
         })
@@ -2699,11 +2716,47 @@ fn verifier_bootstrap_network_failed(output: &VmCommandOutput) -> bool {
 async fn read_verifier_rewards(
     session: &VmToolSession,
     profile: VmVerifierProfile,
+    verifier_exit_code: i32,
 ) -> Result<(&'static str, Vec<u8>, BTreeMap<String, f64>), VmAttemptError> {
     if profile == VmVerifierProfile::StableBenchV1 {
-        let scores = session
+        let scores = match session
             .read_file("/logs/verifier/stable-bench-scores.json")
-            .await?;
+            .await
+        {
+            Ok(scores) => scores,
+            Err(primary) => {
+                let mut diagnostics = Vec::new();
+                for (label, path) in [
+                    ("exception", "/logs/artifacts/exception.txt"),
+                    ("status", "/logs/verifier/grader.status.json"),
+                    ("grader stderr", "/logs/verifier/grader.stderr.txt"),
+                    (
+                        "submission stderr",
+                        "/logs/verifier/submission-eval.stderr.txt",
+                    ),
+                ] {
+                    if let Ok(bytes) = session.read_file(path).await {
+                        let value = String::from_utf8_lossy(&bytes)
+                            .chars()
+                            .take(8 * 1024)
+                            .collect::<String>();
+                        if !value.trim().is_empty() {
+                            diagnostics.push(format!("{label}: {}", value.trim()));
+                        }
+                    }
+                }
+                let diagnostic = if diagnostics.is_empty() {
+                    "no StableBench verifier diagnostics were produced".to_owned()
+                } else {
+                    diagnostics.join("; ")
+                };
+                return Err(io::Error::other(format!(
+                    "StableBench verifier exited {verifier_exit_code} without a score: \
+                     {diagnostic}; score read failed: {primary}"
+                ))
+                .into());
+            }
+        };
         let scores = serde_json::from_slice::<serde_json::Value>(&scores)?;
         let score = scores
             .get("reward")
@@ -3009,25 +3062,6 @@ impl VmVerifier {
                 (false, false) => format!("{stdout}\n{stderr}"),
             };
             fs::write(verifier_directory.join("test-stdout.txt"), combined)?;
-            let (reward_name, reward_bytes, rewards) = if verifier_timed_out {
-                let bytes = b"0\n".to_vec();
-                (
-                    "reward.txt",
-                    bytes,
-                    BTreeMap::from([("reward".to_owned(), 0.0)]),
-                )
-            } else {
-                read_verifier_rewards(&verifier_session, self.profile).await?
-            };
-            if self.profile == VmVerifierProfile::StableBenchV1 {
-                verifier_session
-                    .write_file("/logs/verifier/reward.json", reward_bytes.clone(), 0o600)
-                    .await?;
-            }
-            fs::write(verifier_directory.join(reward_name), &reward_bytes)?;
-            if let Ok(ctrf) = verifier_session.read_file("/logs/verifier/ctrf.json").await {
-                fs::write(verifier_directory.join("ctrf.json"), ctrf)?;
-            }
             if let Ok(logs) = archive_guest_directory(
                 &verifier_session,
                 "/logs/verifier",
@@ -3037,6 +3071,36 @@ impl VmVerifier {
             .await
             {
                 fs::write(verifier_directory.join("logs.tar"), logs)?;
+            }
+            if self.profile == VmVerifierProfile::StableBenchV1
+                && let Ok(artifacts) = archive_guest_directory(
+                    &verifier_session,
+                    "/logs/artifacts",
+                    "/tmp/nanocodex-verifier-artifacts.tar",
+                    task.verifier().timeout(),
+                )
+                .await
+            {
+                fs::write(verifier_directory.join("artifacts.tar"), artifacts)?;
+            }
+            let (reward_name, reward_bytes, rewards) = if verifier_timed_out {
+                let bytes = b"0\n".to_vec();
+                (
+                    "reward.txt",
+                    bytes,
+                    BTreeMap::from([("reward".to_owned(), 0.0)]),
+                )
+            } else {
+                read_verifier_rewards(&verifier_session, self.profile, output.exit_code).await?
+            };
+            if self.profile == VmVerifierProfile::StableBenchV1 {
+                verifier_session
+                    .write_file("/logs/verifier/reward.json", reward_bytes.clone(), 0o600)
+                    .await?;
+            }
+            fs::write(verifier_directory.join(reward_name), &reward_bytes)?;
+            if let Ok(ctrf) = verifier_session.read_file("/logs/verifier/ctrf.json").await {
+                fs::write(verifier_directory.join("ctrf.json"), ctrf)?;
             }
             let answer_path = format!("{}/answer.txt", verifier_launch.workspace);
             if let Ok(answer) = verifier_session.read_file(answer_path).await {
@@ -4138,6 +4202,7 @@ mod tests {
             memory: VmAttemptMemory::default(),
             profile: VmVerifierProfile::Task,
             _network: None,
+            _verifier_network: None,
         };
 
         verifier.remove_disposable_root_disks(false).unwrap();
@@ -4453,6 +4518,7 @@ done
             memory: VmAttemptMemory::default(),
             profile: VmVerifierProfile::Task,
             _network: None,
+            _verifier_network: None,
         };
 
         let (_, session) = verifier
