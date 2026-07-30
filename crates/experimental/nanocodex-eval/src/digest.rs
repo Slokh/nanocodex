@@ -127,6 +127,7 @@ impl TaskPackage {
             if relative.as_os_str().is_empty() {
                 found = matches!(&entry.kind, TaskPackageEntryKind::Directory);
                 if found {
+                    fs::create_dir_all(destination)?;
                     directory_modes.push((destination.to_path_buf(), entry.mode));
                 }
                 continue;
@@ -459,18 +460,19 @@ mod tests {
         fs::write(&executable, "#!/bin/sh\n").unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
         let package = TaskPackage::load(task.path()).unwrap();
-        let destination = tempdir().unwrap();
+        let output = tempdir().unwrap();
+        let destination = output.path().join("materialized");
 
         package
-            .materialize_directory(Path::new("environment"), destination.path())
+            .materialize_directory(Path::new("environment"), &destination)
             .unwrap();
 
         assert_eq!(
-            fs::read_to_string(destination.path().join("bin/run")).unwrap(),
+            fs::read_to_string(destination.join("bin/run")).unwrap(),
             "#!/bin/sh\n"
         );
         assert_eq!(
-            fs::metadata(destination.path().join("bin/run"))
+            fs::metadata(destination.join("bin/run"))
                 .unwrap()
                 .permissions()
                 .mode()
@@ -478,25 +480,18 @@ mod tests {
             0o755
         );
         assert_eq!(
-            fs::metadata(destination.path())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
+            fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
             0o711
         );
         assert_eq!(
-            fs::metadata(destination.path().join("bin/run"))
+            fs::metadata(destination.join("bin/run"))
                 .unwrap()
                 .modified()
                 .unwrap(),
             std::time::UNIX_EPOCH
         );
         assert_eq!(
-            fs::metadata(destination.path())
-                .unwrap()
-                .modified()
-                .unwrap(),
+            fs::metadata(&destination).unwrap().modified().unwrap(),
             std::time::UNIX_EPOCH
         );
     }
