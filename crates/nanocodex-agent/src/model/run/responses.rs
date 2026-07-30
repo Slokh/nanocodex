@@ -148,7 +148,14 @@ pub(super) fn unsupported_tool_message(tools: &ToolRuntime, call: &CodeCall) -> 
 }
 
 pub(super) fn qualified_tool_name(call: &CodeCall) -> String {
-    format!("{}{}", call.namespace.as_deref().unwrap_or(""), call.name)
+    let Some(namespace) = call.namespace.as_deref() else {
+        return call.name.clone();
+    };
+    if namespace.ends_with('_') || call.name.starts_with('_') {
+        format!("{namespace}{}", call.name)
+    } else {
+        format!("{namespace}__{}", call.name)
+    }
 }
 
 pub(super) fn trace_model_input(request: &ResponsesAttempt) -> (usize, usize, Option<String>) {

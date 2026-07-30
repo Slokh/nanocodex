@@ -42,6 +42,9 @@ as through `exec`. Matching Codex, normal Code Mode keeps `exec` terse and
 adds each typed `exec` declaration to the corresponding direct tool; Code
 Mode-only instead carries the complete nested catalog in `exec`. Selection
 changes model-visible exposure, not registration or dispatch behavior.
+Namespaced Code Mode names such as `image_gen__imagegen` remain available to
+`exec`; normal Code Mode exposes the Codex-compatible `image_gen.imagegen`
+Responses namespace and routes its namespaced call to the same handler.
 
 Macro tools execute serially unless `parallel = true` explicitly marks their
 local effects as safe to overlap. This does not change the provider wire

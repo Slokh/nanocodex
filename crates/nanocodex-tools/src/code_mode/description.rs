@@ -169,7 +169,7 @@ pub(crate) fn augment_definition_for_code_mode(mut definition: ToolDefinition) -
         | ToolDefinition::Custom { description, .. } => {
             *description = format!("{description}\n\n{declaration}").into();
         }
-        ToolDefinition::ToolSearch { .. } => {}
+        ToolDefinition::Namespace { .. } | ToolDefinition::ToolSearch { .. } => {}
     }
     definition
 }
@@ -183,7 +183,7 @@ fn exec_tool_declaration(spec: &ToolDefinition) -> Option<String> {
                 .map_or_else(|| "unknown".to_owned(), render_json_schema_to_typescript),
         ),
         ToolDefinition::Custom { .. } => ("input", "string".to_owned()),
-        ToolDefinition::ToolSearch { .. } => return None,
+        ToolDefinition::Namespace { .. } | ToolDefinition::ToolSearch { .. } => return None,
     };
     let output_type = match spec.output_schema().map(JsonSchema::as_value) {
         Some(schema) => match mcp_structured_content_schema(schema) {

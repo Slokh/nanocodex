@@ -261,7 +261,8 @@ mod tests {
 
     #[test]
     fn shell_contract_matches_codex_unified_exec() {
-        let exec = definition(StandardTool::ExecCommand);
+        let exec_definition = StandardTool::ExecCommand.definition();
+        let exec = serde_json::to_value(&exec_definition).unwrap();
         assert_eq!(
             exec["description"],
             "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
@@ -283,7 +284,8 @@ mod tests {
             "number"
         );
 
-        let write = definition(StandardTool::WriteStdin);
+        let write_definition = StandardTool::WriteStdin.definition();
+        let write = serde_json::to_value(&write_definition).unwrap();
         assert_eq!(
             write["description"],
             "Writes characters to an existing unified exec session and returns recent output."
@@ -303,7 +305,16 @@ mod tests {
             write["parameters"]["properties"]["max_output_tokens"]["type"],
             "number"
         );
-        assert_eq!(exec["output_schema"], write["output_schema"]);
+        assert!(exec.get("output_schema").is_none());
+        assert!(write.get("output_schema").is_none());
+        assert_eq!(
+            exec_definition
+                .output_schema()
+                .map(nanocodex_oai_api::responses::JsonSchema::as_value),
+            write_definition
+                .output_schema()
+                .map(nanocodex_oai_api::responses::JsonSchema::as_value)
+        );
     }
 
     #[test]
@@ -315,9 +326,11 @@ mod tests {
         );
         assert_eq!(patch["format"]["definition"], APPLY_PATCH_GRAMMAR);
 
+        let image_definition = StandardTool::ViewImage.definition();
         let image = definition(StandardTool::ViewImage);
+        assert!(image.get("output_schema").is_none());
         assert_eq!(
-            image["output_schema"]["properties"]["detail"]["description"],
+            image_definition.output_schema().unwrap().as_value()["properties"]["detail"]["description"],
             "Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved."
         );
     }

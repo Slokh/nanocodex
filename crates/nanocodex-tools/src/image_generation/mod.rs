@@ -191,13 +191,13 @@ impl Tool for ImageGenerationHandler {
                     "prompt": { "type": "string" },
                     "referenced_image_paths": {
                         "type": ["array", "null"],
-                        "items": { "type": "string" },
-                        "maxItems": MAX_EDIT_IMAGES
+                        "items": {
+                            "type": "string",
+                            "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute."
+                        }
                     },
                     "num_last_images_to_include": {
-                        "type": ["integer", "null"],
-                        "minimum": 1,
-                        "maximum": MAX_EDIT_IMAGES
+                        "type": ["integer", "null"]
                     }
                 },
                 "required": ["prompt"],
