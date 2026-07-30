@@ -15,7 +15,7 @@ use std::{
 use clap::{Args, Subcommand};
 use eyre::{Result, eyre};
 use nanocodex_eval::{
-    Task, VerifierCollect, VerifierEnvironmentMode,
+    Task, TaskArtifact, VerifierCollect, VerifierEnvironmentMode,
     vm::{prepare_task_image, prepare_verifier_image},
 };
 use nanocodex_vm::host::{BlockDevice, GuestCommand, KrunVm, Network, SharedDirectory, VmConfig};
@@ -585,7 +585,7 @@ struct TaskOutput<'a> {
     image: &'a str,
     agent_timeout_sec: f64,
     verifier: VerifierOutput<'a>,
-    artifacts: &'a [PathBuf],
+    artifacts: &'a [TaskArtifact],
     resources: ResourcesOutput,
     network: &'static str,
     environment: &'a BTreeMap<String, String>,

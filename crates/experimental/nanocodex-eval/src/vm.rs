@@ -70,6 +70,9 @@ const GUEST_RUNTIME_BLOCK_ID: &str = "nanoeval-runtime";
 const GUEST_RUNTIME_BLOCK_DEVICE: &str = "/dev/vdb";
 const GUEST_RUNTIME_MOUNT: &str = "/run/nanoeval";
 const DEFAULT_VM_CACHE: &str = ".cache/vm";
+const STABLE_BENCH_DOCS_SHARE_TAG: &str = "stable-bench-docs";
+const STABLE_BENCH_DOCS_MOUNT: &str = "/run/stable-bench-docs";
+const STABLE_BENCH_DOCS_CA: &str = "/run/stable-bench-docs/docs-tls/ca.crt";
 const DEFAULT_KRUNFW_DIRECTORY: &str = ".cache/libkrunfw/libkrunfw";
 #[cfg(target_os = "linux")]
 const KRUNFW_LIBRARY_FILENAME: &str = "libkrunfw.so.5";
@@ -1146,6 +1149,8 @@ pub struct VmBackend {
     retain_failed_rootfs: bool,
     web_search: bool,
     shared_directories: Arc<[SharedDirectory]>,
+    verifier_profile: VmVerifierProfile,
+    additional_tools: Option<Tools>,
 }
 
 /// Deliberate policy for a [`VmBackend`].
@@ -1154,6 +1159,21 @@ pub struct VmBackendBuilder {
     retain_failed_rootfs: bool,
     web_search: bool,
     shared_directories: Vec<SharedDirectory>,
+    verifier_profile: VmVerifierProfile,
+    additional_tools: Option<Tools>,
+}
+
+/// Verifier execution profile applied by a VM backend.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum VmVerifierProfile {
+    /// Execute the task's declared `tests/test.sh` contract.
+    #[default]
+    Task,
+    /// Execute StableBench's deterministic correctness verifier only.
+    ///
+    /// Model-based quality grading is intentionally owned by Nanocodex after
+    /// this isolated verifier phase.
+    StableBenchV1,
 }
 
 impl Default for VmBackendBuilder {
@@ -1163,6 +1183,8 @@ impl Default for VmBackendBuilder {
             retain_failed_rootfs: true,
             web_search: false,
             shared_directories: Vec::new(),
+            verifier_profile: VmVerifierProfile::Task,
+            additional_tools: None,
         }
     }
 }
@@ -1196,6 +1218,9 @@ impl VmBackend {
     /// Returns an error if the backend is not configured, a task has no
     /// prepared environment, or cache preparation fails.
     pub async fn prepare_verifier_caches(&self, tasks: &[Task]) -> Result<(), VmAttemptError> {
+        if self.verifier_profile == VmVerifierProfile::StableBenchV1 {
+            return Ok(());
+        }
         let configuration = self.configuration()?;
         let mut prepared = BTreeSet::new();
         for task in tasks {
@@ -1253,6 +1278,8 @@ impl VmBackend {
                 retain_failed_rootfs: self.retain_failed_rootfs,
                 web_search: self.web_search,
                 shared_directories: &self.shared_directories,
+                verifier_profile: self.verifier_profile,
+                additional_tools: self.additional_tools.as_ref(),
             },
             attempt,
         )
@@ -1294,6 +1321,20 @@ impl VmBackendBuilder {
         self
     }
 
+    /// Selects how the task verifier is executed inside every attempt VM.
+    #[must_use]
+    pub const fn verifier_profile(mut self, profile: VmVerifierProfile) -> Self {
+        self.verifier_profile = profile;
+        self
+    }
+
+    /// Composes application-owned dynamic providers with each attempt's VM tools.
+    #[must_use]
+    pub fn additional_tools(mut self, tools: Tools) -> Self {
+        self.additional_tools = Some(tools);
+        self
+    }
+
     /// Builds a cloneable backend handle.
     #[must_use]
     pub fn build(self) -> VmBackend {
@@ -1303,6 +1344,8 @@ impl VmBackendBuilder {
             retain_failed_rootfs: self.retain_failed_rootfs,
             web_search: self.web_search,
             shared_directories: self.shared_directories.into(),
+            verifier_profile: self.verifier_profile,
+            additional_tools: self.additional_tools,
         }
     }
 }
@@ -1367,6 +1410,8 @@ struct VmAttemptHost<'a> {
     retain_failed_rootfs: bool,
     web_search: bool,
     shared_directories: &'a [SharedDirectory],
+    verifier_profile: VmVerifierProfile,
+    additional_tools: Option<&'a Tools>,
 }
 
 struct AttemptGvproxy {
@@ -1457,6 +1502,10 @@ pub enum VmAttemptError {
     #[error(transparent)]
     ParseReward(#[from] ParseFloatError),
 
+    /// A named verifier reward document was malformed.
+    #[error("invalid verifier reward JSON: {0}")]
+    RewardJson(#[from] serde_json::Error),
+
     /// A verifier-cache ext4 image could not be created.
     #[error(transparent)]
     Ext4(#[from] arcbox_ext4::error::FormatError),
@@ -1471,6 +1520,66 @@ pub struct VmAttempt {
     tools: Tools,
     timezone: String,
     verifier: VmVerifier,
+    stable_bench_docs: Option<StableBenchDocs>,
+}
+
+type VmReadinessFuture = Pin<Box<dyn Future<Output = Result<(), VmAttemptError>> + Send>>;
+
+#[derive(Clone)]
+struct StableBenchDocs {
+    proxy: String,
+    sha: String,
+}
+
+fn staged_stable_bench_docs(root: &Path) -> Result<StableBenchDocs, VmAttemptError> {
+    for required in [
+        "tempo-docs-bundle/manifest.json",
+        "docs-tls/docs.crt",
+        "docs-tls/docs.key",
+        "docs-tls/ca.crt",
+    ] {
+        let path = root.join(required);
+        if !path.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "StableBench requires a staged pinned docs environment; missing {}",
+                    path.display()
+                ),
+            )
+            .into());
+        }
+    }
+    let proxy = ["docs-proxy/server.mjs", "tempo-docs/server.mjs"]
+        .into_iter()
+        .find(|candidate| root.join(candidate).is_file())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "StableBench requires a staged pinned docs proxy under {}",
+                    root.display()
+                ),
+            )
+        })?;
+    let manifest = serde_json::from_slice::<serde_json::Value>(&fs::read(
+        root.join("tempo-docs-bundle/manifest.json"),
+    )?)?;
+    let sha = manifest
+        .get("sha")
+        .and_then(serde_json::Value::as_str)
+        .filter(|sha| !sha.is_empty())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "StableBench pinned docs manifest contains no SHA",
+            )
+        })?
+        .to_owned();
+    Ok(StableBenchDocs {
+        proxy: format!("{STABLE_BENCH_DOCS_MOUNT}/{proxy}"),
+        sha,
+    })
 }
 
 /// Memory observed across the agent and verifier VM sessions for one attempt.
@@ -1565,6 +1674,20 @@ impl VmAttempt {
             .map(VmToolSession::handle)
     }
 
+    /// Returns readiness work for the guest and any evaluator-owned auxiliary
+    /// services required before the first model request.
+    pub fn environment_readiness(&self) -> Result<VmReadinessFuture, VmAttemptError> {
+        let session = self.session_handle()?;
+        let stable_bench_docs = self.stable_bench_docs.clone();
+        Ok(Box::pin(async move {
+            session.ready().await?;
+            if let Some(docs) = stable_bench_docs {
+                prepare_stable_bench_docs(&session, &docs).await?;
+            }
+            Ok(())
+        }))
+    }
+
     /// Attaches the guest tools, readiness handshake, and verifier to Nanocodex.
     ///
     /// # Errors
@@ -1593,8 +1716,8 @@ impl VmAttempt {
         builder: NanocodexBuilder,
         tool_mode: Option<nanocodex_tools::ToolMode>,
     ) -> Result<AttemptAgent, VmAttemptError> {
-        let readiness = self.session_handle()?;
-        let context_session = readiness.clone();
+        let context_session = self.session_handle()?;
+        let readiness = self.environment_readiness()?;
         let guest_workspace = self.verifier.launch.workspace.clone();
         let current_date = current_date(&self.timezone);
         let tools = match tool_mode {
@@ -1609,7 +1732,7 @@ impl VmAttempt {
                 load_guest_project_instructions(&context_session, &guest_workspace).await?;
             Ok::<_, VmAttemptError>(builder.project_instructions_snapshot(project_instructions))
         })
-        .ready(async move { readiness.ready().await })
+        .ready(readiness)
         .verifier(self.verifier))
     }
 
@@ -1688,6 +1811,145 @@ async fn load_guest_project_instructions(
     Ok((!documents.is_empty()).then(|| documents.join("\n\n")))
 }
 
+async fn prepare_stable_bench_docs(
+    session: &VmToolSessionHandle,
+    docs: &StableBenchDocs,
+) -> Result<(), VmAttemptError> {
+    session
+        .create_directory(STABLE_BENCH_DOCS_MOUNT, 0o755, None)
+        .await?;
+    let mounted = session
+        .command(
+            VmCommand::new("/bin/mount")
+                .arg("-t")
+                .arg("virtiofs")
+                .arg("-o")
+                .arg("ro")
+                .arg(STABLE_BENCH_DOCS_SHARE_TAG)
+                .arg(STABLE_BENCH_DOCS_MOUNT)
+                .timeout(Duration::from_secs(30)),
+        )
+        .await?;
+    if mounted.exit_code != 0 {
+        return Err(io::Error::other(format!(
+            "failed to mount StableBench docs bundle (exit {}): {}",
+            mounted.exit_code,
+            String::from_utf8_lossy(&mounted.stderr).trim()
+        ))
+        .into());
+    }
+    let configured = session
+        .command(
+            VmCommand::new("/bin/sh")
+                .arg("-c")
+                .arg(
+                    "grep -q 'docs.tempo.xyz' /etc/hosts || printf '%s\\n' \
+                     '127.0.0.1 docs.tempo.xyz' >> /etc/hosts; \
+                     mkdir -p /var/log/tempo-docs; \
+                     setsid node \"$STABLE_BENCH_DOCS_PROXY\" \
+                     </dev/null >>/var/log/tempo-docs/server.log 2>&1 &",
+                )
+                .environment(BTreeMap::from([
+                    ("PORT".to_owned(), "80".to_owned()),
+                    ("HTTPS_PORT".to_owned(), "443".to_owned()),
+                    (
+                        "STABLE_BENCH_DOCS_PROXY".to_owned(),
+                        docs.proxy.clone(),
+                    ),
+                    ("DOCS_SITE_NAME".to_owned(), "Tempo docs".to_owned()),
+                    (
+                        "DOCS_ROOT".to_owned(),
+                        "/run/stable-bench-docs/tempo-docs-bundle".to_owned(),
+                    ),
+                    (
+                        "TEMPO_DOCS_ROOT".to_owned(),
+                        "/run/stable-bench-docs/tempo-docs-bundle".to_owned(),
+                    ),
+                    (
+                        "DOCS_INDEX_PATH".to_owned(),
+                        "/developers/index.html".to_owned(),
+                    ),
+                    (
+                        "DOCS_HEALTH_PATH".to_owned(),
+                        "/developers/llms.txt".to_owned(),
+                    ),
+                    (
+                        "DOCS_BASE_URL".to_owned(),
+                        "https://docs.tempo.xyz".to_owned(),
+                    ),
+                    (
+                        "ACCESS_LOG_PATH".to_owned(),
+                        "/var/log/tempo-docs/access.log".to_owned(),
+                    ),
+                    (
+                        "TLS_CERT_FILE".to_owned(),
+                        "/run/stable-bench-docs/docs-tls/docs.crt".to_owned(),
+                    ),
+                    (
+                        "TLS_KEY_FILE".to_owned(),
+                        "/run/stable-bench-docs/docs-tls/docs.key".to_owned(),
+                    ),
+                    (
+                        "NODE_EXTRA_CA_CERTS".to_owned(),
+                        STABLE_BENCH_DOCS_CA.to_owned(),
+                    ),
+                    (
+                        "DOCS_EXACT_ALIASES".to_owned(),
+                        r#"{"/":"/developers","/llms.txt":"/developers/llms.txt","/llms-full.txt":"/developers/llms-full.txt","/docs":"/developers/docs.md","/docs/":"/developers/docs.md","/developers/docs":"/developers/docs.md","/developers/docs/":"/developers/docs.md"}"#.to_owned(),
+                    ),
+                    (
+                        "DOCS_PREFIX_ALIASES".to_owned(),
+                        r#"[["/docs/","/developers/docs/"]]"#.to_owned(),
+                    ),
+                    (
+                        "DOCS_STRIP_TRAILING_SLASH_PREFIXES".to_owned(),
+                        r#"["/developers/docs/","/docs/"]"#.to_owned(),
+                    ),
+                ]))
+                .timeout(Duration::from_secs(30)),
+        )
+        .await?;
+    if configured.exit_code != 0 {
+        return Err(io::Error::other(format!(
+            "failed to start StableBench docs proxy (exit {}): {}",
+            configured.exit_code,
+            String::from_utf8_lossy(&configured.stderr).trim()
+        ))
+        .into());
+    }
+    for _ in 0..30 {
+        let health = session
+            .command(
+                VmCommand::new("node")
+                    .arg("-e")
+                    .arg(
+                        "fetch('https://docs.tempo.xyz/health').then(async r => { \
+                         const b = await r.json(); process.exit( \
+                         r.ok && b.sha === process.env.EXPECTED_DOCS_SHA ? 0 : 1) \
+                         }).catch(() => process.exit(1))",
+                    )
+                    .environment(BTreeMap::from([
+                        ("EXPECTED_DOCS_SHA".to_owned(), docs.sha.clone()),
+                        (
+                            "NODE_EXTRA_CA_CERTS".to_owned(),
+                            STABLE_BENCH_DOCS_CA.to_owned(),
+                        ),
+                    ]))
+                    .timeout(Duration::from_secs(5)),
+            )
+            .await?;
+        if health.exit_code == 0 {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "StableBench pinned docs proxy did not become healthy",
+    )
+    .into())
+}
+
 struct VmVerifier {
     agent_session: Option<VmToolSession>,
     launch: VmLaunch,
@@ -1697,6 +1959,7 @@ struct VmVerifier {
     retain_passed_rootfs: bool,
     retain_failed_rootfs: bool,
     memory: VmAttemptMemory,
+    profile: VmVerifierProfile,
     _network: Option<AttemptGvproxy>,
 }
 
@@ -1785,6 +2048,19 @@ fn vm_attempt_inner(
         host.gvproxy,
         &attempt.directory().join("vm").join("gvproxy.log"),
     )?;
+    let mut shared_directories = host.shared_directories.to_vec();
+    let stable_bench_docs = if host.verifier_profile == VmVerifierProfile::StableBenchV1 {
+        let docs = attempt.directory().join("stable-bench-environment");
+        attempt.task().materialize_environment(&docs)?;
+        let stable_bench_docs = staged_stable_bench_docs(&docs)?;
+        shared_directories.push(SharedDirectory::read_only(
+            STABLE_BENCH_DOCS_SHARE_TAG,
+            docs,
+        ));
+        Some(stable_bench_docs)
+    } else {
+        None
+    };
     let launch = VmLaunch {
         root,
         workspace: environment.workspace.clone(),
@@ -1804,7 +2080,7 @@ fn vm_attempt_inner(
         network_socket: network
             .as_ref()
             .map(|network| network.socket().to_path_buf()),
-        shared_directories: host.shared_directories.to_vec(),
+        shared_directories,
     };
     let separate_launch = prepare_separate_verifier_launch(environment, &launch, host, attempt)?;
     let verifier_directory = attempt.directory().join("verifier");
@@ -1816,7 +2092,7 @@ fn vm_attempt_inner(
     let session = launch.spawn(attempt_cache.as_ref(), VmProcessGroup::Isolated)?;
     let memory = VmAttemptMemory::default();
     let vm = session.tools();
-    let tools = Tools::builder()
+    let mut tools = Tools::builder()
         .without_defaults()
         .web_search(host.web_search)
         .image_generation(true)
@@ -1826,12 +2102,15 @@ fn vm_attempt_inner(
         .tool(vm.write_stdin_tool())
         .tool(vm.apply_patch_tool())
         .tool(vm.view_image_tool())
-        .tool(UpdatePlanTool::new())
-        .build()
-        .map_err(VmAttemptError::from)?;
+        .tool(UpdatePlanTool::new());
+    if let Some(additional) = host.additional_tools {
+        tools = tools.dynamic_providers_from(additional);
+    }
+    let tools = tools.build().map_err(VmAttemptError::from)?;
     Ok(VmAttempt {
         tools,
         timezone: environment.timezone.clone(),
+        stable_bench_docs,
         verifier: VmVerifier {
             agent_session: Some(session),
             launch,
@@ -1841,6 +2120,7 @@ fn vm_attempt_inner(
             retain_passed_rootfs: host.retain_passed_rootfs,
             retain_failed_rootfs: host.retain_failed_rootfs,
             memory,
+            profile: host.verifier_profile,
             _network: network,
         },
     })
@@ -2416,6 +2696,114 @@ fn verifier_bootstrap_network_failed(output: &VmCommandOutput) -> bool {
     apt_bootstrap_failed || dependency_runner_missing && network_failed
 }
 
+async fn read_verifier_rewards(
+    session: &VmToolSession,
+    profile: VmVerifierProfile,
+) -> Result<(&'static str, Vec<u8>, BTreeMap<String, f64>), VmAttemptError> {
+    if profile == VmVerifierProfile::StableBenchV1 {
+        let scores = session
+            .read_file("/logs/verifier/stable-bench-scores.json")
+            .await?;
+        let scores = serde_json::from_slice::<serde_json::Value>(&scores)?;
+        let score = scores
+            .get("reward")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|score| score.is_finite())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "StableBench scores must contain a finite numeric reward",
+                )
+            })?;
+        let correctness = if score == 1.0 {
+            1.0
+        } else if score == 0.0 {
+            0.0
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "StableBench correctness reward must be exactly zero or one",
+            )
+            .into());
+        };
+        let rewards = BTreeMap::from([("correctness".to_owned(), correctness)]);
+        let mut bytes = serde_json::to_vec(&rewards)?;
+        bytes.push(b'\n');
+        return Ok(("reward.json", bytes, rewards));
+    }
+    if let Ok(bytes) = session.read_file("/logs/verifier/reward.json").await {
+        let rewards = serde_json::from_slice::<BTreeMap<String, f64>>(&bytes)?;
+        if rewards.is_empty() || rewards.values().any(|reward| !reward.is_finite()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "verifier reward.json must contain at least one finite numeric reward",
+            )
+            .into());
+        }
+        return Ok(("reward.json", bytes, rewards));
+    }
+
+    let bytes = session.read_file("/logs/verifier/reward.txt").await?;
+    let reward = String::from_utf8_lossy(&bytes).trim().parse::<f64>()?;
+    if !reward.is_finite() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "verifier reward.txt must contain a finite numeric reward",
+        )
+        .into());
+    }
+    Ok((
+        "reward.txt",
+        bytes,
+        BTreeMap::from([("reward".to_owned(), reward)]),
+    ))
+}
+
+async fn archive_guest_directory(
+    session: &VmToolSession,
+    directory: &str,
+    output: &str,
+    timeout: Duration,
+) -> Result<Vec<u8>, VmAttemptError> {
+    let directory = Path::new(directory);
+    let parent = directory.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("guest archive path has no parent: {}", directory.display()),
+        )
+    })?;
+    let name = directory
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "guest archive path has no UTF-8 file name: {}",
+                    directory.display()
+                ),
+            )
+        })?;
+    let command = VmCommand::new("/bin/tar")
+        .arg("-C")
+        .arg(parent.to_string_lossy().into_owned())
+        .arg("-cf")
+        .arg(output)
+        .arg("--")
+        .arg(name)
+        .timeout(timeout);
+    let archived = session.command(command).await?;
+    if archived.exit_code != 0 {
+        return Err(io::Error::other(format!(
+            "guest archive exited {}: {}",
+            archived.exit_code,
+            String::from_utf8_lossy(&archived.stderr)
+        ))
+        .into());
+    }
+    session.read_file(output).await.map_err(Into::into)
+}
+
 impl AttemptVerifier for VmVerifier {
     fn verify<'a>(
         &'a mut self,
@@ -2441,6 +2829,7 @@ impl VmVerifier {
         session: &VmToolSession,
         task: &Task,
         launch: &VmLaunch,
+        profile: VmVerifierProfile,
     ) -> Result<Option<Vec<u8>>, VmAttemptError> {
         for collect in task.verifier().collect() {
             let output = session
@@ -2470,13 +2859,21 @@ impl VmVerifier {
             .arg("-C")
             .arg("/")
             .arg("-cf")
-            .arg("/tmp/nanoeval-artifacts.tar")
-            .arg("--");
+            .arg("/tmp/nanoeval-artifacts.tar");
         for artifact in task.artifacts() {
-            let relative = artifact.strip_prefix("/").map_err(|_| {
+            if let Some(service) = artifact.service()
+                && profile != VmVerifierProfile::StableBenchV1
+            {
+                return Err(io::Error::other(format!(
+                    "artifact {} belongs to Compose service {service:?}; the VM profile must translate service artifacts into the agent guest before execution",
+                    artifact.source().display()
+                ))
+                .into());
+            }
+            let relative = artifact.source().strip_prefix("/").map_err(|_| {
                 io::Error::other(format!(
                     "artifact path must be absolute: {}",
-                    artifact.display()
+                    artifact.source().display()
                 ))
             })?;
             if relative.as_os_str().is_empty()
@@ -2486,17 +2883,30 @@ impl VmVerifier {
             {
                 return Err(io::Error::other(format!(
                     "artifact path is not a safe guest path: {}",
-                    artifact.display()
+                    artifact.source().display()
                 ))
                 .into());
             }
+            for excluded in artifact.exclude() {
+                let excluded = relative.join(excluded);
+                command = command.arg(format!("--exclude={}", excluded.display()));
+            }
+        }
+        command = command.arg("--");
+        for artifact in task.artifacts() {
+            let relative = artifact.source().strip_prefix("/").map_err(|_| {
+                io::Error::other(format!(
+                    "artifact path must be absolute: {}",
+                    artifact.source().display()
+                ))
+            })?;
             command = command.arg(
                 relative
                     .to_str()
                     .ok_or_else(|| {
                         io::Error::other(format!(
                             "artifact path is not UTF-8: {}",
-                            artifact.display()
+                            artifact.source().display()
                         ))
                     })?
                     .to_owned(),
@@ -2575,7 +2985,9 @@ impl VmVerifier {
                 cleanup,
             ));
         }
-        let (verifier_launch, verifier_session) = self.start_verifier_session(task).await?;
+        let (verifier_launch, verifier_session) = self
+            .start_verifier_session(task, attempt.directory())
+            .await?;
         let verification = async {
             let command =
                 self.verifier_command(task, &verifier_launch, self.attempt_cache.as_ref())?;
@@ -2584,32 +2996,54 @@ impl VmVerifier {
                 .await?;
             let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
             let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            if verifier_timed_out && self.profile == VmVerifierProfile::StableBenchV1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "StableBench correctness verifier timed out before producing a score",
+                )
+                .into());
+            }
             let combined = match (stdout.is_empty(), stderr.is_empty()) {
                 (_, true) => stdout.clone(),
                 (true, false) => stderr.clone(),
                 (false, false) => format!("{stdout}\n{stderr}"),
             };
             fs::write(verifier_directory.join("test-stdout.txt"), combined)?;
-            let reward_bytes = if verifier_timed_out {
-                b"0\n".to_vec()
+            let (reward_name, reward_bytes, rewards) = if verifier_timed_out {
+                let bytes = b"0\n".to_vec();
+                (
+                    "reward.txt",
+                    bytes,
+                    BTreeMap::from([("reward".to_owned(), 0.0)]),
+                )
             } else {
-                verifier_session
-                    .read_file("/logs/verifier/reward.txt")
-                    .await?
+                read_verifier_rewards(&verifier_session, self.profile).await?
             };
-            fs::write(verifier_directory.join("reward.txt"), &reward_bytes)?;
+            if self.profile == VmVerifierProfile::StableBenchV1 {
+                verifier_session
+                    .write_file("/logs/verifier/reward.json", reward_bytes.clone(), 0o600)
+                    .await?;
+            }
+            fs::write(verifier_directory.join(reward_name), &reward_bytes)?;
             if let Ok(ctrf) = verifier_session.read_file("/logs/verifier/ctrf.json").await {
                 fs::write(verifier_directory.join("ctrf.json"), ctrf)?;
+            }
+            if let Ok(logs) = archive_guest_directory(
+                &verifier_session,
+                "/logs/verifier",
+                "/tmp/nanocodex-verifier-logs.tar",
+                task.verifier().timeout(),
+            )
+            .await
+            {
+                fs::write(verifier_directory.join("logs.tar"), logs)?;
             }
             let answer_path = format!("{}/answer.txt", verifier_launch.workspace);
             if let Ok(answer) = verifier_session.read_file(answer_path).await {
                 fs::write(attempt.workspace().join("answer.txt"), answer)?;
             }
-            let reward = String::from_utf8_lossy(&reward_bytes)
-                .trim()
-                .parse::<f64>()?;
             task.validate_package()?;
-            Ok::<_, VmAttemptError>((output, stdout, stderr, reward))
+            Ok::<_, VmAttemptError>((output, stdout, stderr, rewards))
         }
         .await;
         let verification_error_at = verification.as_ref().err().map(|_| Utc::now());
@@ -2617,7 +3051,7 @@ impl VmVerifier {
         self.observe_session(&verifier_session).await;
         let shutdown = verifier_session.shutdown().await;
         self.observe_session(&verifier_session).await;
-        let (output, stdout, stderr, reward) = match verification {
+        let (output, stdout, stderr, rewards) = match verification {
             Ok(verification) => verification,
             Err(primary) => {
                 let cleanup = self.cleanup_after_shutdown(cleanup_started, shutdown, false);
@@ -2631,7 +3065,8 @@ impl VmVerifier {
         let cleanup = match shutdown {
             Ok(()) => {
                 let cache_cleanup = self.finish_verifier_cache();
-                let disk_cleanup = self.remove_disposable_root_disks(reward > 0.0);
+                let disk_cleanup =
+                    self.remove_disposable_root_disks(rewards.values().all(|reward| *reward > 0.0));
                 match cache_cleanup.and(disk_cleanup) {
                     Ok(()) => CleanupPhase::completed(cleanup_started),
                     Err(error) => CleanupPhase::failed(cleanup_started, &error),
@@ -2646,7 +3081,9 @@ impl VmVerifier {
                         "verifier cache cleanup also failed after VM shutdown failure"
                     );
                 }
-                if let Err(disk_error) = self.remove_disposable_root_disks(reward > 0.0) {
+                if let Err(disk_error) =
+                    self.remove_disposable_root_disks(rewards.values().all(|reward| *reward > 0.0))
+                {
                     warn!(
                         target: "nanocodex_eval",
                         error = %disk_error,
@@ -2659,8 +3096,12 @@ impl VmVerifier {
         };
         Ok(AttemptVerification {
             result: VerifierResult {
-                exit_code: output.exit_code,
-                rewards: BTreeMap::from([("reward".to_owned(), reward)]),
+                exit_code: if self.profile == VmVerifierProfile::StableBenchV1 {
+                    0
+                } else {
+                    output.exit_code
+                },
+                rewards,
             },
             stdout,
             stderr,
@@ -2671,6 +3112,7 @@ impl VmVerifier {
     async fn start_verifier_session(
         &mut self,
         task: &Task,
+        attempt_directory: &Path,
     ) -> Result<(VmLaunch, VmToolSession), AttemptVerificationFailure> {
         let Some(agent_session) = self.agent_session.take() else {
             return Err(AttemptVerificationFailure::new(
@@ -2687,14 +3129,10 @@ impl VmVerifier {
                 cleanup,
             ));
         }
-        let launch = self
-            .separate_launch
-            .clone()
-            .unwrap_or_else(|| self.launch.clone());
-        let session = if self.separate_launch.is_some() {
-            let artifacts = match Self::collect_artifacts(&agent_session, task, &self.launch).await
-            {
-                Ok(artifacts) => artifacts,
+        let trajectory_path = attempt_directory.join("agent/trajectory.json");
+        if trajectory_path.is_file() {
+            let trajectory = match fs::read(&trajectory_path) {
+                Ok(trajectory) => trajectory,
                 Err(primary) => {
                     let occurred_at = Utc::now();
                     let cleanup = self.cleanup_session(Some(&agent_session)).await;
@@ -2705,6 +3143,53 @@ impl VmVerifier {
                     ));
                 }
             };
+            if let Err(primary) = agent_session
+                .write_file("/logs/agent/trajectory.json", trajectory, 0o600)
+                .await
+            {
+                let occurred_at = Utc::now();
+                let cleanup = self.cleanup_session(Some(&agent_session)).await;
+                return Err(AttemptVerificationFailure::observed_at(
+                    primary,
+                    occurred_at,
+                    cleanup,
+                ));
+            }
+        }
+        let launch = self
+            .separate_launch
+            .clone()
+            .unwrap_or_else(|| self.launch.clone());
+        let session = if self.separate_launch.is_some() {
+            let artifacts =
+                match Self::collect_artifacts(&agent_session, task, &self.launch, self.profile)
+                    .await
+                {
+                    Ok(artifacts) => artifacts,
+                    Err(primary) => {
+                        let occurred_at = Utc::now();
+                        let cleanup = self.cleanup_session(Some(&agent_session)).await;
+                        return Err(AttemptVerificationFailure::observed_at(
+                            primary,
+                            occurred_at,
+                            cleanup,
+                        ));
+                    }
+                };
+            if let Some(artifacts) = artifacts.as_ref() {
+                let agent_directory = attempt_directory.join("agent");
+                if let Err(primary) = fs::create_dir_all(&agent_directory)
+                    .and_then(|()| fs::write(agent_directory.join("artifacts.tar"), artifacts))
+                {
+                    let occurred_at = Utc::now();
+                    let cleanup = self.cleanup_session(Some(&agent_session)).await;
+                    return Err(AttemptVerificationFailure::observed_at(
+                        primary,
+                        occurred_at,
+                        cleanup,
+                    ));
+                }
+            }
             let cleanup_started = Utc::now();
             self.observe_session(&agent_session).await;
             if let Err(primary) = agent_session.shutdown().await {
@@ -3032,8 +3517,11 @@ impl VmVerifier {
         launch: &VmLaunch,
         attempt_cache: Option<&AttemptVerifierCache>,
     ) -> Result<VmCommand, VmAttemptError> {
-        let skip_setup = attempt_cache.is_some_and(|cache| cache.skip_setup);
-        let mut command = if skip_setup {
+        let skip_setup = attempt_cache.is_some_and(|cache| cache.skip_setup)
+            && self.profile == VmVerifierProfile::Task;
+        let mut command = if self.profile == VmVerifierProfile::StableBenchV1 {
+            VmCommand::new("/bin/bash").arg("/tests/correctness/verify-tempo.sh")
+        } else if skip_setup {
             let cache = self
                 .cache
                 .as_ref()
@@ -3331,6 +3819,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stable_bench_accepts_article_and_current_docs_proxy_layouts() {
+        for proxy in ["tempo-docs/server.mjs", "docs-proxy/server.mjs"] {
+            let staged = tempfile::tempdir().unwrap();
+            for path in [
+                proxy,
+                "docs-tls/docs.crt",
+                "docs-tls/docs.key",
+                "docs-tls/ca.crt",
+            ] {
+                let path = staged.path().join(path);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, []).unwrap();
+            }
+            let manifest = staged.path().join("tempo-docs-bundle/manifest.json");
+            fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            fs::write(&manifest, br#"{"sha":"pinned-docs"}"#).unwrap();
+
+            let docs = staged_stable_bench_docs(staged.path()).unwrap();
+
+            assert_eq!(docs.sha, "pinned-docs");
+            assert_eq!(docs.proxy, format!("{STABLE_BENCH_DOCS_MOUNT}/{proxy}"));
+        }
+    }
+
     #[tokio::test]
     async fn vm_resources_leave_task_environments_lazy_and_single_flight() {
         let task =
@@ -3623,6 +4136,7 @@ mod tests {
             retain_passed_rootfs: false,
             retain_failed_rootfs: false,
             memory: VmAttemptMemory::default(),
+            profile: VmVerifierProfile::Task,
             _network: None,
         };
 
@@ -3937,10 +4451,14 @@ done
             retain_passed_rootfs: false,
             retain_failed_rootfs: true,
             memory: VmAttemptMemory::default(),
+            profile: VmVerifierProfile::Task,
             _network: None,
         };
 
-        let (_, session) = verifier.start_verifier_session(&task).await.unwrap();
+        let (_, session) = verifier
+            .start_verifier_session(&task, control.path())
+            .await
+            .unwrap();
         session.shutdown().await.unwrap();
 
         let requests = fs::read_to_string(journal)

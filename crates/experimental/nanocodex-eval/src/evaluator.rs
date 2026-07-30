@@ -36,12 +36,12 @@ use tracing::{Instrument, Span, info, info_span};
 use uuid::Uuid;
 
 use crate::{
-    AgentId, AgentMetadata, AgentResult, AgentStatus, BillingCompleteness, CleanupPhase,
-    EvalArtifacts, EvalAttemptOutcome, EvalCleanup, EvalEnvironment, EvalEvent, EvalEventKind,
-    EvalEvents, EvalException, EvalExceptionKind, EvalFailure, EvalFailureTiming, EvalOutcome,
-    EvalResult, EvalStatus, EvalTiming, PhaseTiming, Sweep, SweepAttemptResult, SweepResults, Task,
-    TaskLoadError, UsageTotals, VerifierResult,
-    codex::{CodexExec, CodexRunError},
+    AgentId, AgentMetadata, AgentResult, AgentStatus, AtifBuilder, BillingCompleteness,
+    CleanupPhase, EvalArtifacts, EvalAttemptOutcome, EvalCleanup, EvalEnvironment, EvalEvent,
+    EvalEventKind, EvalEvents, EvalException, EvalExceptionKind, EvalFailure, EvalFailureTiming,
+    EvalOutcome, EvalResult, EvalStatus, EvalTiming, PhaseTiming, Sweep, SweepAttemptResult,
+    SweepResults, Task, TaskLoadError, UsageTotals, VerifierResult,
+    codex::{CodexExec, CodexRunError, project_codex_atif},
     job::EvalJob,
     native::{NativeAttempt, VerifierExecution},
 };
@@ -73,6 +73,7 @@ pub struct EvaluatorBuilder {
     max_memory_mb: Option<u64>,
     attempt_environment: EvalEnvironment,
     attempt_agent: Option<AttemptAgentFactory>,
+    score_augmenter: Option<Arc<dyn AttemptScoreAugmenter>>,
     finite_run: Option<FiniteRun>,
     #[cfg(test)]
     malformed_terminal_metrics: bool,
@@ -89,6 +90,7 @@ struct EvaluatorInner {
     next_prompt_cache_attempt: AtomicU64,
     events: broadcast::Sender<Arc<EvalEvent>>,
     attempt_agent: Option<AttemptAgentFactory>,
+    score_augmenter: Option<Arc<dyn AttemptScoreAugmenter>>,
     #[cfg(test)]
     malformed_terminal_metrics: bool,
 }
@@ -147,6 +149,17 @@ type AttemptReadinessFuture =
     Pin<Box<dyn Future<Output = Result<(), AttemptError>> + Send + 'static>>;
 type AttemptDriverPreparationFuture =
     Pin<Box<dyn Future<Output = Result<AttemptDriver, AttemptError>> + Send + 'static>>;
+pub(crate) type AttemptScoreFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), AttemptError>> + Send + 'a>>;
+
+pub(crate) trait AttemptScoreAugmenter: Send + Sync {
+    fn augment<'a>(
+        &'a self,
+        task: &'a Task,
+        attempt: EvalAttempt<'a>,
+        verifier: &'a mut VerifierResult,
+    ) -> AttemptScoreFuture<'a>;
+}
 
 /// The Nanocodex configuration and resources owned by one attempt.
 pub struct AttemptAgent {
@@ -329,6 +342,10 @@ pub enum EvalError {
     #[error("attempt verifier failed: {0}")]
     AttemptVerifier(#[source] AttemptError),
 
+    /// Evaluator-owned score augmentation failed after deterministic verification.
+    #[error("score augmentation failed: {0}")]
+    ScoreAugmenter(#[source] AttemptError),
+
     /// Agent execution exceeded the task deadline.
     #[error("agent exceeded its {0:?} timeout")]
     AgentTimeout(Duration),
@@ -344,6 +361,10 @@ pub enum EvalError {
     /// The agent emitted a terminal event whose typed metrics were invalid.
     #[error("failed to decode agent terminal metrics: {0}")]
     AgentTerminal(#[source] serde_json::Error),
+
+    /// Agent events could not be projected into the retained ATIF trajectory.
+    #[error("failed to retain agent trajectory: {0}")]
+    AgentTrajectory(String),
 
     /// Typed artifact JSON could not be encoded or decoded.
     #[error("failed to encode or decode JSON: {0}")]
@@ -384,6 +405,7 @@ impl Evaluator {
             max_memory_mb: None,
             attempt_environment: EvalEnvironment::Native,
             attempt_agent: None,
+            score_augmenter: None,
             finite_run: None,
             #[cfg(test)]
             malformed_terminal_metrics: false,
@@ -740,6 +762,22 @@ impl Evaluator {
             .await
             .map_err(|failure| AttemptRunFailure::from_agent(&attempt, failure))?;
 
+        if !attempt.paths.root.join("agent/trajectory.json").is_file()
+            && let Err(error) = emitter.retain_trajectory(
+                &task,
+                agent.result.as_ref(),
+                &attempt.paths.root.join("agent/trajectory.json"),
+            )
+        {
+            let verifier_cleanup = shutdown_attempt_verifier(&mut agent.verifier).await;
+            return Err(AttemptRunFailure::after_agent(
+                &attempt,
+                &agent,
+                RecordedEvalError::now(error),
+                verifier_cleanup,
+            ));
+        }
+
         if let Err(error) = task.validate_package() {
             let error = RecordedEvalError::now(EvalError::TaskPackage(error));
             let verifier_cleanup = shutdown_attempt_verifier(&mut agent.verifier).await;
@@ -768,7 +806,7 @@ impl Evaluator {
             ));
         }
         emitter.emit(EvalEventKind::VerifierStarted);
-        let verifier = match self
+        let mut verifier = match self
             .execute_verifier(&task, &attempt, agent.verifier.take())
             .await
         {
@@ -786,6 +824,26 @@ impl Evaluator {
                 &agent,
                 &verifier,
                 RecordedEvalError::now(EvalError::TaskPackage(error)),
+            ));
+        }
+        if let Some(augmenter) = &self.inner.score_augmenter
+            && let Err(error) = augmenter
+                .augment(
+                    &task,
+                    EvalAttempt {
+                        task: &task,
+                        directory: &attempt.paths.root,
+                        workspace: &attempt.paths.workspace,
+                    },
+                    &mut verifier.result,
+                )
+                .await
+        {
+            return Err(AttemptRunFailure::after_verifier(
+                &attempt,
+                &agent,
+                &verifier,
+                RecordedEvalError::now(EvalError::ScoreAugmenter(error)),
             ));
         }
         emitter.emit(EvalEventKind::VerifierOutput {
@@ -1219,6 +1277,32 @@ impl Evaluator {
             )
             .instrument(span.clone())
             .await;
+        if let Some(result) = execution.result.as_ref() {
+            let events = attempt.paths.root.join("agent/codex-events.jsonl");
+            let trajectory = project_codex_atif(&events, task.prompt(), result, "unknown")
+                .map_err(|error| AgentExecutionFailure {
+                    error: RecordedEvalError::now(EvalError::Codex(error)),
+                    result: execution.result.clone(),
+                    cleanup: execution.cleanup.clone(),
+                    verifier_cleanup: CleanupPhase::not_required(),
+                    readiness_timing: Some(readiness_timing.clone()),
+                    setup_timing: Some(setup_timing.clone()),
+                    execution_timing: Some(PhaseTiming::finished(execution_started)),
+                })?;
+            retain_atif(
+                &attempt.paths.root.join("agent/trajectory.json"),
+                &trajectory,
+            )
+            .map_err(|error| AgentExecutionFailure {
+                error: RecordedEvalError::now(error),
+                result: execution.result.clone(),
+                cleanup: execution.cleanup.clone(),
+                verifier_cleanup: CleanupPhase::not_required(),
+                readiness_timing: Some(readiness_timing.clone()),
+                setup_timing: Some(setup_timing.clone()),
+                execution_timing: Some(PhaseTiming::finished(execution_started)),
+            })?;
+        }
         let execution_timing = PhaseTiming::finished(execution_started);
         let error = execution.error.map(|error| {
             RecordedEvalError::now(match error {
@@ -2160,6 +2244,11 @@ impl EvaluatorBuilder {
         self
     }
 
+    pub(crate) fn score_augmenter(mut self, augmenter: Arc<dyn AttemptScoreAugmenter>) -> Self {
+        self.score_augmenter = Some(augmenter);
+        self
+    }
+
     /// Builds a reusable evaluator and a source of independent event streams.
     ///
     /// # Errors
@@ -2212,6 +2301,7 @@ impl EvaluatorBuilder {
                     next_prompt_cache_attempt: AtomicU64::new(0),
                     events: event_sender.clone(),
                     attempt_agent: self.attempt_agent,
+                    score_augmenter: self.score_augmenter,
                     #[cfg(test)]
                     malformed_terminal_metrics: self.malformed_terminal_metrics,
                 }),
@@ -2458,6 +2548,8 @@ struct AttemptEmitter<'a> {
     task_name: String,
     trial_name: String,
     sequence: u64,
+    atif: AtifBuilder,
+    atif_error: Option<String>,
 }
 
 impl<'a> AttemptEmitter<'a> {
@@ -2476,10 +2568,18 @@ impl<'a> AttemptEmitter<'a> {
             task_name: task.name().to_owned(),
             trial_name: trial_name.to_owned(),
             sequence: 0,
+            atif: AtifBuilder::default(),
+            atif_error: None,
         }
     }
 
     fn emit(&mut self, kind: EvalEventKind) {
+        if let EvalEventKind::Agent(event) = &kind
+            && self.atif_error.is_none()
+            && let Err(error) = self.atif.apply(event)
+        {
+            self.atif_error = Some(error.to_string());
+        }
         self.sequence += 1;
         let _ = self.eval.inner.events.send(Arc::new(EvalEvent {
             run_id: self.eval.inner.job.id(),
@@ -2490,6 +2590,37 @@ impl<'a> AttemptEmitter<'a> {
             kind,
         }));
     }
+
+    fn retain_trajectory(
+        &mut self,
+        task: &Task,
+        result: Option<&AgentResult>,
+        path: &Path,
+    ) -> Result<(), EvalError> {
+        if let Some(error) = self.atif_error.take() {
+            return Err(EvalError::AgentTrajectory(error));
+        }
+        let builder = std::mem::take(&mut self.atif);
+        let trajectory = match result {
+            Some(result) => builder.finish(task, result),
+            None => builder.finish_failure(task),
+        };
+        retain_atif(path, &trajectory)
+    }
+}
+
+fn retain_atif(path: &Path, trajectory: &crate::AtifTrajectory) -> Result<(), EvalError> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("trajectory path has no parent: {}", path.display()),
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    let mut bytes = serde_json::to_vec_pretty(trajectory)?;
+    bytes.push(b'\n');
+    fs::write(path, bytes)?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -2597,8 +2728,11 @@ fn failure_kind(error: &EvalError) -> EvalExceptionKind {
         EvalError::Nanocodex(_)
         | EvalError::Codex(_)
         | EvalError::AgentEventsClosed
-        | EvalError::AgentTerminal(_) => EvalExceptionKind::Agent,
-        EvalError::AttemptVerifier(_) | EvalError::ParseReward(_) => EvalExceptionKind::Verifier,
+        | EvalError::AgentTerminal(_)
+        | EvalError::AgentTrajectory(_) => EvalExceptionKind::Agent,
+        EvalError::AttemptVerifier(_)
+        | EvalError::ScoreAugmenter(_)
+        | EvalError::ParseReward(_) => EvalExceptionKind::Verifier,
         EvalError::UnsupportedNativeTask { .. }
         | EvalError::TaskPackage(_)
         | EvalError::OutputOverlapsTask { .. }
@@ -2623,6 +2757,7 @@ const fn verifier_workspace_usable_after_agent_error(error: &EvalError) -> bool 
             | EvalError::AgentTimeout(_)
             | EvalError::AgentEventsClosed
             | EvalError::AgentTerminal(_)
+            | EvalError::AgentTrajectory(_)
     )
 }
 

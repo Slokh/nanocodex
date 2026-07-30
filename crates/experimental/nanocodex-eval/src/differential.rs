@@ -18,7 +18,10 @@ use fs2::FileExt as _;
 use futures_util::{StreamExt as _, stream::FuturesUnordered};
 use nanocodex_agent::{NanocodexBuilder, Thinking, events::AgentEventKind};
 use nanocodex_oai_api::MODEL;
-use nanocodex_tools::ToolMode;
+use nanocodex_tools::{
+    ToolMode, Tools,
+    mcp::{Mcp, McpServer},
+};
 use nanocodex_vm::host::Gvproxy;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -41,10 +44,11 @@ use crate::{
     ResponsesModelCatalogOverride, Task, UsageTotals,
     evaluator::{AdmissionAttempt, AdmissionController, AdmissionPermit},
     project_codex_atif,
+    stable_bench::StableBenchJudge,
     vm::{
         SharedDirectory, VmAttempt, VmAttemptError, VmAttemptMemory, VmAttemptMemorySnapshot,
         VmBackend, VmCommand, VmEnvironment, VmResources, VmToolSessionError, VmToolSessionHandle,
-        reflink_or_sparse_copy,
+        VmVerifierProfile, reflink_or_sparse_copy,
     },
 };
 
@@ -187,6 +191,8 @@ struct DifferentialEvaluatorInner {
     max_memory_mb: Option<u64>,
     max_infrastructure_replacements: usize,
     memory: Mutex<DifferentialMemoryPlanner>,
+    verifier_profile: VmVerifierProfile,
+    stable_bench_mcp_url: Option<String>,
 }
 
 /// One semantic treatment in a centrally scheduled differential sweep.
@@ -506,6 +512,8 @@ struct DifferentialComparison {
     schedule: DifferentialSchedule,
     memory_plan: DifferentialMemoryPlan,
     admission: AdmissionPermit,
+    verifier_profile: VmVerifierProfile,
+    stable_bench_mcp_url: Option<String>,
 }
 
 /// Deliberate policy and required components for [`DifferentialEvaluator`].
@@ -524,6 +532,8 @@ pub struct DifferentialEvaluatorBuilder {
     max_infrastructure_replacements: usize,
     initial_guest_memory_mb: u64,
     memory_profile_path: Option<PathBuf>,
+    verifier_profile: VmVerifierProfile,
+    stable_bench_mcp_url: Option<String>,
 }
 
 /// Authentication material forwarded to a pinned stock-Codex guest.
@@ -949,6 +959,22 @@ struct ComparisonPolicy {
     multi_agent: &'static str,
     reasoning_summary: &'static str,
     expected_nanocodex_visible_tools: Vec<&'static str>,
+    verifier: &'static str,
+    stable_bench_docs_sha: Option<String>,
+    stable_bench_mcp_url: Option<String>,
+}
+
+fn stable_bench_docs_sha(task: &Task) -> InternalResult<String> {
+    let manifest = task
+        .root()
+        .join("environment/tempo-docs-bundle/manifest.json");
+    let manifest = serde_json::from_slice::<serde_json::Value>(&fs::read(&manifest)?)?;
+    manifest
+        .get("sha")
+        .and_then(serde_json::Value::as_str)
+        .filter(|sha| !sha.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| diff_error!("StableBench pinned docs manifest contains no SHA"))
 }
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -2475,14 +2501,48 @@ async fn prepare_diff_vm_resources(
     guest_memory_mb: u64,
     web_search: bool,
     codex_release: &DiffCodexRelease,
+    verifier_profile: VmVerifierProfile,
+    stable_bench_mcp_url: Option<&str>,
 ) -> InternalResult<DiffVmResources> {
     let environment = vm.environment(task).await?;
+    let mcp_tools = if let Some(url) = stable_bench_mcp_url {
+        let provider = Mcp::builder()
+            .server(
+                "tempo",
+                McpServer::http(url)
+                    .startup_timeout(Duration::from_secs(30))
+                    .tool_timeout(Duration::from_secs(300)),
+            )
+            .build()?;
+        let handle = provider.handle();
+        let tool_count = handle.reload("tempo").await?;
+        if tool_count == 0 {
+            return Err(diff_error!(
+                "StableBench Tempo MCP discovery returned an empty catalog"
+            ));
+        }
+        Some(
+            Tools::builder()
+                .without_defaults()
+                .provider(provider)
+                .build()?,
+        )
+    } else {
+        None
+    };
     let nanocodex = vm
         .backend_for_task_with_guest_memory(
-            VmBackend::builder()
-                .retain_passed_rootfs(false)
-                .retain_failed_rootfs(false)
-                .web_search(web_search),
+            {
+                let mut backend = VmBackend::builder()
+                    .retain_passed_rootfs(false)
+                    .retain_failed_rootfs(false)
+                    .web_search(web_search)
+                    .verifier_profile(verifier_profile);
+                if let Some(tools) = mcp_tools {
+                    backend = backend.additional_tools(tools);
+                }
+                backend
+            },
             task,
             guest_memory_mb,
         )
@@ -2493,6 +2553,7 @@ async fn prepare_diff_vm_resources(
                 .retain_passed_rootfs(false)
                 .retain_failed_rootfs(false)
                 .web_search(web_search)
+                .verifier_profile(verifier_profile)
                 .shared_directory(SharedDirectory::read_only(
                     DIFF_CODEX_SHARE_TAG,
                     codex_release.root.clone(),
@@ -2531,6 +2592,7 @@ impl DiffVmResources {
             ResponsesModelCatalogOverride::tool_mode(model, tool_mode.as_str())
         });
         let session = runtime.session_handle()?;
+        let environment_readiness = runtime.environment_readiness()?;
         let runner = DiffVmCodexRunner::new(
             session,
             attempt,
@@ -2546,7 +2608,10 @@ impl DiffVmResources {
         let readiness = Arc::clone(&runner);
         Ok(runtime
             .codex(codex.api_base_url(api_base_url).command_runner(runner))
-            .ready(async move { readiness.prepare().await }))
+            .ready(async move {
+                environment_readiness.await?;
+                readiness.prepare().await
+            }))
     }
 }
 
@@ -3511,6 +3576,8 @@ impl DifferentialEvaluator {
             max_infrastructure_replacements: 0,
             initial_guest_memory_mb: DEFAULT_DIFFERENTIAL_GUEST_MEMORY_MB,
             memory_profile_path: None,
+            verifier_profile: VmVerifierProfile::Task,
+            stable_bench_mcp_url: None,
         }
     }
 
@@ -3628,6 +3695,8 @@ impl DifferentialEvaluator {
             },
             memory_plan,
             admission,
+            verifier_profile: inner.verifier_profile,
+            stable_bench_mcp_url: inner.stable_bench_mcp_url.clone(),
         }
         .run()
         .await;
@@ -4239,6 +4308,8 @@ impl DifferentialComparison {
             schedule,
             memory_plan,
             admission,
+            verifier_profile,
+            stable_bench_mcp_url,
         } = self;
         let codex_path = codex_release.root.join("codex");
         let started_at = Utc::now();
@@ -4269,6 +4340,9 @@ impl DifferentialComparison {
                 codex_tool_mode.as_str()
             ),
         );
+        let stable_bench_docs_sha = (verifier_profile == VmVerifierProfile::StableBenchV1)
+            .then(|| stable_bench_docs_sha(&task))
+            .transpose()?;
 
         let guest_codex_version = Arc::new(OnceLock::new());
         let vm_resources = Arc::new(
@@ -4278,14 +4352,21 @@ impl DifferentialComparison {
                 memory_plan.guest_memory_mb,
                 web_search,
                 &codex_release,
+                verifier_profile,
+                stable_bench_mcp_url.as_deref(),
             )
             .await?,
         );
-        let codex = CodexExec::new(&codex_path, MODEL, thinking.as_str())?
+        let mut codex = CodexExec::new(&codex_path, MODEL, thinking.as_str())?
             .web_search(web_search)
             .tool_mode(codex_tool_mode);
+        if let Some(url) = &stable_bench_mcp_url {
+            codex = codex.mcp_server("tempo", url);
+        }
 
         let nanocodex = nanocodex.thinking(thinking);
+        let score_augmenter = (verifier_profile == VmVerifierProfile::StableBenchV1)
+            .then(|| Arc::new(StableBenchJudge::new(nanocodex.clone())));
         let nanocodex_memory = Arc::new(OnceLock::<VmAttemptMemory>::new());
         let nanocodex_memory_slot = Arc::clone(&nanocodex_memory);
         let nanocodex_evaluator = Evaluator::builder(nanocodex.clone())
@@ -4297,6 +4378,11 @@ impl DifferentialComparison {
                     runtime.nanocodex_with_tool_mode(builder, nanocodex_tool_mode)
                 },
             );
+        let nanocodex_evaluator = if let Some(augmenter) = &score_augmenter {
+            nanocodex_evaluator.score_augmenter(augmenter.clone())
+        } else {
+            nanocodex_evaluator
+        };
         let codex_backend = vm_resources.codex_backend();
         let codex_resources = Arc::clone(&vm_resources);
         let codex_config = codex.clone();
@@ -4318,6 +4404,11 @@ impl DifferentialComparison {
                     codex_progress.clone(),
                 )
             });
+        let codex_evaluator = if let Some(augmenter) = &score_augmenter {
+            codex_evaluator.score_augmenter(augmenter.clone())
+        } else {
+            codex_evaluator
+        };
         let projection = TrajectoryProjection::Codex {
             version: CodexVersion::Guest(Arc::clone(&guest_codex_version)),
         };
@@ -4390,6 +4481,7 @@ impl DifferentialComparison {
             nanocodex_tool_mode,
             codex_tool_mode,
             web_search,
+            stable_bench_mcp_url.is_some(),
         );
         progress.emit("runner", "comparison.completed", classification.as_str());
         let progress_error = progress_recorder
@@ -4426,6 +4518,13 @@ impl DifferentialComparison {
                     nanocodex_tool_mode,
                     web_search,
                 ),
+                verifier: if verifier_profile == VmVerifierProfile::StableBenchV1 {
+                    "stable_bench_correctness+nanocodex_quality"
+                } else {
+                    "task"
+                },
+                stable_bench_docs_sha,
+                stable_bench_mcp_url,
             },
             started_at,
             finished_at: Utc::now(),
@@ -4492,6 +4591,22 @@ impl DifferentialEvaluatorBuilder {
     #[must_use]
     pub const fn web_search(mut self, enabled: bool) -> Self {
         self.web_search = enabled;
+        self
+    }
+
+    /// Runs StableBench's deterministic correctness verifier in the isolated
+    /// verifier VM. Quality grading is performed by a Nanocodex-owned judge.
+    #[must_use]
+    pub const fn stable_bench_v1(mut self) -> Self {
+        self.verifier_profile = VmVerifierProfile::StableBenchV1;
+        self
+    }
+
+    /// Gives both StableBench arms access to one required Tempo MCP endpoint.
+    #[must_use]
+    pub fn stable_bench_mcp(mut self, url: impl Into<String>) -> Self {
+        self.verifier_profile = VmVerifierProfile::StableBenchV1;
+        self.stable_bench_mcp_url = Some(url.into());
         self
     }
 
@@ -4629,6 +4744,8 @@ impl DifferentialEvaluatorBuilder {
                 max_memory_mb: self.max_memory_mb,
                 max_infrastructure_replacements: self.max_infrastructure_replacements,
                 memory: Mutex::new(memory),
+                verifier_profile: self.verifier_profile,
+                stable_bench_mcp_url: self.stable_bench_mcp_url,
             }),
         })
     }
@@ -5958,6 +6075,9 @@ fn reanalyze_inner(path: &Path) -> InternalResult<DifferentialReanalysis> {
             .pointer("/policy/web_search")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
+        let mcp = comparison
+            .pointer("/policy/stable_bench_mcp_url")
+            .is_some_and(|value| !value.is_null());
         expected_model
             .as_deref()
             .zip(expected_effort.as_deref())
@@ -5969,6 +6089,7 @@ fn reanalyze_inner(path: &Path) -> InternalResult<DifferentialReanalysis> {
                     nanocodex_tool_mode,
                     codex_tool_mode,
                     web_search,
+                    mcp,
                 )
             })
     } else {
@@ -6395,6 +6516,7 @@ fn validate_differential_profile(
     nanocodex_tool_mode: ToolMode,
     codex_tool_mode: CodexToolMode,
     web_search: bool,
+    mcp: bool,
 ) -> Option<String> {
     if !summary.comparable {
         return None;
@@ -6410,10 +6532,18 @@ fn validate_differential_profile(
             && arm.initial_reasoning_summary.as_deref() == Some("auto")
     };
     let visible_tools_match = |arm: &ApiEventLoopArmSummary, expected: &[&str]| {
-        arm.initial_visible_tools
-            .iter()
-            .map(String::as_str)
-            .eq(expected.iter().copied())
+        if mcp {
+            expected.iter().all(|expected| {
+                arm.initial_visible_tools
+                    .iter()
+                    .any(|tool| tool == expected)
+            })
+        } else {
+            arm.initial_visible_tools
+                .iter()
+                .map(String::as_str)
+                .eq(expected.iter().copied())
+        }
     };
     let nanocodex_matches =
         base_matches(nanocodex) && visible_tools_match(nanocodex, &expected_nanocodex);
@@ -9443,6 +9573,7 @@ mod tests {
                 ToolMode::CodeModeOnly,
                 CodexToolMode::CodeModeOnly,
                 false,
+                false,
             )
             .is_none()
         );
@@ -9505,6 +9636,7 @@ mod tests {
                 ToolMode::CodeModeOnly,
                 CodexToolMode::CodeMode,
                 false,
+                false,
             )
             .is_none()
         );
@@ -9534,6 +9666,7 @@ mod tests {
                 ToolMode::CodeMode,
                 CodexToolMode::CodeMode,
                 false,
+                false,
             )
             .is_none()
         );
@@ -9551,6 +9684,7 @@ mod tests {
                 "medium",
                 ToolMode::CodeModeOnly,
                 CodexToolMode::CodeModeOnly,
+                false,
                 false,
             )
             .is_some()

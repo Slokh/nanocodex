@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fmt,
     fs::File as SyncFile,
     future::Future,
@@ -57,6 +58,7 @@ pub struct CodexExec {
     api_base_url: Option<String>,
     auth: CodexAuth,
     command_runner: Option<Arc<dyn CodexCommandRunner>>,
+    mcp_servers: BTreeMap<String, String>,
 }
 
 /// Stock Codex's model-visible tool exposure for a controlled evaluation.
@@ -137,6 +139,7 @@ impl CodexExec {
             api_base_url: None,
             auth: CodexAuth::Inherit,
             command_runner: None,
+            mcp_servers: BTreeMap::new(),
         })
     }
 
@@ -212,6 +215,15 @@ impl CodexExec {
     #[must_use]
     pub fn command_runner(mut self, runner: Arc<dyn CodexCommandRunner>) -> Self {
         self.command_runner = Some(runner);
+        self
+    }
+
+    /// Configures one required Streamable HTTP MCP server without consulting
+    /// user configuration.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn mcp_server(mut self, name: impl Into<String>, url: impl Into<String>) -> Self {
+        self.mcp_servers.insert(name.into(), url.into());
         self
     }
 
@@ -423,6 +435,14 @@ impl CodexExec {
                     "features.code_mode_only={}",
                     tool_mode == CodexToolMode::CodeModeOnly
                 ),
+            ]);
+        }
+        for (name, url) in &self.mcp_servers {
+            arguments.extend([
+                "--config".to_owned(),
+                format!("mcp_servers.{name}.url={}", toml_string(url)),
+                "--config".to_owned(),
+                format!("mcp_servers.{name}.required=true"),
             ]);
         }
         arguments.extend(["--".to_owned(), prompt.to_owned()]);
@@ -1944,6 +1964,31 @@ mod tests {
         assert_eq!(
             codex.model_tool_mode(),
             Some(("gpt-5.6-sol", CodexToolMode::CodeMode))
+        );
+    }
+
+    #[test]
+    fn required_mcp_server_is_pinned_in_ignored_user_configuration() {
+        let codex = CodexExec::new(std::env::current_exe().unwrap(), "gpt-5.6-sol", "medium")
+            .unwrap()
+            .mcp_server("tempo", "https://api.tempo.xyz/mcp");
+
+        let arguments = codex.command_arguments("test");
+
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument == "--ignore-user-config")
+        );
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument == "mcp_servers.tempo.url=\"https://api.tempo.xyz/mcp\"")
+        );
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument == "mcp_servers.tempo.required=true")
         );
     }
 

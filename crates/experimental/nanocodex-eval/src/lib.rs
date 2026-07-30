@@ -66,6 +66,7 @@ pub mod harbor;
 mod job;
 mod native;
 mod result;
+mod stable_bench;
 mod sweep;
 mod task;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -113,8 +114,8 @@ pub use result::{
 };
 pub use sweep::{AgentId, AgentIdError, Sweep, SweepBuilder, SweepError};
 pub use task::{
-    NetworkPolicy, OciImage, Resources, Task, TaskLoadError, Verifier, VerifierCollect,
-    VerifierEnvironmentMode,
+    NetworkPolicy, OciImage, Resources, Task, TaskArtifact, TaskLoadError, Verifier,
+    VerifierCollect, VerifierEnvironmentMode,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub use vm::{CachePolicy, VmResources, VmResourcesBuilder, VmResourcesError};
+pub use vm::{CachePolicy, VmResources, VmResourcesBuilder, VmResourcesError, VmVerifierProfile};

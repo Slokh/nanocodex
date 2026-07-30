@@ -135,6 +135,62 @@ nanocodex eval diff \
 `eval diff` defaults to five independent matched pairs per task. Pass
 `--trials 1` only for a one-off diagnostic.
 
+### StableBench v1
+
+StableBench's checked-in tasks do not contain the pinned Tempo documentation
+sidecar. The Tempo harness stages that immutable input immediately before a
+run. To reproduce the suite revision introduced with StableBench v1, first
+stage it from the Tempo evaluator checkout (the helper also fetches the docs
+revision in `config/tempo-docs.lock.json`):
+
+```sh
+git -C /data/tempo-evals checkout 45d044ef
+cd /data/tempo-evals
+uv sync
+uv run python - <<'PY'
+from pathlib import Path
+import shutil
+
+from scripts.run_benchmark import docs_source, ensure_docs_bundle, stage_task_datasets
+
+root = Path(".cache/nanocodex-stable-bench-v1")
+shutil.rmtree(root, ignore_errors=True)
+stage_task_datasets(root, ensure_docs_bundle(docs_source({})))
+print((root / "tasks" / "tempo-v1").resolve())
+PY
+```
+
+Use the printed directory as Nanoeval's suite. The Docs treatment gives both
+arms the staged `docs.tempo.xyz` snapshot. The v1 GHCR images are amd64-only,
+so run this revision on an x86_64 eval host:
+
+```sh
+nanocodex eval diff \
+  --suite /data/tempo-evals/.cache/nanocodex-stable-bench-v1/tasks/tempo-v1 \
+  --codex-bin /opt/codex/codex-x86_64-unknown-linux-musl \
+  --stable-bench-v1 \
+  --trials 5
+```
+
+Add the exact Tempo MCP endpoint to both arms for the MCP treatment:
+
+```sh
+nanocodex eval diff \
+  --suite /data/tempo-evals/.cache/nanocodex-stable-bench-v1/tasks/tempo-v1 \
+  --codex-bin /opt/codex/codex-x86_64-unknown-linux-musl \
+  --stable-bench-v1 \
+  --stable-bench-mcp \
+  --trials 5
+```
+
+Nanoeval runs the task-owned deterministic onchain verifier and records its
+binary `correctness` reward. A fresh, tool-less Nanocodex session then grades
+only the rubric-declared submission files and emits `quality`; failed
+correctness skips the model judge and forces quality to zero. The task's
+RewardKit/Anthropic quality judge is never invoked. The result retains the
+complete verifier logs, the pre-verification ATIF trajectory, judge events,
+raw judge output, and normalized named rewards for both arms.
+
 Both agents default to `code_mode_only`. To run normal Code Mode on both arms,
 select it explicitly:
 

@@ -27,7 +27,7 @@ pub struct Task {
     image: OciImage,
     agent_timeout: Duration,
     verifier: Verifier,
-    artifacts: Vec<PathBuf>,
+    artifacts: Vec<TaskArtifact>,
     resources: Resources,
     network: NetworkPolicy,
     environment: BTreeMap<String, String>,
@@ -65,6 +65,14 @@ pub enum VerifierEnvironmentMode {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct VerifierCollect {
     command: Box<str>,
+}
+
+/// One guest artifact retained after agent execution.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TaskArtifact {
+    source: PathBuf,
+    exclude: Vec<PathBuf>,
+    service: Option<Box<str>>,
 }
 
 /// Task-declared resource requirements used by admission and VM sizing.
@@ -123,7 +131,7 @@ pub enum TaskLoadError {
     },
 
     /// The manifest declares an unsupported schema revision.
-    #[error("unsupported task schema version {found:?}; expected \"1.1\"")]
+    #[error("unsupported task schema version {found:?}; expected \"1.1\" or \"1.3\"")]
     UnsupportedSchema {
         /// Unsupported revision read from the manifest.
         found: String,
@@ -201,7 +209,7 @@ impl Task {
             path: config_path.clone(),
             source,
         })?;
-        if raw.schema_version != "1.1" {
+        if !matches!(raw.schema_version.as_str(), "1.1" | "1.3") {
             return Err(TaskLoadError::UnsupportedSchema {
                 found: raw.schema_version,
             });
@@ -253,7 +261,11 @@ impl Task {
                 environment_mode: raw.verifier.environment_mode,
                 collect: raw.verifier.collect,
             },
-            artifacts: raw.artifacts,
+            artifacts: raw
+                .artifacts
+                .into_iter()
+                .map(|artifact| artifact.validate(&config_path))
+                .collect::<Result<_, _>>()?,
             resources: Resources {
                 cpus: positive(&config_path, "environment.cpus", raw.environment.cpus)?,
                 memory_mb: positive(
@@ -417,7 +429,7 @@ impl Task {
 
     /// Returns task-relative artifact paths requested after verification.
     #[must_use]
-    pub fn artifacts(&self) -> &[PathBuf] {
+    pub fn artifacts(&self) -> &[TaskArtifact] {
         &self.artifacts
     }
 
@@ -535,6 +547,26 @@ impl VerifierCollect {
     }
 }
 
+impl TaskArtifact {
+    /// Returns the absolute source path inside the guest.
+    #[must_use]
+    pub fn source(&self) -> &Path {
+        &self.source
+    }
+
+    /// Returns source-relative paths omitted while archiving this artifact.
+    #[must_use]
+    pub fn exclude(&self) -> &[PathBuf] {
+        &self.exclude
+    }
+
+    /// Returns the Compose service that owns the artifact, when declared.
+    #[must_use]
+    pub fn service(&self) -> Option<&str> {
+        self.service.as_deref()
+    }
+}
+
 impl VerifierEnvironmentMode {
     /// Returns the stable manifest and artifact spelling.
     #[must_use]
@@ -550,13 +582,83 @@ impl VerifierEnvironmentMode {
 struct RawTask {
     schema_version: String,
     #[serde(default)]
-    artifacts: Vec<PathBuf>,
+    artifacts: Vec<RawTaskArtifact>,
     task: RawTaskInfo,
     #[serde(default)]
     metadata: RawMetadata,
     agent: RawPhase,
     verifier: RawVerifier,
     environment: RawEnvironment,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawTaskArtifact {
+    Path(PathBuf),
+    Detailed {
+        source: PathBuf,
+        #[serde(default)]
+        exclude: Vec<PathBuf>,
+        #[serde(default)]
+        service: Option<String>,
+    },
+}
+
+impl RawTaskArtifact {
+    fn validate(self, config: &Path) -> Result<TaskArtifact, TaskLoadError> {
+        let (source, exclude, service) = match self {
+            Self::Path(source) => (source, Vec::new(), None),
+            Self::Detailed {
+                source,
+                exclude,
+                service,
+            } => (source, exclude, service),
+        };
+        if !safe_absolute_guest_path(&source) {
+            return Err(TaskLoadError::Invalid {
+                path: config.to_path_buf(),
+                message: format!(
+                    "artifact source must be a safe absolute guest path: {}",
+                    source.display()
+                ),
+            });
+        }
+        for path in &exclude {
+            if path.as_os_str().is_empty()
+                || path.is_absolute()
+                || path
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            {
+                return Err(TaskLoadError::Invalid {
+                    path: config.to_path_buf(),
+                    message: format!(
+                        "artifact exclusion must be a safe source-relative path: {}",
+                        path.display()
+                    ),
+                });
+            }
+        }
+        let service = service
+            .map(|service| required_string(config, "artifacts.service", service))
+            .transpose()?
+            .map(String::into_boxed_str);
+        Ok(TaskArtifact {
+            source,
+            exclude,
+            service,
+        })
+    }
+}
+
+fn safe_absolute_guest_path(path: &Path) -> bool {
+    path.is_absolute()
+        && path.strip_prefix("/").is_ok_and(|relative| {
+            !relative.as_os_str().is_empty()
+                && relative
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_)))
+        })
 }
 
 #[derive(Default, Deserialize)]
@@ -735,7 +837,10 @@ fn is_canary(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
     use tempfile::tempdir;
 
@@ -949,10 +1054,65 @@ storage_mb = 10240
             task.verifier().environment_mode(),
             VerifierEnvironmentMode::Separate
         );
-        assert_eq!(task.artifacts(), [PathBuf::from("/app/output.txt")]);
+        assert_eq!(
+            task.artifacts()[0].source(),
+            PathBuf::from("/app/output.txt")
+        );
+        assert!(task.artifacts()[0].exclude().is_empty());
+        assert_eq!(task.artifacts()[0].service(), None);
         assert_eq!(
             task.verifier().collect()[0].command(),
             "cp /app/output.txt /tmp/output.txt"
+        );
+    }
+
+    #[test]
+    fn loads_harbor_1_3_artifact_descriptors() {
+        let directory = tempdir().unwrap();
+        fs::create_dir(directory.path().join("tests")).unwrap();
+        fs::create_dir(directory.path().join("environment")).unwrap();
+        fs::write(
+            directory.path().join("task.toml"),
+            r#"
+schema_version = "1.3"
+artifacts = [
+  { source = "/app", exclude = ["node_modules", "target/debug"] },
+  { source = "/var/log/docs/access.ndjson", service = "tempo-docs" },
+  "/logs/agent/trajectory.json",
+]
+
+[task]
+name = "stable-bench/example"
+
+[agent]
+timeout_sec = 900
+
+[verifier]
+timeout_sec = 300
+environment_mode = "separate"
+
+[environment]
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+build_timeout_sec = 600
+"#,
+        )
+        .unwrap();
+        fs::write(directory.path().join("instruction.md"), "Build it.").unwrap();
+        fs::write(directory.path().join("tests/test.sh"), "#!/bin/sh\n").unwrap();
+
+        let task = Task::load(directory.path()).unwrap();
+
+        assert_eq!(task.artifacts()[0].source(), Path::new("/app"));
+        assert_eq!(
+            task.artifacts()[0].exclude(),
+            [PathBuf::from("node_modules"), PathBuf::from("target/debug")]
+        );
+        assert_eq!(task.artifacts()[1].service(), Some("tempo-docs"));
+        assert_eq!(
+            task.artifacts()[2].source(),
+            Path::new("/logs/agent/trajectory.json")
         );
     }
 

@@ -17,6 +17,7 @@ use crate::{
 const DEFAULT_OUTPUT_DIRECTORY: &str = ".nanocodex/eval-diff";
 const DEFAULT_INITIAL_GUEST_MEMORY_MB: u64 = 512;
 const MEMORY_PROFILE_FILE: &str = "differential-memory-profiles.json";
+const STABLE_BENCH_TEMPO_MCP_URL: &str = "https://api.tempo.xyz/mcp";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 enum StockCodexToolMode {
@@ -242,6 +243,16 @@ pub(crate) struct Diff {
     #[arg(long)]
     json: bool,
 
+    /// Run StableBench v1 deterministic checks and grade quality with a fresh
+    /// Nanocodex judge instead of the task's external RewardKit judge.
+    #[arg(long, conflicts_with = "reanalyze")]
+    stable_bench_v1: bool,
+
+    /// Give both StableBench arms the required Tempo MCP endpoint. Without
+    /// this flag the benchmark uses its pinned Docs access profile.
+    #[arg(long, requires = "stable_bench_v1", conflicts_with = "reanalyze")]
+    stable_bench_mcp: bool,
+
     #[command(flatten)]
     observability: ObservabilityArgs,
 
@@ -346,6 +357,11 @@ impl Diff {
             .max_infrastructure_replacements(requested_trials);
         if let Some(max_memory_mb) = max_memory_mb {
             evaluator = evaluator.max_memory_mb(max_memory_mb);
+        }
+        if self.stable_bench_mcp {
+            evaluator = evaluator.stable_bench_mcp(STABLE_BENCH_TEMPO_MCP_URL);
+        } else if self.stable_bench_v1 {
+            evaluator = evaluator.stable_bench_v1();
         }
         let evaluator = evaluator.build()?;
         let comparison_count = tasks

@@ -323,6 +323,19 @@ impl ToolsBuilder {
         self
     }
 
+    /// Reuses the dynamic providers from an existing tool selection.
+    ///
+    /// This is useful when an application-owned remote provider must be
+    /// composed with attempt-local workspace tools.
+    #[must_use]
+    pub fn dynamic_providers_from(mut self, tools: &Tools) -> Self {
+        for provider in &tools.providers {
+            self.tools.registered.extend(provider.direct_tools());
+            self.tools.providers.push(Arc::clone(provider));
+        }
+        self
+    }
+
     /// Validates tool names and finishes the runtime configuration.
     ///
     /// # Errors

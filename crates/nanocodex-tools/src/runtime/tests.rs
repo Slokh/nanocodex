@@ -431,6 +431,29 @@ async fn parallel_safety_follows_direct_then_provider_dispatch_precedence() {
 }
 
 #[test]
+fn dynamic_provider_recipe_composes_with_attempt_local_tools() {
+    let activated = Arc::new(AtomicBool::new(false));
+    let remote = Tools::builder()
+        .without_defaults()
+        .provider(DeferredProvider {
+            started: AtomicBool::new(false),
+            activated,
+        })
+        .build()
+        .unwrap();
+    let composed = Tools::builder()
+        .without_defaults()
+        .tool(Double)
+        .dynamic_providers_from(&remote)
+        .build()
+        .unwrap();
+    let runtime = ToolRuntime::new_with_tools(".", None, None, &composed);
+
+    assert!(runtime.contains("double"));
+    assert!(runtime.contains("tool_search"));
+}
+
+#[test]
 fn without_defaults_allows_replacing_a_standard_workspace_tool() {
     assert!(Tools::builder().tool(ReplacementExec).build().is_err());
 
