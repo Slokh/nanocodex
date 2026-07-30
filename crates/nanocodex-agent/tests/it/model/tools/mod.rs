@@ -6,6 +6,134 @@ mod parallel;
 
 struct NativeToolSearch;
 
+#[tokio::test]
+async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+
+        let warmup = next_json(&mut socket).await?;
+        let visible_tools = warmup["input"][0]["tools"]
+            .as_array()
+            .ok_or_else(|| eyre!("warmup tools were not an array"))?;
+        let names = visible_tools
+            .iter()
+            .filter_map(|definition| definition["name"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "exec",
+                "wait",
+                "exec_command",
+                "write_stdin",
+                "update_plan",
+                "apply_patch",
+                "view_image",
+                "web__run",
+                "image_gen__imagegen",
+            ]
+        );
+        let exec = visible_tools
+            .iter()
+            .find(|definition| definition["name"] == "exec")
+            .unwrap();
+        assert!(
+            !exec["description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("### `update_plan`")
+        );
+        let update_plan = visible_tools
+            .iter()
+            .find(|definition| definition["name"] == "update_plan")
+            .unwrap();
+        assert!(
+            update_plan["description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("exec tool declaration:")
+        );
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let generation = next_json(&mut socket).await?;
+        assert_eq!(generation["previous_response_id"], "resp-warmup");
+        send_json(
+            &mut socket,
+            completed_response(
+                "resp-direct-tools",
+                &[
+                    json!({
+                        "type": "function_call",
+                        "call_id": "call-plan",
+                        "name": "update_plan",
+                        "arguments": "{\"plan\":[{\"step\":\"exercise direct tools\",\"status\":\"completed\"}]}"
+                    }),
+                    json!({
+                        "type": "custom_tool_call",
+                        "call_id": "call-patch",
+                        "name": "apply_patch",
+                        "input": "*** Begin Patch\n*** Add File: direct-tool.txt\n+direct dispatch worked\n*** End Patch"
+                    }),
+                ],
+            ),
+        )
+        .await?;
+
+        let continuation = next_json(&mut socket).await?;
+        assert_eq!(continuation["previous_response_id"], "resp-direct-tools");
+        let input = continuation["input"]
+            .as_array()
+            .ok_or_else(|| eyre!("continuation input was not an array"))?;
+        assert_eq!(input[0]["type"], "function_call_output");
+        assert_eq!(input[0]["call_id"], "call-plan");
+        assert_eq!(input[1]["type"], "custom_tool_call_output");
+        assert_eq!(input[1]["call_id"], "call-patch");
+        assert!(
+            !input[1]["output"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("unsupported"),
+            "{continuation}"
+        );
+        send_final(&mut socket, "resp-final").await
+    });
+
+    let workspace = temporary_workspace("normal-code-mode-direct-tools")?;
+    let tools = Tools::builder()
+        .tool_mode(nanocodex_tools::ToolMode::CodeMode)
+        .build()?;
+    let openai = OpenAi::builder("test-key")
+        .websocket_url(&endpoint)
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .tools(tools)
+        .build()?;
+    let turn = agent.prompt("Use the direct tools.").await?;
+    drop(agent);
+    let mut output = Vec::new();
+    let (event_result, turn_result) = tokio::join!(events.write_jsonl(&mut output), turn.result());
+    event_result?;
+    turn_result?;
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("direct-tool.txt"))?,
+        "direct dispatch worked\n"
+    );
+    let output = String::from_utf8(output)?;
+    assert!(output.contains(r#""tool":"update_plan""#));
+    assert!(output.contains(r#""tool":"apply_patch""#));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
 #[nanocodex_tools::contract::async_trait]
 impl nanocodex_tools::Tool for NativeToolSearch {
     fn definition(&self) -> nanocodex_tools::ToolDefinition {

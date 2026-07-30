@@ -135,6 +135,29 @@ nanocodex eval diff \
 `eval diff` defaults to five independent matched pairs per task. Pass
 `--trials 1` only for a one-off diagnostic.
 
+Both agents default to `code_mode_only`. To run normal Code Mode on both arms,
+select it explicitly:
+
+```sh
+nanocodex eval diff \
+  --suite /data/terminal-bench-2.1/tasks \
+  --codex-bin /opt/codex/codex-x86_64-unknown-linux-musl \
+  --nanocodex-tool-mode code-mode \
+  --codex-tool-mode code-mode
+```
+
+Mode lists pair positionally, with a singleton broadcast across the other
+side. A two-treatment sweep therefore runs each of the four implementations
+once per task and trial:
+
+```sh
+nanocodex eval diff \
+  --suite /data/terminal-bench-2.1/tasks \
+  --codex-bin /opt/codex/codex-x86_64-unknown-linux-musl \
+  --nanocodex-tool-mode code-mode,code-mode-only \
+  --codex-tool-mode code-mode,code-mode-only
+```
+
 Both commands use the same central CLI auth and model flags. Authentication
 selection is, in order: `--api-key`, `--auth-file`, the default Codex auth
 file, `OPENAI_API_KEY`, then the default auth-file path. Normal agent sessions

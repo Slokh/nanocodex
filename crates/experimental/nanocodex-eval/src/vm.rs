@@ -1527,12 +1527,38 @@ impl VmAttempt {
     ///
     /// Returns an error after the owned guest session has been consumed.
     pub fn nanocodex(self, builder: NanocodexBuilder) -> Result<AttemptAgent, VmAttemptError> {
+        self.nanocodex_inner(builder, None)
+    }
+
+    /// Attaches the guest tools with an explicit model-visible tool mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after the owned guest session has been consumed or if
+    /// the resulting tool selection is invalid.
+    pub fn nanocodex_with_tool_mode(
+        self,
+        builder: NanocodexBuilder,
+        tool_mode: nanocodex_tools::ToolMode,
+    ) -> Result<AttemptAgent, VmAttemptError> {
+        self.nanocodex_inner(builder, Some(tool_mode))
+    }
+
+    fn nanocodex_inner(
+        self,
+        builder: NanocodexBuilder,
+        tool_mode: Option<nanocodex_tools::ToolMode>,
+    ) -> Result<AttemptAgent, VmAttemptError> {
         let readiness = self.session_handle()?;
         let current_date = current_date(&self.timezone);
+        let tools = match tool_mode {
+            Some(tool_mode) => self.tools.into_builder().tool_mode(tool_mode).build()?,
+            None => self.tools,
+        };
         Ok(AttemptAgent::new(
             builder
                 .local_time_context(current_date, self.timezone)
-                .tools(self.tools),
+                .tools(tools),
         )
         .ready(async move { readiness.ready().await })
         .verifier(self.verifier))

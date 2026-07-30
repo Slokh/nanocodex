@@ -5,7 +5,7 @@ use std::{
 
 use clap::{Args, ValueEnum};
 use eyre::{Result, eyre};
-use nanocodex::Thinking;
+use nanocodex::{Thinking, tools::ToolMode};
 use nanocodex_eval::*;
 
 use super::run;
@@ -20,6 +20,15 @@ const MEMORY_PROFILE_FILE: &str = "differential-memory-profiles.json";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 enum StockCodexToolMode {
+    /// Expose normal tools directly as well as through Code Mode.
+    CodeMode,
+    /// Expose normal tools only through Code Mode's `exec` entrypoint.
+    #[default]
+    CodeModeOnly,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+enum NanocodexToolMode {
     /// Expose normal tools directly as well as through Code Mode.
     CodeMode,
     /// Expose normal tools only through Code Mode's `exec` entrypoint.
@@ -86,6 +95,15 @@ impl From<StockCodexToolMode> for CodexToolMode {
     }
 }
 
+impl From<NanocodexToolMode> for ToolMode {
+    fn from(value: NanocodexToolMode) -> Self {
+        match value {
+            NanocodexToolMode::CodeMode => Self::CodeMode,
+            NanocodexToolMode::CodeModeOnly => Self::CodeModeOnly,
+        }
+    }
+}
+
 #[derive(Args)]
 pub(crate) struct Diff {
     /// Rebuild the derived API/event-loop comparison from retained raw captures.
@@ -145,6 +163,18 @@ pub(crate) struct Diff {
         default_value = "code-mode-only"
     )]
     codex_tool_modes: Vec<StockCodexToolMode>,
+
+    /// Nanocodex tool exposure profiles included in this sweep.
+    ///
+    /// Nanocodex and stock-Codex mode lists pair positionally. A singleton on
+    /// either side is broadcast across the other list.
+    #[arg(
+        long = "nanocodex-tool-mode",
+        value_enum,
+        value_delimiter = ',',
+        default_value = "code-mode-only"
+    )]
+    nanocodex_tool_modes: Vec<NanocodexToolMode>,
 
     /// Reasoning-effort profiles included in this sweep.
     ///
@@ -234,10 +264,12 @@ impl Diff {
 
         let tasks = run::load_tasks(self.tasks, self.suites)?;
         let requested_trials = usize::from(self.trials);
+        let nanocodex_tool_modes = resolve_nanocodex_tool_modes(&self.nanocodex_tool_modes)?;
         let codex_tool_modes = resolve_codex_tool_modes(&self.codex_tool_modes)?;
+        let tool_mode_pairs = resolve_tool_mode_pairs(&nanocodex_tool_modes, &codex_tool_modes)?;
         let thinking_profiles =
             resolve_thinking_profiles(self.agent.thinking(), &self.thinking_profiles)?;
-        let profiles = resolve_differential_profiles(&thinking_profiles, &codex_tool_modes);
+        let profiles = resolve_differential_profiles(&thinking_profiles, &tool_mode_pairs);
         let primary_profile = profiles
             .first()
             .copied()
@@ -300,6 +332,7 @@ impl Diff {
             .output_directory(&output)
             .thinking(thinking)
             .web_search(web_search)
+            .nanocodex_tool_mode(primary_profile.nanocodex_tool_mode())
             .codex_tool_mode(primary_profile.codex_tool_mode())
             .nanocodex_executable(
                 ExecutableIdentity::new(current_executable, env!("NANOCODEX_SEMVER_VERSION"))
@@ -384,6 +417,8 @@ impl Diff {
                                 .filter(|summary| {
                                     summary.task_name() == task_name
                                         && summary.thinking() == profile.thinking().as_str()
+                                        && summary.nanocodex_tool_mode()
+                                            == profile.nanocodex_tool_mode()
                                         && summary.codex_tool_mode() == profile.codex_tool_mode()
                                         && !summary.has_infrastructure_failure()
                                         && !summary.has_operational_error()
@@ -403,16 +438,19 @@ impl Diff {
                         .find(|summary| {
                             summary.task_name() == task_name
                                 && summary.thinking() == profile.thinking().as_str()
+                                && summary.nanocodex_tool_mode()
+                                    == profile.nanocodex_tool_mode()
                                 && summary.codex_tool_mode() == profile.codex_tool_mode()
                                 && (summary.has_infrastructure_failure()
                                     || summary.has_operational_error())
                         })
                         .map_or(output.as_path(), DifferentialReportSummary::comparison_path);
                     return Err(eyre!(
-                        "task {task_name} profile {}/{} retained {valid_pairs}/{requested_trials} \
+                        "task {task_name} profile {}/{}/{} retained {valid_pairs}/{requested_trials} \
                          valid matched pairs after bounded retries and replacements; evidence \
                          retained at {}",
                         profile.thinking().as_str(),
+                        profile.nanocodex_tool_mode().as_str(),
                         profile.codex_tool_mode().as_str(),
                         evidence.display()
                     ));
@@ -438,6 +476,7 @@ fn write_score_summaries(
             for report in summaries.iter().filter(|report| {
                 report.task_name() == task_name
                     && report.thinking() == profile.thinking().as_str()
+                    && report.nanocodex_tool_mode() == profile.nanocodex_tool_mode()
                     && report.codex_tool_mode() == profile.codex_tool_mode()
             }) {
                 summary.observe(
@@ -447,9 +486,10 @@ fn write_score_summaries(
                 );
             }
             eprintln!(
-                "Differential score: {task_name} · profile {}/{} · valid {}/{} · attempts {} · \
+                "Differential score: {task_name} · profile {}/{}/{} · valid {}/{} · attempts {} · \
                  infrastructure {} · incomplete {} · Nanocodex {}/{} · stock Codex {}/{}",
                 profile.thinking().as_str(),
+                profile.nanocodex_tool_mode().as_str(),
                 profile.codex_tool_mode().as_str(),
                 summary.valid,
                 requested_trials,
@@ -482,6 +522,53 @@ fn resolve_codex_tool_modes(requested: &[StockCodexToolMode]) -> Result<Vec<Code
     Ok(resolved)
 }
 
+fn resolve_nanocodex_tool_modes(requested: &[NanocodexToolMode]) -> Result<Vec<ToolMode>> {
+    let mut resolved = Vec::with_capacity(requested.len());
+    for tool_mode in requested.iter().copied().map(ToolMode::from) {
+        if resolved.contains(&tool_mode) {
+            return Err(eyre!(
+                "duplicate --nanocodex-tool-mode profile {}",
+                tool_mode.as_str()
+            ));
+        }
+        resolved.push(tool_mode);
+    }
+    if resolved.is_empty() {
+        return Err(eyre!("at least one --nanocodex-tool-mode is required"));
+    }
+    Ok(resolved)
+}
+
+fn resolve_tool_mode_pairs(
+    nanocodex: &[ToolMode],
+    codex: &[CodexToolMode],
+) -> Result<Vec<(ToolMode, CodexToolMode)>> {
+    match (nanocodex.len(), codex.len()) {
+        (0, _) | (_, 0) => Err(eyre!(
+            "both Nanocodex and stock Codex require at least one tool-mode profile"
+        )),
+        (1, _) => Ok(codex
+            .iter()
+            .copied()
+            .map(|codex| (nanocodex[0], codex))
+            .collect()),
+        (_, 1) => Ok(nanocodex
+            .iter()
+            .copied()
+            .map(|nanocodex| (nanocodex, codex[0]))
+            .collect()),
+        (nanocodex_count, codex_count) if nanocodex_count == codex_count => Ok(nanocodex
+            .iter()
+            .copied()
+            .zip(codex.iter().copied())
+            .collect()),
+        (nanocodex_count, codex_count) => Err(eyre!(
+            "--nanocodex-tool-mode has {nanocodex_count} values but --codex-tool-mode has \
+             {codex_count}; use equal-length lists or make either side a singleton"
+        )),
+    }
+}
+
 fn resolve_thinking_profiles(
     shared: Option<Thinking>,
     requested: &[Thinking],
@@ -506,16 +593,18 @@ fn resolve_thinking_profiles(
 
 fn resolve_differential_profiles(
     thinking_profiles: &[Thinking],
-    codex_tool_modes: &[CodexToolMode],
+    tool_mode_pairs: &[(ToolMode, CodexToolMode)],
 ) -> Vec<DifferentialProfile> {
     thinking_profiles
         .iter()
         .copied()
         .flat_map(|thinking| {
-            codex_tool_modes
+            tool_mode_pairs
                 .iter()
                 .copied()
-                .map(move |tool_mode| DifferentialProfile::new(thinking, tool_mode))
+                .map(move |(nanocodex_tool_mode, codex_tool_mode)| {
+                    DifferentialProfile::new(thinking, nanocodex_tool_mode, codex_tool_mode)
+                })
         })
         .collect()
 }
@@ -533,12 +622,13 @@ mod tests {
     use std::path::Path;
 
     use clap::Parser;
-    use nanocodex::Thinking;
+    use nanocodex::{Thinking, tools::ToolMode};
     use nanocodex_eval::{CodexToolMode, DifferentialClassification};
 
     use super::{
-        Diff, DifferentialScoreSummary, StockCodexToolMode, resolve_codex_tool_modes,
-        resolve_differential_profiles, resolve_thinking_profiles,
+        Diff, DifferentialScoreSummary, NanocodexToolMode, StockCodexToolMode,
+        resolve_codex_tool_modes, resolve_differential_profiles, resolve_nanocodex_tool_modes,
+        resolve_thinking_profiles, resolve_tool_mode_pairs,
     };
     use crate::eval::run::DEFAULT_TRIALS;
 
@@ -633,6 +723,10 @@ mod tests {
             cli.diff.codex_tool_modes,
             [StockCodexToolMode::CodeModeOnly]
         );
+        assert_eq!(
+            cli.diff.nanocodex_tool_modes,
+            [NanocodexToolMode::CodeModeOnly]
+        );
     }
 
     #[test]
@@ -663,15 +757,65 @@ mod tests {
         );
         let thinking = resolve_thinking_profiles(None, &cli.diff.thinking_profiles).unwrap();
         assert_eq!(thinking, [Thinking::Low, Thinking::High]);
-        let profiles = resolve_differential_profiles(
-            &thinking,
+        let mode_pairs = resolve_tool_mode_pairs(
+            &resolve_nanocodex_tool_modes(&cli.diff.nanocodex_tool_modes).unwrap(),
             &resolve_codex_tool_modes(&cli.diff.codex_tool_modes).unwrap(),
-        );
+        )
+        .unwrap();
+        let profiles = resolve_differential_profiles(&thinking, &mode_pairs);
         assert_eq!(profiles.len(), 4);
         assert_eq!(profiles[0].thinking(), Thinking::Low);
+        assert_eq!(profiles[0].nanocodex_tool_mode(), ToolMode::CodeModeOnly);
         assert_eq!(profiles[0].codex_tool_mode(), CodexToolMode::CodeMode);
         assert_eq!(profiles[3].thinking(), Thinking::High);
+        assert_eq!(profiles[3].nanocodex_tool_mode(), ToolMode::CodeModeOnly);
         assert_eq!(profiles[3].codex_tool_mode(), CodexToolMode::CodeModeOnly);
+    }
+
+    #[test]
+    fn differential_cli_pairs_both_agents_code_modes_positionally() {
+        let cli = TestCli::try_parse_from([
+            "nanoeval",
+            "--task",
+            "tasks/first",
+            "--codex-bin",
+            "/opt/codex",
+            "--nanocodex-tool-mode",
+            "code-mode,code-mode-only",
+            "--codex-tool-mode",
+            "code-mode,code-mode-only",
+        ])
+        .unwrap();
+        let mode_pairs = resolve_tool_mode_pairs(
+            &resolve_nanocodex_tool_modes(&cli.diff.nanocodex_tool_modes).unwrap(),
+            &resolve_codex_tool_modes(&cli.diff.codex_tool_modes).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            mode_pairs,
+            [
+                (ToolMode::CodeMode, CodexToolMode::CodeMode),
+                (ToolMode::CodeModeOnly, CodexToolMode::CodeModeOnly),
+            ]
+        );
+        let profiles = resolve_differential_profiles(&[Thinking::High], &mode_pairs);
+        assert_eq!(profiles.len(), 2, "each of the four arms runs exactly once");
+    }
+
+    #[test]
+    fn differential_cli_rejects_ambiguous_tool_mode_pairing() {
+        let error = resolve_tool_mode_pairs(
+            &[ToolMode::CodeMode, ToolMode::CodeModeOnly],
+            &[
+                CodexToolMode::CodeMode,
+                CodexToolMode::CodeModeOnly,
+                CodexToolMode::CodeMode,
+            ],
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("equal-length lists"));
     }
 
     #[test]
