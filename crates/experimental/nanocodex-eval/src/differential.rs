@@ -9672,6 +9672,7 @@ mod tests {
                 ToolMode::CodeModeOnly,
                 CodexToolMode::CodeModeOnly,
                 false,
+                false,
             )
             .is_some()
         );

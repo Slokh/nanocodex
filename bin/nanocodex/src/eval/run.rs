@@ -3264,6 +3264,7 @@ mod tests {
                     result: VerifierResult {
                         exit_code: 0,
                         rewards: BTreeMap::from([("reward".to_owned(), 1.0)]),
+                        scorer_reports: Vec::new(),
                     },
                     stdout: String::new(),
                     stderr: String::new(),
