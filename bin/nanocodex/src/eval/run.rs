@@ -35,6 +35,7 @@ const INVOCATION_VERSION: u32 = 3;
 const SCHEDULING_POLICY: &str = "bounded_fifo_work_conserving-v1";
 pub(super) const DEFAULT_TRIALS: u16 = 5;
 pub(super) const DEFAULT_HOST_UTILIZATION_PERCENT: u8 = 80;
+const TARGET_EVAL_OPEN_FILES: u64 = 8_192;
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 
 #[derive(Args)]
@@ -371,6 +372,30 @@ pub(super) fn automatic_scheduling_defaults(utilization_percent: u8) -> (u16, Op
     (defaults.concurrency, defaults.max_memory_mb)
 }
 
+pub(super) fn raise_eval_open_file_limit() -> Result<()> {
+    #[cfg(unix)]
+    {
+        use nix::sys::resource::{Resource, getrlimit, setrlimit};
+
+        let (soft, hard) = getrlimit(Resource::RLIMIT_NOFILE)
+            .map_err(|error| eyre!("failed to read eval runner open-file limit: {error}"))?;
+        let target = desired_eval_open_file_limit(soft, hard);
+        if target > soft {
+            setrlimit(Resource::RLIMIT_NOFILE, target, hard).map_err(|error| {
+                eyre!(
+                    "failed to raise eval runner open-file limit from {soft} to {target}: {error}"
+                )
+            })?;
+            eprintln!("Raised eval runner open-file limit from {soft} to {target}");
+        }
+    }
+    Ok(())
+}
+
+fn desired_eval_open_file_limit(soft: u64, hard: u64) -> u64 {
+    soft.max(hard.min(TARGET_EVAL_OPEN_FILES))
+}
+
 const fn percentage(value: u64, percent: u8) -> u64 {
     value.saturating_mul(percent as u64) / 100
 }
@@ -512,6 +537,7 @@ impl Run {
         let Some(resolved) = self.resolve_executable_run()? else {
             return Ok(());
         };
+        raise_eval_open_file_limit()?;
         let observability_started = Instant::now();
         let _observability = self.observability.install(false, Path::new("."))?;
         let observability = observability_started.elapsed();
@@ -3183,8 +3209,8 @@ mod tests {
     use super::{
         DEFAULT_HOST_UTILIZATION_PERCENT, DEFAULT_TRIALS, EvalInterruptError, HostResources,
         InterruptListener, RetainedBuild, RetainedScheduling, Run, RunInvocation, RunMeasurements,
-        RunSummary, VmRetention, finish_or_drain, finish_or_interrupt, load_tasks,
-        retained_retry_task_names, retained_task_durations,
+        RunSummary, VmRetention, desired_eval_open_file_limit, finish_or_drain,
+        finish_or_interrupt, load_tasks, retained_retry_task_names, retained_task_durations,
     };
 
     #[derive(Parser)]
@@ -3865,6 +3891,13 @@ mod tests {
 
         assert_eq!(defaults.concurrency, 1);
         assert_eq!(defaults.max_memory_mb, None);
+    }
+
+    #[test]
+    fn eval_open_file_limit_uses_the_available_hard_limit() {
+        assert_eq!(desired_eval_open_file_limit(256, u64::MAX), 8_192);
+        assert_eq!(desired_eval_open_file_limit(256, 4_096), 4_096);
+        assert_eq!(desired_eval_open_file_limit(16_384, u64::MAX), 16_384);
     }
 
     #[test]
