@@ -11,6 +11,7 @@ pub struct ToolRuntime {
     current_turn: Arc<AtomicU64>,
     default_shell_name: Arc<str>,
     working_directory: Arc<str>,
+    terminals: crate::terminal::TerminalControl,
 }
 
 #[doc(hidden)]
@@ -38,6 +39,7 @@ impl ToolRuntime {
             true,
             Arc::new(Vec::new()),
             None,
+            None,
         )
     }
 
@@ -56,6 +58,7 @@ impl ToolRuntime {
             tools.workspace_enabled(),
             tools.process_environment(),
             tools.remote_http_client(),
+            tools.terminal_control(),
         )
         .with_tools(tools)
     }
@@ -67,12 +70,15 @@ impl ToolRuntime {
         workspace_enabled: bool,
         process_environment: Arc<Vec<(OsString, OsString)>>,
         remote_http_client: Option<reqwest::Client>,
+        terminals: Option<crate::terminal::TerminalControl>,
     ) -> Self {
         let workspace = workspace.into();
         let current_turn = Arc::new(AtomicU64::new(0));
-        let sessions = Arc::new(ShellSessions::with_environment_and_turn(
+        let terminals = terminals.unwrap_or_else(crate::terminal::TerminalControl::new);
+        let sessions = Arc::new(ShellSessions::with_environment_turn_and_terminals(
             process_environment,
             Arc::clone(&current_turn),
+            terminals.clone(),
         ));
         let default_shell_name = Arc::from(sessions.default_shell_name());
         let working_directory = Arc::from(workspace.to_string_lossy().into_owned());
@@ -115,6 +121,7 @@ impl ToolRuntime {
             current_turn,
             default_shell_name,
             working_directory,
+            terminals,
         }
     }
 
@@ -148,6 +155,13 @@ impl ToolRuntime {
     #[must_use]
     pub fn working_directory(&self) -> &str {
         &self.working_directory
+    }
+
+    /// Returns the application-facing control and subscription capability for
+    /// PTYs created by this runtime's `exec_command` tool.
+    #[must_use]
+    pub fn terminals(&self) -> crate::terminal::TerminalControl {
+        self.terminals.clone()
     }
 
     #[doc(hidden)]

@@ -56,6 +56,7 @@ pub struct Tools {
     remote_http_client: Option<reqwest::Client>,
     pub(super) registered: Vec<Arc<dyn Tool>>,
     pub(super) providers: Vec<Arc<dyn DynamicToolProvider>>,
+    pub(super) terminals: Option<crate::terminal::TerminalControl>,
 }
 
 impl Default for Tools {
@@ -70,6 +71,7 @@ impl Default for Tools {
             remote_http_client: None,
             registered: Vec::new(),
             providers: Vec::new(),
+            terminals: None,
         }
     }
 }
@@ -98,6 +100,7 @@ impl fmt::Debug for Tools {
                     .collect::<Vec<_>>(),
             )
             .field("provider_count", &self.providers.len())
+            .field("terminal_control_bound", &self.terminals.is_some())
             .finish()
     }
 }
@@ -142,7 +145,12 @@ impl Tools {
     #[must_use]
     pub fn for_session(mut self, session_id: &str) -> Self {
         self.insert_process_environment(CODEX_THREAD_ID_ENV_VAR.into(), session_id.into());
+        self.terminals = Some(crate::terminal::TerminalControl::new());
         self
+    }
+
+    pub(crate) fn terminal_control(&self) -> Option<crate::terminal::TerminalControl> {
+        self.terminals.clone()
     }
 
     pub(super) fn process_environment(&self) -> Arc<Vec<(OsString, OsString)>> {
