@@ -88,7 +88,10 @@ use flate2::read::GzDecoder;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use ignore::WalkBuilder;
 use oci_client::{
-    Client, Reference, client::ClientConfig, config::ConfigFile, manifest::ImageIndexEntry,
+    Client, Reference,
+    client::{ClientConfig, ClientProtocol},
+    config::ConfigFile,
+    manifest::ImageIndexEntry,
     secrets::RegistryAuth,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -2259,6 +2262,7 @@ async fn pull_layers(image: &str, blobs: &Path) -> Result<PulledImage, ImageErro
         source,
     })?;
     let config = ClientConfig {
+        protocol: registry_protocol(&reference),
         platform_resolver: Some(Box::new(linux_guest_manifest)),
         ..ClientConfig::default()
     };
@@ -2407,6 +2411,22 @@ fn linux_guest_manifest(manifests: &[ImageIndexEntry]) -> Option<String> {
             })
         })
         .map(|entry| entry.digest.clone())
+}
+
+fn registry_protocol(reference: &Reference) -> ClientProtocol {
+    let registry = reference.registry();
+    let host = registry
+        .strip_prefix('[')
+        .and_then(|registry| registry.split_once(']'))
+        .map_or_else(
+            || registry.split(':').next().unwrap_or(registry),
+            |(host, _)| host,
+        );
+    if matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        ClientProtocol::HttpsExcept(vec![registry.to_owned()])
+    } else {
+        ClientProtocol::Https
+    }
 }
 
 fn format_root_disk(path: &Path, size: u64, layers: &[PulledLayer]) -> Result<(), ImageError> {
@@ -3197,6 +3217,33 @@ ENV LEGACY value with spaces
 
         assert_eq!(config.working_directory, "/");
         assert!(config.environment.is_empty());
+    }
+
+    #[test]
+    fn local_oci_registries_use_plain_http() {
+        for image in [
+            "localhost:5100/stable-bench/agent:v1",
+            "127.0.0.1:5100/stable-bench/agent:v1",
+        ] {
+            let reference = oci_client::Reference::try_from(image).unwrap();
+            assert_eq!(
+                super::registry_protocol(&reference),
+                oci_client::client::ClientProtocol::HttpsExcept(vec![
+                    reference.registry().to_owned(),
+                ])
+            );
+        }
+    }
+
+    #[test]
+    fn remote_oci_registries_keep_https() {
+        let reference =
+            oci_client::Reference::try_from("ghcr.io/tempoxyz/stable-bench:latest").unwrap();
+
+        assert_eq!(
+            super::registry_protocol(&reference),
+            oci_client::client::ClientProtocol::Https
+        );
     }
 
     #[test]
