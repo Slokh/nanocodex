@@ -2720,7 +2720,7 @@ async fn read_verifier_rewards(
 ) -> Result<(&'static str, Vec<u8>, BTreeMap<String, f64>), VmAttemptError> {
     if profile == VmVerifierProfile::StableBenchV1 {
         let scores = match session
-            .read_file("/logs/verifier/stable-bench-scores.json")
+            .read_file("/logs/verifier/tempo-bench-scores.json")
             .await
         {
             Ok(scores) => scores,
@@ -3906,6 +3906,39 @@ mod tests {
             assert_eq!(docs.sha, "pinned-docs");
             assert_eq!(docs.proxy, format!("{STABLE_BENCH_DOCS_MOUNT}/{proxy}"));
         }
+    }
+
+    #[tokio::test]
+    async fn stable_bench_reads_the_canonical_tempo_bench_score_file() {
+        let script = r#"
+request_id=0
+while IFS= read -r request; do
+    case "$request" in
+        *'"kind":"read_file"'*tempo-bench-scores.json*)
+            printf '{"kind":"read_file","payload":{"id":%s,"contents":"eyJyZXdhcmQiOjF9Cg==","error":null}}\n' "$request_id"
+            ;;
+        *'"kind":"shutdown"'*)
+            printf '{"kind":"shutdown","payload":{"id":%s,"error":null}}\n' "$request_id"
+            exit 0
+            ;;
+        *) exit 91 ;;
+    esac
+    request_id=$((request_id + 1))
+done
+"#;
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.arg("-c").arg(script);
+        let session = VmToolSession::spawn(&mut command).unwrap();
+
+        let (name, bytes, rewards) =
+            read_verifier_rewards(&session, VmVerifierProfile::StableBenchV1, 0)
+                .await
+                .unwrap();
+        session.shutdown().await.unwrap();
+
+        assert_eq!(name, "reward.json");
+        assert_eq!(bytes, b"{\"correctness\":1.0}\n");
+        assert_eq!(rewards, BTreeMap::from([("correctness".to_owned(), 1.0)]));
     }
 
     #[tokio::test]
