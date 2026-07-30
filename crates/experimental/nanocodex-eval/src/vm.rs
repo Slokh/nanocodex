@@ -3166,6 +3166,7 @@ impl VmVerifier {
                     output.exit_code
                 },
                 rewards,
+                scorer_reports: Vec::new(),
             },
             stdout,
             stderr,

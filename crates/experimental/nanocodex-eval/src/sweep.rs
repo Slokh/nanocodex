@@ -8,7 +8,7 @@ use nanocodex_agent::NanocodexBuilder;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use uuid::Uuid;
 
-use crate::{Task, digest::PACKAGE_DIGEST_SCHEMA};
+use crate::{ScorerIdentity, Task, digest::PACKAGE_DIGEST_SCHEMA};
 
 /// Stable caller-defined identity for one agent configuration in a sweep.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -50,6 +50,8 @@ pub(crate) struct RunManifest {
     tasks: Vec<RunTask>,
     agents: Vec<AgentId>,
     trials: NonZeroU16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scorer: Option<ScorerIdentity>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
@@ -225,11 +227,16 @@ impl Sweep {
                 .collect(),
             agents: self.agents.iter().map(|agent| agent.id.clone()).collect(),
             trials: self.trials,
+            scorer: None,
         }
     }
 }
 
 impl RunManifest {
+    pub(crate) fn set_scorer(&mut self, scorer: Option<ScorerIdentity>) {
+        self.scorer = scorer;
+    }
+
     pub(crate) fn attempt_count(&self) -> usize {
         self.tasks.len() * self.agents.len() * usize::from(self.trials.get())
     }
@@ -307,6 +314,7 @@ impl PartialEq for RunManifest {
         if self.task_digest_schema != other.task_digest_schema
             || self.trials != other.trials
             || self.agents != other.agents
+            || self.scorer != other.scorer
             || self.tasks.len() != other.tasks.len()
         {
             return false;
@@ -515,6 +523,30 @@ mod tests {
                 .attempts()
                 .map(|attempt| attempt.task().name().to_owned())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn manifest_identity_includes_post_verifier_scorer_configuration() {
+        let sweep = Sweep::builder()
+            .task(load_task("write-greeting"))
+            .agent(
+                "default",
+                Nanocodex::builder(OpenAi::new("test-key").unwrap()),
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let current = sweep.manifest();
+        let mut scored = current.clone();
+        scored.set_scorer(Some(
+            ScorerIdentity::new("judge", "1", "a".repeat(64)).unwrap(),
+        ));
+
+        assert_ne!(current, scored);
+        assert_eq!(
+            serde_json::to_value(scored).unwrap()["scorer"]["name"],
+            "judge"
         );
     }
 

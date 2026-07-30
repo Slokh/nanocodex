@@ -633,6 +633,7 @@ impl HarborArtifacts {
             verifier_result: Some(HarborVerifierResult {
                 exit_code: result.verifier.exit_code,
                 rewards: &result.verifier.rewards,
+                scorer_reports: &result.verifier.scorer_reports,
             }),
             started_at: result.timing.started_at,
             finished_at: result.timing.finished_at,
@@ -785,6 +786,7 @@ impl HarborArtifacts {
                 .map(|verifier| HarborVerifierResult {
                     exit_code: verifier.exit_code,
                     rewards: &verifier.rewards,
+                    scorer_reports: &verifier.scorer_reports,
                 }),
             started_at: failure.started_at,
             finished_at: failure.finished_at,
@@ -1485,6 +1487,8 @@ struct HarborRolloutDetail {}
 struct HarborVerifierResult<'a> {
     exit_code: i32,
     rewards: &'a BTreeMap<String, f64>,
+    #[serde(skip_serializing_if = "<[crate::ScorerReport]>::is_empty")]
+    scorer_reports: &'a [crate::ScorerReport],
 }
 
 #[derive(Serialize)]
@@ -1577,6 +1581,8 @@ struct RetainedHarborAgentResult {
 struct RetainedHarborVerifierResult {
     exit_code: i32,
     rewards: BTreeMap<String, f64>,
+    #[serde(default)]
+    scorer_reports: Vec<crate::ScorerReport>,
 }
 
 #[derive(Deserialize)]
@@ -2037,14 +2043,21 @@ fn harbor_binary_success(result: &RetainedHarborTrialResult) -> Option<u8> {
 }
 
 fn retained_trial_errored(result: &RetainedHarborTrialResult) -> bool {
-    retained_lifecycle_classification(
+    let lifecycle_errored = retained_lifecycle_classification(
         result.outcome,
         result
             .exception_info
             .as_ref()
             .map(|exception| exception.exception_type.as_str()),
     )
-    .0
+    .0;
+    lifecycle_errored
+        || result.verifier_result.as_ref().is_some_and(|verifier| {
+            verifier
+                .scorer_reports
+                .iter()
+                .any(|report| report.status == crate::ScorerStatus::Failed)
+        })
 }
 
 fn retained_trial_refused(result: &RetainedHarborTrialResult) -> bool {

@@ -66,6 +66,7 @@ pub mod harbor;
 mod job;
 mod native;
 mod result;
+mod scorer;
 mod stable_bench;
 mod sweep;
 mod task;
@@ -111,6 +112,11 @@ pub use result::{
     EvalExceptionKind, EvalFailure, EvalFailureTiming, EvalOutcome, EvalResult, EvalStatus,
     EvalTiming, MeasurementCompleteness, PhaseTiming, SweepAttemptResult, SweepResults,
     UsageTotals, VerifierResult,
+};
+pub use scorer::{
+    AttemptScoreError, AttemptScoreFuture, AttemptScorer, ScoreContext, ScoreContribution,
+    ScoreDisposition, ScorerDiagnostic, ScorerIdentity, ScorerIdentityError, ScorerReport,
+    ScorerStatus,
 };
 pub use sweep::{AgentId, AgentIdError, Sweep, SweepBuilder, SweepError};
 pub use task::{

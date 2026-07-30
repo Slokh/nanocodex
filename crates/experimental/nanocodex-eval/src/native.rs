@@ -104,6 +104,7 @@ impl NativeAttempt {
             result: VerifierResult {
                 exit_code: output.status.code().unwrap_or(1),
                 rewards,
+                scorer_reports: Vec::new(),
             },
             timing: PhaseTiming {
                 started_at,

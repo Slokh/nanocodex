@@ -10,10 +10,11 @@ use std::{
 use nanocodex_agent::NanocodexBuilder;
 use nanocodex_tools::Tools;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
-    AtifTrajectory, EvalAttempt, Task, VerifierResult,
-    evaluator::{AttemptScoreAugmenter, AttemptScoreFuture},
+    AtifTrajectory, AttemptScoreFuture, AttemptScorer, ScoreContext, ScoreContribution,
+    ScorerIdentity, Task,
 };
 
 const JUDGE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -27,34 +28,67 @@ Return exactly one JSON object with this shape:
 Include every rubric criterion exactly once. Each score must be a number from zero through that
 criterion's declared point maximum. Do not add markdown fences or other text."#;
 
+#[derive(Clone)]
 pub(crate) struct StableBenchJudge {
     builder: NanocodexBuilder,
+    identity: ScorerIdentity,
 }
 
 impl StableBenchJudge {
-    pub(crate) const fn new(builder: NanocodexBuilder) -> Self {
-        Self { builder }
+    pub(crate) fn new(
+        builder: NanocodexBuilder,
+        thinking: &str,
+    ) -> Result<Self, crate::ScorerIdentityError> {
+        Ok(Self {
+            builder,
+            identity: Self::identity_for(thinking)?,
+        })
+    }
+
+    pub(crate) fn identity_for(
+        thinking: &str,
+    ) -> Result<ScorerIdentity, crate::ScorerIdentityError> {
+        let mut configuration = Sha256::new();
+        configuration.update(b"nanocodex-stable-bench-v1-quality\0");
+        configuration.update(JUDGE_INSTRUCTIONS.as_bytes());
+        configuration.update(b"\0model\0");
+        configuration.update(nanocodex_oai_api::MODEL.as_bytes());
+        configuration.update(b"\0thinking\0");
+        configuration.update(thinking.as_bytes());
+        configuration.update(b"\0timeout-seconds\0");
+        configuration.update(JUDGE_TIMEOUT.as_secs().to_string().as_bytes());
+        configuration.update(b"\0rubric-schema\0");
+        configuration.update(b"1");
+        ScorerIdentity::new(
+            "stable-bench-v1-quality",
+            "1",
+            hex::encode(configuration.finalize()),
+        )
     }
 }
 
-impl AttemptScoreAugmenter for StableBenchJudge {
-    fn augment<'a>(
-        &'a self,
-        task: &'a Task,
-        attempt: EvalAttempt<'a>,
-        verifier: &'a mut VerifierResult,
-    ) -> AttemptScoreFuture<'a> {
+impl AttemptScorer for StableBenchJudge {
+    fn identity(&self) -> &ScorerIdentity {
+        &self.identity
+    }
+
+    fn score<'a>(&'a self, context: ScoreContext<'a>) -> AttemptScoreFuture<'a> {
         Box::pin(async move {
-            let correctness = verifier
+            let task = context.task();
+            let attempt = context.attempt();
+            let correctness = context
+                .canonical()
                 .rewards
                 .get("correctness")
                 .copied()
                 .ok_or_else(|| boxed_error("StableBench verifier emitted no correctness reward"))?;
             if correctness <= 0.0 {
-                verifier.rewards.insert("quality".to_owned(), 0.0);
-                verifier.rewards.insert("reward".to_owned(), 0.0);
                 retain_skipped_judge(attempt.directory(), correctness)?;
-                return Ok(());
+                return Ok(ScoreContribution::skipped(
+                    BTreeMap::from([("quality".to_owned(), 0.0), ("reward".to_owned(), 0.0)]),
+                    "deterministic correctness failed",
+                )
+                .artifact("decision", "verifier/nanocodex-judge.json"));
             }
 
             let rubric = load_rubric(task)?;
@@ -82,7 +116,10 @@ impl AttemptScoreAugmenter for StableBenchJudge {
                 let result = tokio::time::timeout(JUDGE_TIMEOUT, turn)
                     .await
                     .map_err(|_| boxed_error("StableBench Nanocodex judge timed out"))??;
-                Ok::<_, Box<dyn Error + Send + Sync>>(result.final_message().to_owned())
+                Ok::<_, Box<dyn Error + Send + Sync>>((
+                    result.final_message().to_owned(),
+                    result.usage().clone(),
+                ))
             };
             let run_result = run.await;
             let shutdown_result = judge.shutdown().await;
@@ -90,15 +127,13 @@ impl AttemptScoreAugmenter for StableBenchJudge {
             let recorder_result = event_recorder
                 .await
                 .map_err(|error| boxed_error(format!("judge event recorder failed: {error}")))?;
-            let raw = run_result?;
+            let (raw, usage) = run_result?;
             shutdown_result?;
             recorder_result?;
             fs::write(judge_directory.join("nanocodex-judge-output.txt"), &raw)?;
 
             let output = parse_judge_output(&raw)?;
             let quality = score_output(&rubric, &output)?;
-            verifier.rewards.insert("quality".to_owned(), quality);
-            verifier.rewards.insert("reward".to_owned(), quality);
             let retained = RetainedJudge {
                 schema_version: 1,
                 verifier: "nanocodex",
@@ -110,7 +145,14 @@ impl AttemptScoreAugmenter for StableBenchJudge {
             let mut bytes = serde_json::to_vec_pretty(&retained)?;
             bytes.push(b'\n');
             fs::write(judge_directory.join("nanocodex-judge.json"), bytes)?;
-            Ok(())
+            Ok(ScoreContribution::completed(BTreeMap::from([
+                ("quality".to_owned(), quality),
+                ("reward".to_owned(), quality),
+            ]))
+            .artifact("decision", "verifier/nanocodex-judge.json")
+            .artifact("events", "verifier/nanocodex-judge-events.jsonl")
+            .artifact("raw_output", "verifier/nanocodex-judge-output.txt")
+            .model_usage(usage))
         })
     }
 }
@@ -332,7 +374,18 @@ fn boxed_error(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{Criterion, JudgeConfig, JudgeOutput, RewardRubric, score_output};
+    use super::{
+        Criterion, JudgeConfig, JudgeOutput, RewardRubric, StableBenchJudge, score_output,
+    };
+
+    #[test]
+    fn scorer_identity_changes_with_judge_reasoning_configuration() {
+        let medium = StableBenchJudge::identity_for("medium").unwrap();
+        let high = StableBenchJudge::identity_for("high").unwrap();
+
+        assert_eq!(medium.name(), "stable-bench-v1-quality");
+        assert_ne!(medium.configuration_digest(), high.configuration_digest());
+    }
 
     #[test]
     fn scores_only_exact_finite_rubric_output() {

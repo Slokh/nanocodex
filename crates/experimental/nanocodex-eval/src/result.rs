@@ -5,7 +5,7 @@ use nanocodex_oai_api::pricing::EstimatedUsdCost;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{AgentId, Task};
+use crate::{AgentId, ScorerReport, Task};
 
 /// Execution environment used for one evaluation attempt.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -715,6 +715,9 @@ pub struct VerifierResult {
     pub exit_code: i32,
     /// Named verifier rewards in deterministic key order.
     pub rewards: BTreeMap<String, f64>,
+    /// Post-verifier scorer reports in invocation order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scorer_reports: Vec<ScorerReport>,
 }
 
 /// Wall-clock boundaries for each attempt phase.

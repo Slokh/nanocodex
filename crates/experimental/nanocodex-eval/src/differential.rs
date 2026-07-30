@@ -37,9 +37,9 @@ use uuid::Uuid;
 
 use crate::{
     AgentResult, AtifBuilder, AtifSource, AtifStep, AtifToolCall, AtifTrajectory, AttemptAgent,
-    CodexCommandOutput, CodexCommandRunner, CodexCommandRunnerError, CodexCommandStatus, CodexExec,
-    CodexToolMode, EvalAttempt, EvalAttemptOutcome, EvalEventKind, EvalEventStream,
-    EvalExceptionKind, EvalOutcome, EvalStatus, Evaluator, EvaluatorBuilder,
+    AttemptScorer, CodexCommandOutput, CodexCommandRunner, CodexCommandRunnerError,
+    CodexCommandStatus, CodexExec, CodexToolMode, EvalAttempt, EvalAttemptOutcome, EvalEventKind,
+    EvalEventStream, EvalExceptionKind, EvalOutcome, EvalStatus, Evaluator, EvaluatorBuilder,
     MeasurementCompleteness, ResponsesCaptureProxy, ResponsesCaptureProxyConfig,
     ResponsesModelCatalogOverride, Task, UsageTotals,
     evaluator::{AdmissionAttempt, AdmissionController, AdmissionPermit},
@@ -117,10 +117,10 @@ where
 
 const DEFAULT_OUTPUT_DIRECTORY: &str = ".nanocodex/eval-diff";
 const COMPARISON_FILE: &str = "comparison.json";
-const COMPARISON_SCHEMA_VERSION: u32 = 15;
+const COMPARISON_SCHEMA_VERSION: u32 = 16;
 const SWEEP_MANIFEST_FILE: &str = "differential-sweep.json";
 const SWEEP_LOCK_FILE: &str = ".differential-sweep.lock";
-const SWEEP_MANIFEST_SCHEMA_VERSION: u32 = 3;
+const SWEEP_MANIFEST_SCHEMA_VERSION: u32 = 4;
 const PROGRESS_FILE: &str = "progress.jsonl";
 const PROGRESS_SCHEMA_VERSION: u32 = 1;
 const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -774,6 +774,8 @@ struct DifferentialSweepProfile {
     thinking: String,
     nanocodex_tool_mode: String,
     codex_tool_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scorer: Option<crate::ScorerIdentity>,
 }
 
 struct DifferentialSweepGuard {
@@ -965,6 +967,8 @@ struct ComparisonPolicy {
     verifier: &'static str,
     stable_bench_docs_sha: Option<String>,
     stable_bench_mcp_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scorer: Option<crate::ScorerIdentity>,
 }
 
 fn stable_bench_docs_sha(task: &Task) -> InternalResult<String> {
@@ -3258,7 +3262,7 @@ fn differential_sweep_manifest(
     tasks: &[Task],
     profiles: &[DifferentialProfile],
     trials: usize,
-) -> DifferentialSweepManifest {
+) -> InternalResult<DifferentialSweepManifest> {
     let mut tasks = tasks
         .iter()
         .map(|task| DifferentialSweepTask {
@@ -3270,14 +3274,19 @@ fn differential_sweep_manifest(
     tasks.sort_unstable();
     let mut profiles = profiles
         .iter()
-        .map(|profile| DifferentialSweepProfile {
-            thinking: profile.thinking.as_str().to_owned(),
-            nanocodex_tool_mode: profile.nanocodex_tool_mode.as_str().to_owned(),
-            codex_tool_mode: profile.codex_tool_mode.as_str().to_owned(),
+        .map(|profile| {
+            Ok(DifferentialSweepProfile {
+                thinking: profile.thinking.as_str().to_owned(),
+                nanocodex_tool_mode: profile.nanocodex_tool_mode.as_str().to_owned(),
+                codex_tool_mode: profile.codex_tool_mode.as_str().to_owned(),
+                scorer: (inner.verifier_profile == VmVerifierProfile::StableBenchV1)
+                    .then(|| StableBenchJudge::identity_for(profile.thinking.as_str()))
+                    .transpose()?,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<InternalResult<Vec<_>>>()?;
     profiles.sort_unstable();
-    DifferentialSweepManifest {
+    Ok(DifferentialSweepManifest {
         schema_version: SWEEP_MANIFEST_SCHEMA_VERSION,
         comparison_schema_version: COMPARISON_SCHEMA_VERSION,
         model: MODEL.to_owned(),
@@ -3288,7 +3297,7 @@ fn differential_sweep_manifest(
         nanocodex_sha256: inner.nanocodex_build.sha256.clone(),
         codex_sha256: inner.codex_sha256.clone(),
         codex_code_mode_host_sha256: inner.codex_release.code_mode_host_sha256.clone(),
-    }
+    })
 }
 
 fn prepare_differential_sweep(
@@ -3312,7 +3321,7 @@ fn prepare_differential_sweep(
         )
     })?;
     let guard = DifferentialSweepGuard { _lock: lock };
-    let expected = differential_sweep_manifest(inner, tasks, profiles, trials);
+    let expected = differential_sweep_manifest(inner, tasks, profiles, trials)?;
     let manifest_path = inner.output.join(SWEEP_MANIFEST_FILE);
     if manifest_path.is_file() {
         let bytes = fs::read(&manifest_path).wrap_err_with(|| {
@@ -4385,8 +4394,9 @@ impl DifferentialComparison {
         }
 
         let nanocodex = nanocodex.thinking(thinking);
-        let score_augmenter = (verifier_profile == VmVerifierProfile::StableBenchV1)
-            .then(|| Arc::new(StableBenchJudge::new(nanocodex.clone())));
+        let scorer = (verifier_profile == VmVerifierProfile::StableBenchV1)
+            .then(|| StableBenchJudge::new(nanocodex.clone(), thinking.as_str()))
+            .transpose()?;
         let nanocodex_memory = Arc::new(OnceLock::<VmAttemptMemory>::new());
         let nanocodex_memory_slot = Arc::clone(&nanocodex_memory);
         let nanocodex_evaluator = Evaluator::builder(nanocodex.clone())
@@ -4398,8 +4408,8 @@ impl DifferentialComparison {
                     runtime.nanocodex_with_tool_mode(builder, nanocodex_tool_mode)
                 },
             );
-        let nanocodex_evaluator = if let Some(augmenter) = &score_augmenter {
-            nanocodex_evaluator.score_augmenter(augmenter.clone())
+        let nanocodex_evaluator = if let Some(scorer) = &scorer {
+            nanocodex_evaluator.post_verifier_scorer(scorer.clone())
         } else {
             nanocodex_evaluator
         };
@@ -4424,8 +4434,8 @@ impl DifferentialComparison {
                     codex_progress.clone(),
                 )
             });
-        let codex_evaluator = if let Some(augmenter) = &score_augmenter {
-            codex_evaluator.score_augmenter(augmenter.clone())
+        let codex_evaluator = if let Some(scorer) = &scorer {
+            codex_evaluator.post_verifier_scorer(scorer.clone())
         } else {
             codex_evaluator
         };
@@ -4546,6 +4556,7 @@ impl DifferentialComparison {
                 },
                 stable_bench_docs_sha,
                 stable_bench_mcp_url,
+                scorer: scorer.as_ref().map(|scorer| scorer.identity().clone()),
             },
             started_at,
             finished_at: Utc::now(),
@@ -5405,6 +5416,25 @@ impl ArmReport {
         api_capture_required: bool,
     ) -> Self {
         let attempt_directory = outcome_directory(&outcome);
+        let scorer_error = outcome.scored().and_then(|result| {
+            result
+                .verifier
+                .scorer_reports
+                .iter()
+                .find(|report| report.status == crate::ScorerStatus::Failed)
+                .map(|report| {
+                    report.diagnostic.as_ref().map_or_else(
+                        || format!("post-verifier scorer {} failed", report.identity.name()),
+                        |diagnostic| {
+                            format!(
+                                "post-verifier scorer {} failed: {}",
+                                report.identity.name(),
+                                diagnostic.message
+                            )
+                        },
+                    )
+                })
+        });
         let (codex_events, codex_stderr, codex_summary) = if codex_artifacts {
             (
                 retained_file(attempt_directory.join("agent/codex-events.jsonl")),
@@ -5442,7 +5472,7 @@ impl ArmReport {
             codex_events,
             codex_stderr,
             codex_summary,
-            operational_error: None,
+            operational_error: scorer_error,
             event_error,
             memory: None,
             outcome: Some(outcome),
@@ -8610,6 +8640,7 @@ mod tests {
                 thinking: "medium".to_owned(),
                 nanocodex_tool_mode: "code_mode_only".to_owned(),
                 codex_tool_mode: "code_mode_only".to_owned(),
+                scorer: None,
             }],
             nanocodex_sha256: "nano-sha".to_owned(),
             codex_sha256: "codex-sha".to_owned(),
@@ -9277,6 +9308,7 @@ mod tests {
             &EvalEventKind::VerifierCompleted(VerifierResult {
                 exit_code: 0,
                 rewards: [("task_reward".to_owned(), 1.0)].into(),
+                scorer_reports: Vec::new(),
             }),
         );
         recorder.finish(progress).await.unwrap();
