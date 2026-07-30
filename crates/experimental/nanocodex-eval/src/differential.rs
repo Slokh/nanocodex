@@ -113,7 +113,7 @@ where
 
 const DEFAULT_OUTPUT_DIRECTORY: &str = ".nanocodex/eval-diff";
 const COMPARISON_FILE: &str = "comparison.json";
-const COMPARISON_SCHEMA_VERSION: u32 = 15;
+const COMPARISON_SCHEMA_VERSION: u32 = 16;
 const SWEEP_MANIFEST_FILE: &str = "differential-sweep.json";
 const SWEEP_LOCK_FILE: &str = ".differential-sweep.lock";
 const SWEEP_MANIFEST_SCHEMA_VERSION: u32 = 2;
@@ -127,6 +127,7 @@ const API_EXCHANGES_FILE: &str = "agent/api-exchanges.jsonl";
 const API_COMPARISON_FILE: &str = "api-comparison.json";
 const API_CAPTURE_SCHEMA_VERSION: u32 = 1;
 const API_COMPARISON_SCHEMA_VERSION: u32 = 15;
+const MODEL_VISIBLE_TOOL_CALL_MEASUREMENT: &str = "responses_output_item_done";
 const DIFF_CODEX_SHARE_TAG: &str = "nanoeval-codex";
 const DIFF_CODEX_SHARE_MOUNT: &str = "/run/nanoeval-codex";
 const DIFF_CODEX_GUEST_BINARY: &str = "/run/nanoeval-codex/codex";
@@ -1102,7 +1103,9 @@ struct ArmSummary {
     verifier_exit_code: Option<i32>,
     rewards: BTreeMap<String, f64>,
     model: Option<String>,
-    tool_calls: Option<u32>,
+    tool_calls: Option<u64>,
+    tool_call_measurement: &'static str,
+    observed_tool_events: Option<u32>,
     usage: Option<UsageTotals>,
     duration_ms: Option<u64>,
 }
@@ -4383,6 +4386,12 @@ impl DifferentialComparison {
                     Some(format!("{error:#}")),
                 ),
             };
+        nanocodex_arm
+            .summary
+            .apply_model_visible_tool_calls(api_comparison.event_loop.nanocodex.as_ref());
+        codex_arm
+            .summary
+            .apply_model_visible_tool_calls(api_comparison.event_loop.codex.as_ref());
         let profile_validation_error = validate_differential_profile(
             &api_comparison,
             MODEL,
@@ -5372,6 +5381,10 @@ impl From<VmAttemptMemorySnapshot> for ArmMemoryReport {
 }
 
 impl ArmSummary {
+    fn apply_model_visible_tool_calls(&mut self, summary: Option<&ApiEventLoopArmSummary>) {
+        self.tool_calls = summary.map(|summary| summary.model_visible_tool_calls);
+    }
+
     fn from_outcome(outcome: &EvalAttemptOutcome) -> Self {
         match outcome {
             EvalAttemptOutcome::Scored(result) => Self {
@@ -5384,7 +5397,9 @@ impl ArmSummary {
                 verifier_exit_code: Some(result.verifier.exit_code),
                 rewards: result.verifier.rewards.clone(),
                 model: result.agent.as_ref().map(|agent| agent.model.clone()),
-                tool_calls: result.agent.as_ref().map(|agent| agent.tool_calls),
+                tool_calls: None,
+                tool_call_measurement: MODEL_VISIBLE_TOOL_CALL_MEASUREMENT,
+                observed_tool_events: result.agent.as_ref().map(|agent| agent.tool_calls),
                 usage: result.agent.as_ref().map(|agent| agent.usage.clone()),
                 duration_ms: result.agent.as_ref().map(agent_duration_ms),
             },
@@ -5398,7 +5413,9 @@ impl ArmSummary {
                     .as_ref()
                     .map_or_else(BTreeMap::new, |verifier| verifier.rewards.clone()),
                 model: failure.agent.as_ref().map(|agent| agent.model.clone()),
-                tool_calls: failure.agent.as_ref().map(|agent| agent.tool_calls),
+                tool_calls: None,
+                tool_call_measurement: MODEL_VISIBLE_TOOL_CALL_MEASUREMENT,
+                observed_tool_events: failure.agent.as_ref().map(|agent| agent.tool_calls),
                 usage: failure.agent.as_ref().map(|agent| agent.usage.clone()),
                 duration_ms: failure.agent.as_ref().map(agent_duration_ms),
             },
@@ -5414,6 +5431,8 @@ impl ArmSummary {
             rewards: BTreeMap::new(),
             model: None,
             tool_calls: None,
+            tool_call_measurement: MODEL_VISIBLE_TOOL_CALL_MEASUREMENT,
+            observed_tool_events: None,
             usage: None,
             duration_ms: None,
         }
@@ -5986,6 +6005,12 @@ fn reanalyze_inner(path: &Path) -> InternalResult<DifferentialReanalysis> {
         .get_mut("nanocodex")
         .and_then(serde_json::Value::as_object_mut)
         .ok_or_else(|| diff_error!("retained comparison has no Nanocodex arm object"))?;
+    normalize_retained_arm_tool_calls(
+        nanocodex,
+        api_summary
+            .as_ref()
+            .and_then(|summary| summary.event_loop.nanocodex.as_ref()),
+    );
     nanocodex.insert(
         "trajectory_summary".to_owned(),
         serde_json::to_value(&nanocodex_trajectory_summary)?,
@@ -5994,6 +6019,12 @@ fn reanalyze_inner(path: &Path) -> InternalResult<DifferentialReanalysis> {
         .get_mut("codex")
         .and_then(serde_json::Value::as_object_mut)
         .ok_or_else(|| diff_error!("retained comparison has no Codex arm object"))?;
+    normalize_retained_arm_tool_calls(
+        codex,
+        api_summary
+            .as_ref()
+            .and_then(|summary| summary.event_loop.codex.as_ref()),
+    );
     codex.insert(
         "trajectory_summary".to_owned(),
         serde_json::to_value(&codex_trajectory_summary)?,
@@ -6144,6 +6175,35 @@ fn retained_trajectory_summary(
             )
         })?)?;
     Ok(Some(TrajectorySummary::new(&trajectory)))
+}
+
+fn normalize_retained_arm_tool_calls(
+    arm: &mut serde_json::Map<String, serde_json::Value>,
+    api: Option<&ApiEventLoopArmSummary>,
+) {
+    let Some(summary) = arm
+        .get_mut("summary")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    if !summary.contains_key("observed_tool_events") {
+        let observed = summary
+            .get("tool_calls")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        summary.insert("observed_tool_events".to_owned(), observed);
+    }
+    summary.insert(
+        "tool_calls".to_owned(),
+        api.map_or(serde_json::Value::Null, |summary| {
+            serde_json::Value::from(summary.model_visible_tool_calls)
+        }),
+    );
+    summary.insert(
+        "tool_call_measurement".to_owned(),
+        serde_json::Value::from(MODEL_VISIBLE_TOOL_CALL_MEASUREMENT),
+    );
 }
 
 fn append_shell_polling_summary(output: &mut String, name: &str, summary: &ShellPollingSummary) {
@@ -8105,16 +8165,23 @@ fn append_arm_summary(output: &mut String, name: &str, arm: &ArmReport) {
         .map(|(name, reward)| format!("{name}={reward}"))
         .collect::<Vec<_>>()
         .join(",");
-    let tools = arm
+    let model_visible_tools = arm
         .summary
         .tool_calls
         .map_or_else(|| "unknown".to_owned(), |calls| calls.to_string());
+    let observed_tool_events = arm
+        .summary
+        .observed_tool_events
+        .map_or_else(|| "unknown".to_owned(), |calls| calls.to_string());
     if reward.is_empty() {
-        let _ = writeln!(output, "{name}: {status} observed_tool_events={tools}");
+        let _ = writeln!(
+            output,
+            "{name}: {status} model_visible_tool_calls={model_visible_tools} observed_tool_events={observed_tool_events}"
+        );
     } else {
         let _ = writeln!(
             output,
-            "{name}: {status} {reward} observed_tool_events={tools}"
+            "{name}: {status} {reward} model_visible_tool_calls={model_visible_tools} observed_tool_events={observed_tool_events}"
         );
     }
     if let Some(memory) = arm.memory {
@@ -8188,8 +8255,8 @@ mod tests {
     };
 
     use super::{
-        ApiEventLoopTailSummary, ApiRequestPayload, ApiTokenUsageSummary, ArmStatus, CodexExec,
-        CodexToolMode, CodexVersion, DIFF_CODEX_CA_BUNDLE_FILENAME,
+        ApiEventLoopTailSummary, ApiRequestPayload, ApiTokenUsageSummary, ArmStatus, ArmSummary,
+        CodexExec, CodexToolMode, CodexVersion, DIFF_CODEX_CA_BUNDLE_FILENAME,
         DIFF_CODEX_CLOUD_CONFIG_CACHE_FILENAME, DIFF_CODEX_SSL_CERT_FILE_ENVIRONMENT,
         DetectedEmptyStdinCalls, DiffCodexCaSource, DiffProgress, DifferentialBuildError,
         DifferentialClassification, DifferentialEvaluator, DifferentialMemoryPlanner,
@@ -8203,11 +8270,11 @@ mod tests {
         first_client_metadata_difference, heartbeat_needed, heartbeat_summary,
         initial_differential_schedule, inspect_api_exchanges, join_differential_arms,
         memory_with_slack, newly_completed_lines, next_guest_memory_after_oom,
-        read_api_request_payloads, read_optional_codex_cloud_config_cache, reanalyze,
-        releasable_differential_arm_memory_mb, resume_differential_schedule,
-        retained_differential_summary, run_arm, stage_diff_codex_ca_bundle,
-        summarize_client_metadata, summarize_nanocodex, validate_differential_profile,
-        validate_differential_profiles, write_json_atomic,
+        normalize_retained_arm_tool_calls, read_api_request_payloads,
+        read_optional_codex_cloud_config_cache, reanalyze, releasable_differential_arm_memory_mb,
+        resume_differential_schedule, retained_differential_summary, run_arm,
+        stage_diff_codex_ca_bundle, summarize_client_metadata, summarize_nanocodex,
+        validate_differential_profile, validate_differential_profiles, write_json_atomic,
     };
 
     #[test]
@@ -9667,6 +9734,19 @@ mod tests {
             left.summary.model_visible_tool_sequence,
             right.summary.model_visible_tool_sequence
         );
+        let mut arm = ArmSummary::runner_error();
+        arm.observed_tool_events = Some(7);
+        arm.apply_model_visible_tool_calls(Some(&left.summary));
+        assert_eq!(arm.tool_calls, Some(1));
+        assert_eq!(arm.observed_tool_events, Some(7));
+        let mut retained = serde_json::json!({"summary": {"tool_calls": 7}});
+        normalize_retained_arm_tool_calls(retained.as_object_mut().unwrap(), Some(&left.summary));
+        assert_eq!(retained["summary"]["tool_calls"], 1);
+        assert_eq!(retained["summary"]["observed_tool_events"], 7);
+        assert_eq!(
+            retained["summary"]["tool_call_measurement"],
+            super::MODEL_VISIBLE_TOOL_CALL_MEASUREMENT
+        );
     }
 
     #[test]
@@ -10236,7 +10316,8 @@ mod tests {
         assert!(report.event_error.is_none());
         assert!(report.trajectory_error.is_none());
         assert!(matches!(report.summary.status, ArmStatus::Passed));
-        assert_eq!(report.summary.tool_calls, Some(1));
+        assert_eq!(report.summary.tool_calls, None);
+        assert_eq!(report.summary.observed_tool_events, Some(1));
         assert_eq!(
             report
                 .summary
