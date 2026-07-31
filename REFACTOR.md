@@ -173,7 +173,8 @@ let (agent, events) = Nanocodex::builder(openai)
     .build()?;
 ```
 
-There is one supported model family with a deliberate public Sol/Luna selector.
+There is one supported model family with a deliberate public Sol/Terra/Luna
+selector.
 `NanocodexBuilder` is a cloneable recipe. Every `build()` creates fresh driver,
 context, transport, tools, and event resources.
 
@@ -216,9 +217,10 @@ Dropping the event receiver has no lifecycle effect.
 `TurnUsage` aggregates all Responses calls in the logical agent turn.
 It exposes the exact input, cache-read, cache-write, output, and reasoning
 token counts plus a typed estimated USD cost. Nanocodex supports
-`gpt-5.6-sol` and `gpt-5.6-luna`; each model's published standard and priority
-rates are built in and selected from the turn's model and `fast_mode` policy. There is no pricing
-builder, file, environment variable, catalog, or caller-defined rate surface.
+`gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`; each model's published
+standard and priority rates are built in and selected from the turn's model and
+`fast_mode` policy. There is no pricing builder, file, environment variable,
+catalog, or caller-defined rate surface.
 `CostStatus::UsageNotReported` keeps omitted provider accounting distinct from
 a genuine zero-token result.
 
@@ -624,7 +626,7 @@ network, VM cold-start, and full eval measurements remain scheduled or release
 gates with retained artifacts.
 
 USD cost is derived from the same authoritative per-call usage retained by the
-trace. The fixed Sol and Luna standard and priority rates come directly from
+trace. The fixed Sol, Terra, and Luna standard and priority rates come directly from
 OpenAI's API pricing documentation. Agent terminal results, the CLI, and
 `nanocodex eval` all project the same aggregate instead of recomputing it
 independently.

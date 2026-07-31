@@ -65,7 +65,7 @@ pub(crate) struct AgentArgs {
     #[arg(long, env = "OPENAI_REASONING_EFFORT", default_value_t)]
     thinking: Thinking,
 
-    /// GPT-5.6 coding model: gpt-5.6-sol or gpt-5.6-luna.
+    /// GPT-5.6 coding model: gpt-5.6-sol, gpt-5.6-terra, or gpt-5.6-luna.
     #[arg(long, env = "OPENAI_MODEL", default_value_t)]
     model: Model,
 

@@ -868,20 +868,26 @@ mod tests {
     }
 
     #[test]
-    fn luna_serializes_as_the_selected_model() {
+    fn supported_models_serialize_as_selected() {
         let config = ModelConfig::default();
-        let profile = RequestProfile::new("luna-agent", "luna-lineage", Arc::from([]));
-        let request = serde_json::to_value(ResponseCreate::warmup(
-            &config,
-            Model::Luna,
-            Thinking::Medium,
-            false,
-            &profile,
-            None,
-        ))
-        .expect("request should serialize");
+        let profile = RequestProfile::new("model-agent", "model-lineage", Arc::from([]));
 
-        assert_eq!(request["model"], json!("gpt-5.6-luna"));
+        for (model, expected) in [
+            (Model::Terra, "gpt-5.6-terra"),
+            (Model::Luna, "gpt-5.6-luna"),
+        ] {
+            let request = serde_json::to_value(ResponseCreate::warmup(
+                &config,
+                model,
+                Thinking::Medium,
+                false,
+                &profile,
+                None,
+            ))
+            .expect("request should serialize");
+
+            assert_eq!(request["model"], json!(expected));
+        }
     }
 
     #[test]
