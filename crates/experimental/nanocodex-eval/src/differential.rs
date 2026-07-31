@@ -3781,6 +3781,7 @@ impl DifferentialEvaluator {
             });
         }
         let mut in_flight = FuturesUnordered::new();
+        let mut active_tasks = BTreeSet::new();
         let mut results = Vec::new();
         let mut preparation_errors = Vec::new();
         let mut draining = false;
@@ -3799,6 +3800,10 @@ impl DifferentialEvaluator {
                         "differential scheduler lost a queued coordinate"
                     )));
                 };
+                if !task_lane_available(&active_tasks, queued) {
+                    pending_index += 1;
+                    continue;
+                }
                 let memory_plan = self.memory_plan(&queued.task, queued.minimum_guest_memory_mb);
                 let requested_memory_mb = memory_plan.pair_admission_memory_mb();
                 match self
@@ -3812,6 +3817,12 @@ impl DifferentialEvaluator {
                                 "differential scheduler lost a ready coordinate"
                             )));
                         };
+                        if !active_tasks.insert(scheduled.task_index) {
+                            return Err(DifferentialError::new(diff_error!(
+                                "differential scheduler admitted two comparisons for task {}",
+                                scheduled.task.name()
+                            )));
+                        }
                         in_flight.push(run_scheduled_comparison(
                             self.clone(),
                             scheduled,
@@ -3888,6 +3899,12 @@ impl DifferentialEvaluator {
                 }
                 continue;
             };
+            if !active_tasks.remove(&scheduled.task_index) {
+                return Err(DifferentialError::new(diff_error!(
+                    "differential scheduler completed an inactive task lane for {}",
+                    scheduled.task.name()
+                )));
+            }
             let task_index = scheduled.task_index;
             let profile_index = scheduled.profile_index;
             let trial = scheduled.trial;
@@ -4190,6 +4207,10 @@ async fn run_scheduled_comparison(
         .run_admitted_task(scheduled.clone(), memory_plan, admission)
         .await;
     (scheduled, result)
+}
+
+fn task_lane_available(active_tasks: &BTreeSet<usize>, scheduled: &ScheduledComparison) -> bool {
+    !active_tasks.contains(&scheduled.task_index)
 }
 
 impl DifferentialComparison {
@@ -8267,18 +8288,19 @@ mod tests {
         DifferentialMemoryProfile, DifferentialMemoryProfiles, DifferentialProfile,
         DifferentialReportSummary, DifferentialSweepManifest, DifferentialSweepProfile,
         DifferentialSweepTask, Evaluator, InfrastructureReplacementState, LaneProgressState,
-        ShellPollingSummary, Task, ToolMode, TrajectoryProjection, build_event_loop_trace,
-        capture_proxy_vm_base_url, compare_api_exchanges, detected_code_mode_empty_stdin_calls,
-        detected_polling_turn, diff_json, differential_comparison_name,
-        differential_pair_memory_mb, event_loop_difference_categories,
-        first_client_metadata_difference, heartbeat_needed, heartbeat_summary,
-        initial_differential_schedule, inspect_api_exchanges, join_differential_arms,
-        memory_with_slack, newly_completed_lines, next_guest_memory_after_oom,
-        normalize_retained_arm_tool_calls, read_api_request_payloads,
+        ScheduledComparison, ShellPollingSummary, Task, ToolMode, TrajectoryProjection,
+        build_event_loop_trace, capture_proxy_vm_base_url, compare_api_exchanges,
+        detected_code_mode_empty_stdin_calls, detected_polling_turn, diff_json,
+        differential_comparison_name, differential_pair_memory_mb,
+        event_loop_difference_categories, first_client_metadata_difference, heartbeat_needed,
+        heartbeat_summary, initial_differential_schedule, inspect_api_exchanges,
+        join_differential_arms, memory_with_slack, newly_completed_lines,
+        next_guest_memory_after_oom, normalize_retained_arm_tool_calls, read_api_request_payloads,
         read_optional_codex_cloud_config_cache, reanalyze, releasable_differential_arm_memory_mb,
         resume_differential_schedule, retained_differential_summary, run_arm,
         stage_diff_codex_ca_bundle, summarize_client_metadata, summarize_nanocodex,
-        validate_differential_profile, validate_differential_profiles, write_json_atomic,
+        task_lane_available, validate_differential_profile, validate_differential_profiles,
+        write_json_atomic,
     };
 
     #[test]
@@ -8341,6 +8363,36 @@ mod tests {
                 id.simple()
             )
         );
+    }
+
+    #[test]
+    fn differential_scheduler_keeps_one_active_pair_per_task() {
+        let task =
+            Task::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tasks/write-greeting"))
+                .unwrap();
+        let scheduled = ScheduledComparison {
+            task_index: 7,
+            profile_index: 0,
+            task,
+            trial: 1,
+            profile: DifferentialProfile::new(
+                nanocodex_agent::Thinking::High,
+                ToolMode::CodeMode,
+                CodexToolMode::CodeMode,
+            ),
+            infrastructure_replacement_for: None,
+            memory_attempt: 1,
+            minimum_guest_memory_mb: None,
+            memory_retry_for: None,
+            queued_at: chrono::Utc::now(),
+        };
+        let mut active_tasks = std::collections::BTreeSet::new();
+
+        assert!(task_lane_available(&active_tasks, &scheduled));
+        assert!(active_tasks.insert(scheduled.task_index));
+        assert!(!task_lane_available(&active_tasks, &scheduled));
+        assert!(active_tasks.remove(&scheduled.task_index));
+        assert!(task_lane_available(&active_tasks, &scheduled));
     }
 
     #[test]
