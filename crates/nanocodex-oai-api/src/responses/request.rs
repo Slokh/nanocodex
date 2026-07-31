@@ -516,7 +516,7 @@ impl Serialize for RequestResponseItem<'_> {
 pub(crate) struct ResponseCreate<'a> {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     kind: Option<&'static str>,
-    model: &'a str,
+    model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<&'a str>,
     input: RequestInput<'a>,
@@ -593,7 +593,7 @@ impl<'a> ResponseCreate<'a> {
         let websocket = matches!(policy.transport, crate::ResponsesTransport::WebSocket);
         Self {
             kind: websocket.then_some("response.create"),
-            model: policy.model.as_str(),
+            model: config.wire_model_id(policy.model),
             previous_response_id,
             input: RequestInput { input },
             tool_choice: "auto",
@@ -882,6 +882,26 @@ mod tests {
         .expect("request should serialize");
 
         assert_eq!(request["model"], json!("gpt-5.6-luna"));
+    }
+
+    #[test]
+    fn provider_namespace_prefixes_supported_model_ids() {
+        let config = ModelConfig {
+            model_id_prefix: Some("openai/".to_owned()),
+            ..ModelConfig::default()
+        };
+        let profile = RequestProfile::new("router-agent", "router-lineage", Arc::from([]));
+        let request = serde_json::to_value(ResponseCreate::warmup(
+            &config,
+            Model::Sol,
+            Thinking::Medium,
+            false,
+            &profile,
+            None,
+        ))
+        .expect("request should serialize");
+
+        assert_eq!(request["model"], json!("openai/gpt-5.6-sol"));
     }
 
     #[test]

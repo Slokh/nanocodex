@@ -105,6 +105,20 @@ model with `.model(Model::Luna)` when creating an agent. The model is fixed for
 that thread: switching later would invalidate the provider checkpoint and
 require an inefficient replay of the complete retained context.
 
+OpenAI-compatible routers that namespace model identifiers can use
+`NANOCODEX_MODEL_ID_PREFIX` without changing Nanocodex's supported-model
+semantics. For example, OpenRouter's stateless Responses API can be selected
+with:
+
+```bash
+OPENAI_API_KEY="$OPENROUTER_API_KEY" \
+OPENAI_API_BASE_URL="https://openrouter.ai/api/v1" \
+NANOCODEX_RESPONSES_TRANSPORT="https" \
+NANOCODEX_STORE_RESPONSES="false" \
+NANOCODEX_MODEL_ID_PREFIX="openai" \
+nanocodex run "Inspect this repository."
+```
+
 ## Voice: devices or Unix pipes
 
 The non-TUI desktop example owns the default microphone and speaker directly

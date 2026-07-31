@@ -128,6 +128,17 @@ impl<F> OpenAiBuilder<F> {
         self
     }
 
+    /// Prepends a provider namespace to supported model identifiers on the wire.
+    ///
+    /// For example, OpenRouter exposes the supported Sol model as
+    /// `openai/gpt-5.6-sol` while Nanocodex continues to retain `Model::Sol`
+    /// internally for model-specific behavior, pricing, and compaction.
+    #[must_use]
+    pub fn model_id_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.config.model_id_prefix = Some(prefix.into());
+        self
+    }
+
     /// Selects the initial Responses transport policy for new sessions.
     ///
     /// [`ResponsesTransport::WebSocket`] prefers a persistent socket. The

@@ -15,6 +15,12 @@ const SYSTEM_PROMPT: &str = include_str!("../../prompts/system.md");
 pub struct ModelConfig {
     /// Selected GPT-5.6 coding model.
     pub model: Model,
+    /// Optional provider namespace prepended to the model identifier on the wire.
+    ///
+    /// This keeps Nanocodex's supported model semantics fixed while allowing
+    /// OpenAI-compatible routers to require identifiers such as
+    /// `openai/gpt-5.6-sol`.
+    pub model_id_prefix: Option<String>,
     /// Authentication source resolved for each transport connection.
     pub auth: OpenAiAuth,
     /// Reasoning execution mode.
@@ -41,6 +47,20 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
+    /// Returns the provider-facing identifier for a supported model.
+    #[must_use]
+    pub fn wire_model_id(&self, model: Model) -> String {
+        self.model_id_prefix
+            .as_deref()
+            .map(str::trim)
+            .map(|prefix| prefix.trim_end_matches('/'))
+            .filter(|prefix| !prefix.is_empty())
+            .map_or_else(
+                || model.as_str().to_owned(),
+                |prefix| format!("{prefix}/{}", model.as_str()),
+            )
+    }
+
     /// Returns the fixed orchestration mode sent to the supported model.
     #[must_use]
     pub const fn orchestration() -> &'static str {
@@ -64,6 +84,7 @@ impl Default for ModelConfig {
     fn default() -> Self {
         Self {
             model: Model::default(),
+            model_id_prefix: None,
             auth: OpenAiAuth::api_key(String::new()),
             reasoning_mode: ReasoningMode::default(),
             thinking: Thinking::default(),
