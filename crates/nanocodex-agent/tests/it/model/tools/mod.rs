@@ -139,6 +139,12 @@ async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<
                         "name": "echo",
                         "arguments": "{\"value\":\"namespaced direct dispatch worked\"}"
                     }),
+                    json!({
+                        "type": "function_call",
+                        "call_id": "call-shell",
+                        "name": "exec_command",
+                        "arguments": "{\"cmd\":\"printf direct-shell-dispatch-worked\",\"login\":false}"
+                    }),
                 ],
             ),
         )
@@ -163,6 +169,21 @@ async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<
         assert_eq!(input[2]["type"], "function_call_output");
         assert_eq!(input[2]["call_id"], "call-namespaced");
         assert_eq!(input[2]["output"], "namespaced direct dispatch worked");
+        assert_eq!(input[3]["type"], "function_call_output");
+        assert_eq!(input[3]["call_id"], "call-shell");
+        let shell_output = input[3]["output"]
+            .as_str()
+            .ok_or_else(|| eyre!("direct shell output was not text"))?;
+        assert!(shell_output.starts_with("Chunk ID: "), "{shell_output}");
+        assert!(shell_output.contains("\nWall time: "), "{shell_output}");
+        assert!(
+            shell_output.contains("\nProcess exited with code 0\n"),
+            "{shell_output}"
+        );
+        assert!(
+            shell_output.ends_with("\nOutput:\ndirect-shell-dispatch-worked"),
+            "{shell_output}"
+        );
         send_final(&mut socket, "resp-final").await
     });
 
@@ -197,6 +218,7 @@ async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<
     assert!(output.contains(r#""tool":"update_plan""#));
     assert!(output.contains(r#""tool":"apply_patch""#));
     assert!(output.contains(r#""tool":"test_namespace__echo""#));
+    assert!(output.contains(r#""tool":"exec_command""#));
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
