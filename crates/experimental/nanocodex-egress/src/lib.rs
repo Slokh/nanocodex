@@ -1,11 +1,25 @@
-//! Composable authenticated HTTP egress proxy.
+//! Composable authenticated HTTP egress proxy with host-owned secrets.
 //!
 //! [`EgressProxy`] owns the loopback proxy, TLS interception, bounded request
 //! forwarding, and lifecycle. Applications compose protocol behavior through
 //! ordered [`EgressLayer`] implementations. Nanocodex uses that seam for MPP
 //! payment and replay while keeping wallet material in the host process.
+//! [`SecretEgress`] is an optional fail-closed layer that replaces public
+//! placeholders only for an authorized destination, method, and path.
 
 #![deny(missing_docs, rustdoc::broken_intra_doc_links)]
+
+mod secret;
+
+pub use secret::{
+    SecretConfigError, SecretEgress, SecretEgressBuilder, SecretRef, SecretResolver,
+    SecretResolverError, SecretRule, SecretRuleBuilder, StaticSecretResolver, UnmatchedEgress,
+};
+
+/// HTTP types used to define egress rules without depending on the proxy backend.
+pub mod http {
+    pub use hudsucker::hyper::{HeaderMap, Method, Uri, header};
+}
 
 /// The intentional extension seam for an application-defined [`EgressLayer`].
 ///
@@ -20,7 +34,8 @@ pub mod middleware {
 }
 
 use std::{
-    ffi::OsString,
+    collections::BTreeMap,
+    ffi::{OsStr, OsString},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     num::NonZeroUsize,
     path::{Path, PathBuf},
@@ -68,6 +83,145 @@ const DEFAULT_MAX_CONCURRENT_CONNECTIONS: usize = 128;
 const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 128;
 const MAX_IDLE_CONNECTIONS_PER_ORIGIN: usize = 4;
 const CA_FILENAME: &str = "mpp-egress-ca.pem";
+const PROXY_ENVIRONMENT_NAMES: [&str; 12] = [
+    "http_proxy",
+    "https_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+    "CURL_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "NANOCODEX_MPP_EGRESS_PASSWORD",
+    "NANOCODEX_MPP_EGRESS_AUTHORIZATION",
+];
+
+/// Child-process configuration contributed by an egress layer.
+///
+/// This type deliberately omits `Debug` so child capabilities are not exposed
+/// through incidental formatting. Values remain available through explicit
+/// collection APIs.
+#[derive(Clone, Default)]
+pub struct EgressEnvironment {
+    entries: Vec<(OsString, OsString)>,
+}
+
+impl EgressEnvironment {
+    /// Creates an environment from owned names and values.
+    #[must_use]
+    pub fn new(entries: impl IntoIterator<Item = (OsString, OsString)>) -> Self {
+        Self {
+            entries: entries.into_iter().collect(),
+        }
+    }
+
+    /// Iterates over variable names and values.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&OsStr, &OsStr)> {
+        self.entries
+            .iter()
+            .map(|(name, value)| (name.as_os_str(), value.as_os_str()))
+    }
+
+    /// Returns the value for one exact variable name.
+    #[must_use]
+    pub fn get(&self, name: impl AsRef<OsStr>) -> Option<&OsStr> {
+        let name = name.as_ref();
+        self.entries
+            .iter()
+            .find_map(|(candidate, value)| (candidate == name).then_some(value.as_os_str()))
+    }
+
+    /// Returns the number of variables.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether the environment contains no variables.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl IntoIterator for EgressEnvironment {
+    type Item = (OsString, OsString);
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
+
+/// Host-visible metadata passed through egress layers.
+///
+/// CONNECT authorization sees immutable destination, method, and header
+/// metadata before the proxy opens an origin connection. This type deliberately
+/// omits `Debug` because headers may contain child-supplied credentials.
+#[derive(Clone)]
+pub struct EgressRequest {
+    method: Method,
+    uri: hudsucker::hyper::Uri,
+    headers: hudsucker::hyper::HeaderMap,
+}
+
+impl EgressRequest {
+    /// Creates request metadata for a policy or deterministic test.
+    #[must_use]
+    pub const fn new(
+        method: Method,
+        uri: hudsucker::hyper::Uri,
+        headers: hudsucker::hyper::HeaderMap,
+    ) -> Self {
+        Self {
+            method,
+            uri,
+            headers,
+        }
+    }
+
+    fn from_request(request: &Request<Body>) -> Self {
+        Self::new(
+            request.method().clone(),
+            request.uri().clone(),
+            request.headers().clone(),
+        )
+    }
+
+    /// Returns the immutable HTTP method.
+    #[must_use]
+    pub const fn method(&self) -> &Method {
+        &self.method
+    }
+
+    /// Returns the immutable absolute URI or CONNECT authority.
+    #[must_use]
+    pub const fn uri(&self) -> &hudsucker::hyper::Uri {
+        &self.uri
+    }
+
+    /// Returns the child-supplied CONNECT headers.
+    #[must_use]
+    pub const fn headers(&self) -> &hudsucker::hyper::HeaderMap {
+        &self.headers
+    }
+}
+
+/// Failure returned while an egress layer authorizes a request.
+#[derive(Clone, Copy, Debug, thiserror::Error, Eq, PartialEq)]
+pub enum EgressLayerError {
+    /// The authenticated child does not hold authority for this request.
+    #[error("egress request denied by host policy")]
+    Denied,
+    /// The request cannot be matched safely against policy.
+    #[error("egress request is invalid")]
+    InvalidRequest,
+    /// Policy or credential resolution is temporarily unavailable.
+    #[error("egress layer is unavailable")]
+    Unavailable,
+}
 
 /// One independently composable outbound HTTP behavior.
 ///
@@ -82,6 +236,16 @@ pub trait EgressLayer: Send + Sync + 'static {
         extensions: &mut ::http::Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<reqwest::Response>;
+
+    /// Authorizes one CONNECT tunnel before any origin connection is opened.
+    async fn authorize_connect(&self, _request: &EgressRequest) -> Result<(), EgressLayerError> {
+        Ok(())
+    }
+
+    /// Returns public child configuration contributed by this layer.
+    fn environment(&self) -> EgressEnvironment {
+        EgressEnvironment::default()
+    }
 }
 
 /// Private transport policy owned by one embedded proxy instance.
@@ -122,6 +286,7 @@ pub struct EgressProxy {
     proxy_password: String,
     proxy_authorization: String,
     ca_certificate_path: PathBuf,
+    layer_environment: EgressEnvironment,
     _temp_dir: TempDir,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), hudsucker::Error>>>,
@@ -171,7 +336,27 @@ impl EgressProxy {
             .build()
             .map_err(EgressError::Client)?;
         let mut client_builder = ClientBuilder::new(client);
+        let mut layer_environment = BTreeMap::<OsString, OsString>::new();
         for layer in &layers {
+            for (name, value) in layer.environment() {
+                if name.to_str().is_some_and(|name| {
+                    PROXY_ENVIRONMENT_NAMES
+                        .iter()
+                        .any(|reserved| name.eq_ignore_ascii_case(reserved))
+                }) {
+                    return Err(EgressError::EnvironmentConflict(name));
+                }
+                if let Some((existing_name, existing_value)) = layer_environment
+                    .iter()
+                    .find(|(candidate, _)| environment_names_equal(candidate, &name))
+                {
+                    if existing_name != &name || existing_value != &value {
+                        return Err(EgressError::EnvironmentConflict(name));
+                    }
+                    continue;
+                }
+                layer_environment.insert(name, value);
+            }
             client_builder = client_builder.with(LayerMiddleware(Arc::clone(layer)));
         }
         let client = client_builder.build();
@@ -185,6 +370,7 @@ impl EgressProxy {
         let handler = ProxyHandler {
             client,
             policy,
+            layers,
             origin_permits,
             authentication: ProxyAuthentication {
                 authorization: proxy_authorization.clone().into(),
@@ -210,6 +396,7 @@ impl EgressProxy {
             proxy_password,
             proxy_authorization,
             ca_certificate_path,
+            layer_environment: EgressEnvironment::new(layer_environment),
             _temp_dir: temp_dir,
             shutdown_tx: Some(shutdown_tx),
             task: Some(task),
@@ -235,7 +422,7 @@ impl EgressProxy {
     pub fn environment(&self) -> Vec<(OsString, OsString)> {
         let proxy = OsString::from(self.proxy_url());
         let certificate = self.ca_certificate_path.clone().into_os_string();
-        [
+        let mut environment = [
             ("http_proxy", proxy.clone()),
             ("https_proxy", proxy.clone()),
             ("HTTP_PROXY", proxy.clone()),
@@ -257,7 +444,9 @@ impl EgressProxy {
         ]
         .into_iter()
         .map(|(name, value)| (OsString::from(name), value))
-        .collect()
+        .collect::<Vec<_>>();
+        environment.extend(self.layer_environment.clone());
+        environment
     }
 
     /// Stops accepting traffic and waits for active proxy connections to drain.
@@ -377,6 +566,7 @@ impl Drop for EgressProxy {
 struct ProxyHandler {
     client: ClientWithMiddleware,
     policy: ProxyPolicy,
+    layers: Vec<Arc<dyn EgressLayer>>,
     origin_permits: Arc<Semaphore>,
     authentication: ProxyAuthentication,
     request_ids: Arc<AtomicU64>,
@@ -446,6 +636,12 @@ impl HttpHandler for ProxyHandler {
             );
             request.headers_mut().remove(PROXY_AUTHORIZATION);
             if request.method() == Method::CONNECT || is_upgrade(&request) {
+                let metadata = EgressRequest::from_request(&request);
+                for layer in &self.layers {
+                    if let Err(error) = layer.authorize_connect(&metadata).await {
+                        return layer_error_response(error).into();
+                    }
+                }
                 tracing::info!(
                     target: "mpp_egress",
                     stage = "mpp.egress.tunnel.forwarded",
@@ -471,6 +667,11 @@ impl HttpHandler for ProxyHandler {
                     .into()
                 }
                 Err(error) => {
+                    if let ForwardError::Layer(error) = &error
+                        && let Some(error) = middleware_layer_error(error)
+                    {
+                        return layer_error_response(*error).into();
+                    }
                     tracing::warn!(
                         target: "mpp_egress",
                         stage = "mpp.egress.request.failed",
@@ -668,6 +869,36 @@ fn remove_connection_named_headers(headers: &mut hudsucker::hyper::HeaderMap) {
     }
 }
 
+fn middleware_layer_error(error: &reqwest_middleware::Error) -> Option<&EgressLayerError> {
+    match error {
+        reqwest_middleware::Error::Middleware(error) => error.downcast_ref(),
+        reqwest_middleware::Error::Reqwest(_) => None,
+    }
+}
+
+fn environment_names_equal(left: &OsStr, right: &OsStr) -> bool {
+    match (left.to_str(), right.to_str()) {
+        (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
+        _ => left == right,
+    }
+}
+
+fn layer_error_response(error: EgressLayerError) -> Response<Body> {
+    let status = match error {
+        EgressLayerError::Denied => StatusCode::FORBIDDEN,
+        EgressLayerError::InvalidRequest => StatusCode::BAD_REQUEST,
+        EgressLayerError::Unavailable => StatusCode::BAD_GATEWAY,
+    };
+    tracing::warn!(
+        target: "mpp_egress",
+        stage = "mpp.egress.layer.rejected",
+        failure.kind = %error,
+        http.response.status_code = status.as_u16(),
+        "MPP egress layer rejected the request"
+    );
+    error_response(status, &error.to_string())
+}
+
 fn error_response(status: StatusCode, message: &str) -> Response<Body> {
     let mut response = Response::new(Body::from(message.to_owned()));
     *response.status_mut() = status;
@@ -796,6 +1027,9 @@ pub enum EgressError {
     /// The accepted-connection concurrency limit was zero.
     #[error("egress max concurrent connections must be greater than zero")]
     ZeroMaxConcurrentConnections,
+    /// Two layers exported different values under the same child variable.
+    #[error("egress layers conflict on child environment variable {0:?}")]
+    EnvironmentConflict(OsString),
     /// The loopback listener could not be bound.
     #[error("failed to bind the egress proxy listener")]
     Bind(#[source] std::io::Error),
@@ -844,7 +1078,7 @@ mod tests {
         Router,
         extract::Request,
         http::StatusCode as AxumStatus,
-        routing::{get, post},
+        routing::{any, get, post},
     };
     use futures_util::future::join_all;
 
@@ -921,6 +1155,33 @@ mod tests {
         }
     }
 
+    struct EnvironmentLayer(&'static str, &'static str);
+
+    #[async_trait]
+    impl EgressLayer for EnvironmentLayer {
+        async fn handle(
+            &self,
+            request: reqwest::Request,
+            extensions: &mut ::http::Extensions,
+            next: Next<'_>,
+        ) -> reqwest_middleware::Result<reqwest::Response> {
+            next.run(request, extensions).await
+        }
+
+        fn environment(&self) -> EgressEnvironment {
+            EgressEnvironment::new([(self.0.into(), self.1.into())])
+        }
+    }
+
+    struct FixedSecret(&'static str);
+
+    #[async_trait]
+    impl SecretResolver for FixedSecret {
+        async fn resolve(&self, _reference: &SecretRef) -> Result<String, SecretResolverError> {
+            Ok(self.0.to_owned())
+        }
+    }
+
     #[tokio::test]
     async fn builder_reports_each_zero_transport_limit_without_binding() {
         assert!(matches!(
@@ -940,6 +1201,19 @@ mod tests {
                 .spawn()
                 .await,
             Err(EgressError::ZeroMaxConcurrentConnections)
+        ));
+    }
+
+    #[tokio::test]
+    async fn layers_cannot_override_transport_environment() {
+        let result = EgressProxy::builder()
+            .layer(EnvironmentLayer("Https_Proxy", "http://attacker.invalid"))
+            .spawn()
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(EgressError::EnvironmentConflict(name)) if name == "Https_Proxy"
         ));
     }
 
@@ -1149,6 +1423,124 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), AxumStatus::PAYLOAD_TOO_LARGE);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        egress.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bundled_secret_layer_replaces_only_at_the_authorized_origin() {
+        let origin = spawn_origin(Router::new().route(
+            "/allowed",
+            get(|request: Request| async move {
+                request
+                    .headers()
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_owned()
+            }),
+        ))
+        .await;
+        let placeholder = "nanocodex-secret-only-proof";
+        let rule = SecretRule::builder("test", SecretRef::new("test", "token"), &origin)
+            .method(Method::GET)
+            .path_prefix("/allowed")
+            .replace_header("authorization", placeholder)
+            .child_environment("TEST_BASE_URL", "TEST_API_KEY")
+            .build()
+            .unwrap();
+        let egress = EgressProxy::builder()
+            .layer(
+                SecretEgress::builder(FixedSecret("host-only"))
+                    .rule(rule)
+                    .build()
+                    .unwrap(),
+            )
+            .spawn()
+            .await
+            .unwrap();
+
+        let response = proxied_client(&egress)
+            .get(format!("{origin}/allowed"))
+            .bearer_auth(placeholder)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.text().await.unwrap(), "Bearer host-only");
+        let environment = egress.environment();
+        assert!(environment.iter().all(|(_, value)| value != "host-only"));
+        assert!(environment.iter().any(|(name, value)| {
+            name == "TEST_API_KEY" && value == "nanocodex-secret-only-proof"
+        }));
+        egress.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn claimed_secret_origins_fail_closed_on_rule_mismatch() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler = {
+            let calls = Arc::clone(&calls);
+            move || {
+                let calls = Arc::clone(&calls);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    "unexpected"
+                }
+            }
+        };
+        let origin = spawn_origin(
+            Router::new()
+                .route("/allowed", any(handler.clone()))
+                .route("/admin", any(handler)),
+        )
+        .await;
+        let placeholder = "nanocodex-secret-fail-closed";
+        let rule = SecretRule::builder("test", SecretRef::new("test", "token"), &origin)
+            .method(Method::GET)
+            .path_prefix("/allowed")
+            .replace_header("authorization", placeholder)
+            .child_environment("TEST_BASE_URL", "TEST_API_KEY")
+            .build()
+            .unwrap();
+        let egress = EgressProxy::builder()
+            .layer(
+                SecretEgress::builder(FixedSecret("host-only"))
+                    .rule(rule)
+                    .unmatched(UnmatchedEgress::Allow)
+                    .build()
+                    .unwrap(),
+            )
+            .spawn()
+            .await
+            .unwrap();
+        let client = proxied_client(&egress);
+
+        let responses = [
+            client
+                .post(format!("{origin}/allowed"))
+                .bearer_auth(placeholder)
+                .send()
+                .await
+                .unwrap(),
+            client
+                .get(format!("{origin}/admin"))
+                .bearer_auth(placeholder)
+                .send()
+                .await
+                .unwrap(),
+            client
+                .get(format!("{origin}/allowed"))
+                .send()
+                .await
+                .unwrap(),
+        ];
+
+        assert!(
+            responses
+                .iter()
+                .all(|response| response.status() == AxumStatus::FORBIDDEN)
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         egress.shutdown().await.unwrap();
     }

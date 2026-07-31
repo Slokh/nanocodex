@@ -8,7 +8,7 @@ authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Composable authenticated HTTP egress proxy"
+description = "Composable authenticated HTTP egress proxy with host-owned secrets"
 readme = "README.md"
 
 [dependencies]
