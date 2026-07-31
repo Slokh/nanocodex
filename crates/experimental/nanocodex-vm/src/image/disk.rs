@@ -1,7 +1,10 @@
 use std::{fs, io, os::unix::fs::PermissionsExt as _, path::Path};
 
 #[cfg(target_os = "linux")]
-use std::process::{Command, Stdio};
+use std::{
+    os::unix::process::CommandExt as _,
+    process::{Command, Stdio},
+};
 
 /// Copies a disk with reflink semantics when available and a sparse fallback.
 ///
@@ -40,25 +43,31 @@ fn copy_into_owned_path(source: &Path, destination: &Path) -> io::Result<()> {
 
     #[cfg(target_os = "linux")]
     {
-        let status = Command::new("cp")
-            .args(["--reflink=never", "--sparse=always", "--"])
-            .arg(source)
-            .arg(destination)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?;
-        if status.success() {
-            return Ok(());
-        }
-        remove_partial_copy(destination)?;
-        Err(io::Error::other(format!(
-            "sparse disk copy failed with {status}"
-        )))
+        sparse_copy_with_program(Path::new("cp"), source, destination)
     }
 
     #[cfg(not(target_os = "linux"))]
     fs::copy(source, destination).map(|_| ())
+}
+
+#[cfg(target_os = "linux")]
+fn sparse_copy_with_program(program: &Path, source: &Path, destination: &Path) -> io::Result<()> {
+    let status = Command::new(program)
+        .args(["--reflink=never", "--sparse=always", "--"])
+        .arg(source)
+        .arg(destination)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .status()?;
+    if status.success() {
+        return Ok(());
+    }
+    remove_partial_copy(destination)?;
+    Err(io::Error::other(format!(
+        "sparse disk copy failed with {status}"
+    )))
 }
 
 fn remove_partial_copy(path: &Path) -> io::Result<()> {
@@ -84,6 +93,9 @@ mod tests {
     use super::reflink_or_sparse_copy;
 
     #[cfg(target_os = "linux")]
+    use super::sparse_copy_with_program;
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn fallback_preserves_sparse_disk_allocation() {
         let directory = tempfile::tempdir().unwrap();
@@ -100,6 +112,38 @@ mod tests {
         let destination_metadata = fs::metadata(&destination).unwrap();
         assert_eq!(destination_metadata.len(), source_metadata.len());
         assert!(destination_metadata.blocks().saturating_mul(512) < destination_metadata.len() / 4);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fallback_copy_uses_an_isolated_process_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.ext4");
+        let destination = directory.path().join("destination.ext4");
+        let copy = directory.path().join("fake-cp");
+        fs::write(&source, b"source").unwrap();
+        fs::write(
+            &copy,
+            r#"#!/bin/sh
+destination=
+for argument in "$@"; do
+    destination=$argument
+done
+read -r pid comm state ppid pgrp rest < "/proc/$$/stat"
+printf '%s %s\n' "$pid" "$pgrp" > "$destination"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&copy, fs::Permissions::from_mode(0o755)).unwrap();
+
+        sparse_copy_with_program(&copy, &source, &destination).unwrap();
+
+        let ids = fs::read_to_string(destination).unwrap();
+        let mut ids = ids.split_whitespace().map(str::parse::<u32>);
+        let pid = ids.next().unwrap().unwrap();
+        let process_group = ids.next().unwrap().unwrap();
+        assert!(ids.next().is_none());
+        assert_eq!(process_group, pid);
     }
 
     #[test]

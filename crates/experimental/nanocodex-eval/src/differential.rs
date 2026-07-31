@@ -4981,10 +4981,12 @@ impl DifferentialClassification {
             || nanocodex.event_error.is_some()
             || nanocodex.trajectory_error.is_some()
             || nanocodex.api_capture_error.is_some()
+            || nanocodex.summary.is_infrastructure_failure()
             || codex.operational_error.is_some()
             || codex.event_error.is_some()
             || codex.trajectory_error.is_some()
             || codex.api_capture_error.is_some()
+            || codex.summary.is_infrastructure_failure()
         {
             return Self::Incomplete;
         }
@@ -5379,6 +5381,10 @@ impl From<VmAttemptMemorySnapshot> for ArmMemoryReport {
 }
 
 impl ArmSummary {
+    const fn is_infrastructure_failure(&self) -> bool {
+        matches!(self.outcome, Some(EvalOutcome::InfrastructureError))
+    }
+
     fn apply_model_visible_tool_calls(&mut self, summary: Option<&ApiEventLoopArmSummary>) {
         self.tool_calls = summary.map(|summary| summary.model_visible_tool_calls);
     }
@@ -8247,14 +8253,14 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{
-        AgentStatus, AtifStep, AtifTrajectory, EvalAttemptOutcome, EvalEventKind, EvalStatus,
-        VerifierResult,
+        AgentStatus, AtifStep, AtifTrajectory, EvalAttemptOutcome, EvalEventKind, EvalOutcome,
+        EvalStatus, VerifierResult,
         evaluator::{AdmissionController, AttemptAgent},
     };
 
     use super::{
-        ApiEventLoopTailSummary, ApiRequestPayload, ApiTokenUsageSummary, ArmStatus, ArmSummary,
-        CodexExec, CodexToolMode, CodexVersion, DIFF_CODEX_CA_BUNDLE_FILENAME,
+        ApiEventLoopTailSummary, ApiRequestPayload, ApiTokenUsageSummary, ArmReport, ArmStatus,
+        ArmSummary, CodexExec, CodexToolMode, CodexVersion, DIFF_CODEX_CA_BUNDLE_FILENAME,
         DIFF_CODEX_CLOUD_CONFIG_CACHE_FILENAME, DIFF_CODEX_SSL_CERT_FILE_ENVIRONMENT,
         DetectedEmptyStdinCalls, DiffCodexCaSource, DiffProgress, DifferentialBuildError,
         DifferentialClassification, DifferentialEvaluator, DifferentialMemoryPlanner,
@@ -8335,6 +8341,41 @@ mod tests {
                 id.simple()
             )
         );
+    }
+
+    #[test]
+    fn infrastructure_outcome_makes_the_comparison_incomplete() {
+        fn arm(status: ArmStatus, outcome: EvalOutcome) -> ArmReport {
+            let mut summary = ArmSummary::runner_error();
+            summary.status = status;
+            summary.outcome = Some(outcome);
+            ArmReport {
+                summary,
+                evaluator_directory: None,
+                event_log: None,
+                trajectory: None,
+                trajectory_summary: None,
+                trajectory_error: None,
+                api_exchanges: None,
+                api_capture: None,
+                api_capture_error: None,
+                codex_events: None,
+                codex_stderr: None,
+                codex_summary: None,
+                operational_error: None,
+                event_error: None,
+                memory: None,
+                outcome: None,
+            }
+        }
+
+        let infrastructure = arm(ArmStatus::Unscored, EvalOutcome::InfrastructureError);
+        let passed = arm(ArmStatus::Passed, EvalOutcome::Passed);
+
+        assert!(matches!(
+            DifferentialClassification::from_arms(&infrastructure, &passed),
+            DifferentialClassification::Incomplete
+        ));
     }
 
     #[test]
