@@ -84,7 +84,7 @@ type CallToolResult<TStructured = { [key: string]: unknown }> = {
 };"#;
 const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose tool calls
 - Evaluates the provided JavaScript code in a fresh V8 isolate as an async module.
-- All nested tools are on global `tools`. For configured or deferred capabilities omitted here, check `ALL_TOOLS` before searching the workspace, then call a match as `await tools[tool.name](...)`.
+- All nested tools are available on the global `tools` object, for example `await tools.exec_command(...)`. Tool names are exposed as normalized JavaScript identifiers, for example `await tools.mcp__ologs__get_profile(...)`.
 - Nested tool methods take either a string or an object as their input argument.
 - Nested tools return either an object or a string, based on the description.
 - Runs raw JavaScript -- no Node, no file system, no network access, no console.
@@ -105,7 +105,7 @@ const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose too
 - `notify(value: string | number | boolean | undefined | null)`: immediately injects an extra `custom_tool_call_output` for the current `exec` call. Values are stringified like `text(...)`.
 - `setTimeout(callback: () => void, delayMs?: number)`: schedules a callback to run later and returns a timeout id. Pending timeouts do not keep `exec` alive by themselves; await an explicit promise if you need to wait for one.
 - `clearTimeout(timeoutId?: number)`: cancels a timeout created by `setTimeout`.
-- `ALL_TOOLS`: enumerable `name`/`description` plus explicit `input_schema`/`output_schema`.
+- `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries.
 - `yield_control()`: yields the accumulated output to the model immediately while the script keeps running."#;
 
 pub(super) fn exec_description(
@@ -502,8 +502,14 @@ mod tests {
 
         let description = exec_description(&definitions, false, false);
 
-        assert!(description.contains("All nested tools are on global `tools`"));
-        assert!(description.contains("check `ALL_TOOLS`"));
+        assert!(
+            description.contains(
+                "All nested tools are available on the global `tools` object, for example"
+            )
+        );
+        assert!(description.contains(
+            "`ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries."
+        ));
         assert!(!description.contains("### `update_plan`"));
         assert!(!description.contains("declare const tools"));
     }
