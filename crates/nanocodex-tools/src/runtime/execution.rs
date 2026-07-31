@@ -193,10 +193,16 @@ impl ToolRuntime {
             crate::code_mode_order::sort_direct_definitions(&mut direct);
         }
         crate::code_mode_order::sort_definitions(&mut nested);
+        let has_deferred_search = !self.registry.providers.is_empty()
+            && self
+                .registry
+                .definitions()
+                .iter()
+                .any(|definition| definition.name() == "tool_search");
         let mut native = vec![
             code_mode::exec_spec(
                 &nested,
-                !self.registry.providers.is_empty(),
+                has_deferred_search,
                 self.tool_mode == ToolMode::CodeModeOnly,
             ),
             code_mode::wait_spec(),

@@ -6,6 +6,7 @@ use std::{
     future::Future,
     io::{self, BufRead, BufReader, Read, Write},
     net::{Ipv4Addr, TcpListener},
+    num::NonZeroUsize,
     os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
     pin::Pin,
@@ -32,14 +33,17 @@ use tokio::{
 use tracing::{info, warn};
 use uuid::Uuid;
 
+pub use crate::codex::CodexToolMode;
+
 use crate::{
-    AgentResult, AtifBuilder, AtifSource, AtifStep, AtifToolCall, AtifTrajectory, AttemptAgent,
+    AgentResult, AtifBuilder, AtifSource, AtifStep, AtifToolCall, AtifTrajectory,
     CodexCommandOutput, CodexCommandRunner, CodexCommandRunnerError, CodexCommandStatus, CodexExec,
-    CodexToolMode, EvalAttempt, EvalAttemptOutcome, EvalEventKind, EvalEventStream,
-    EvalExceptionKind, EvalOutcome, EvalStatus, Evaluator, EvaluatorBuilder,
-    MeasurementCompleteness, ResponsesCaptureProxy, ResponsesCaptureProxyConfig,
-    ResponsesModelCatalogOverride, Task, UsageTotals,
-    evaluator::{AdmissionAttempt, AdmissionController, AdmissionPermit},
+    EvalAttemptOutcome, EvalEventKind, EvalEventStream, EvalExceptionKind, EvalOutcome, EvalStatus,
+    Evaluator, EvaluatorBuilder, MeasurementCompleteness, ResponsesCaptureProxy,
+    ResponsesCaptureProxyConfig, ResponsesModelCatalogOverride, Task, UsageTotals,
+    evaluator::{
+        AdmissionAttempt, AdmissionController, AdmissionPermit, AttemptAgent, EvalAttempt,
+    },
     project_codex_atif,
     vm::{
         SharedDirectory, VmAttempt, VmAttemptError, VmAttemptMemory, VmAttemptMemorySnapshot,
@@ -656,6 +660,10 @@ pub enum DifferentialBuildError {
     /// Retained adaptive memory profiles could not be loaded safely.
     #[error("failed to load differential memory profiles: {0}")]
     MemoryProfiles(#[source] DifferentialError),
+
+    /// The blocking asset-preparation task did not complete.
+    #[error("differential asset preparation task failed: {0}")]
+    PreparationTask(#[from] tokio::task::JoinError),
 }
 
 /// Runtime or retained-evidence failure in a differential evaluation.
@@ -1714,7 +1722,9 @@ impl DiffProgress {
             EvalEventKind::AttemptStarted { .. }
             | EvalEventKind::Agent(_)
             | EvalEventKind::Completed(_)
-            | EvalEventKind::Failed(_) => {}
+            | EvalEventKind::Failed(_)
+            | EvalEventKind::RunCompleted { .. }
+            | EvalEventKind::RunFailed { .. } => {}
         }
     }
 
@@ -3678,7 +3688,7 @@ impl DifferentialEvaluator {
     pub async fn task_n(
         &self,
         task: Task,
-        count: usize,
+        count: NonZeroUsize,
     ) -> DifferentialResult<DifferentialSweepResults> {
         self.run_tasks(
             vec![task],
@@ -3705,7 +3715,7 @@ impl DifferentialEvaluator {
     pub async fn tasks(&self, tasks: Vec<Task>) -> DifferentialResult<DifferentialSweepResults> {
         self.run_tasks(
             tasks,
-            1,
+            NonZeroUsize::MIN,
             vec![DifferentialProfile::new(
                 self.inner.thinking,
                 self.inner.nanocodex_tool_mode,
@@ -3718,10 +3728,16 @@ impl DifferentialEvaluator {
     async fn run_tasks(
         &self,
         tasks: Vec<Task>,
-        count: usize,
+        count: NonZeroUsize,
         profiles: Vec<DifferentialProfile>,
     ) -> DifferentialResult<DifferentialSweepResults> {
+        if tasks.is_empty() {
+            return Err(DifferentialError::new(diff_error!(
+                "differential matrix requires at least one task"
+            )));
+        }
         validate_differential_profiles(&profiles)?;
+        let count = count.get();
         let (_guard, mut summaries) =
             prepare_differential_sweep(&self.inner, &tasks, &profiles, count)
                 .map_err(DifferentialError::new)?;
@@ -3769,6 +3785,7 @@ impl DifferentialEvaluator {
         let mut preparation_errors = Vec::new();
         let mut draining = false;
         while !pending.is_empty() || !in_flight.is_empty() || !preparations.is_empty() {
+            let capacity_generation = self.inner.admission.capacity_generation();
             if !draining && self.inner.admission.is_draining() {
                 draining = true;
                 pending.clear();
@@ -3820,12 +3837,9 @@ impl DifferentialEvaluator {
                 if draining || self.inner.admission.is_draining() {
                     break;
                 }
-                if !pending.is_empty() {
-                    return Err(DifferentialError::new(diff_error!(
-                        "differential scheduler could not admit any ready coordinate"
-                    )));
+                if pending.is_empty() {
+                    break;
                 }
-                break;
             }
 
             enum SchedulerEvent<T> {
@@ -3840,7 +3854,7 @@ impl DifferentialEvaluator {
                 completed = in_flight.next(), if !in_flight.is_empty() => {
                     completed.map(SchedulerEvent::Completed)
                 }
-                () = self.inner.admission.wait_for_change(), if (!pending.is_empty() || !preparations.is_empty()) && !draining => {
+                () = self.inner.admission.wait_for_change(capacity_generation), if (!pending.is_empty() || !preparations.is_empty()) && !draining => {
                     Some(SchedulerEvent::Capacity)
                 }
                 else => None,
@@ -3991,7 +4005,7 @@ impl DifferentialEvaluator {
     pub async fn tasks_n(
         &self,
         tasks: Vec<Task>,
-        count: usize,
+        count: NonZeroUsize,
     ) -> DifferentialResult<DifferentialSweepResults> {
         self.run_tasks(
             tasks,
@@ -4003,37 +4017,6 @@ impl DifferentialEvaluator {
             )],
         )
         .await
-    }
-
-    /// Runs one centrally scheduled matrix across tasks, stock-Codex tool
-    /// modes, and independent trial coordinates.
-    ///
-    /// Every task image, staged executable, admission limit, and completion
-    /// queue is shared by the complete matrix. Results are grouped by task,
-    /// then tool-mode input order, then trial order.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error after all admitted pairs finish when the mode list is
-    /// empty, contains duplicates, or any comparison cannot be prepared or
-    /// retained.
-    pub async fn tasks_n_with_codex_tool_modes(
-        &self,
-        tasks: Vec<Task>,
-        count: usize,
-        codex_tool_modes: Vec<CodexToolMode>,
-    ) -> DifferentialResult<DifferentialSweepResults> {
-        let profiles = codex_tool_modes
-            .into_iter()
-            .map(|tool_mode| {
-                DifferentialProfile::new(
-                    self.inner.thinking,
-                    self.inner.nanocodex_tool_mode,
-                    tool_mode,
-                )
-            })
-            .collect();
-        self.run_tasks(tasks, count, profiles).await
     }
 
     /// Runs one centrally scheduled task × profile × trial matrix.
@@ -4050,7 +4033,7 @@ impl DifferentialEvaluator {
     pub async fn tasks_n_with_profiles(
         &self,
         tasks: Vec<Task>,
-        count: usize,
+        count: NonZeroUsize,
         profiles: Vec<DifferentialProfile>,
     ) -> DifferentialResult<DifferentialSweepResults> {
         self.run_tasks(tasks, count, profiles).await
@@ -4291,7 +4274,7 @@ impl DifferentialComparison {
         let nanocodex = nanocodex.thinking(thinking);
         let nanocodex_memory = Arc::new(OnceLock::<VmAttemptMemory>::new());
         let nanocodex_memory_slot = Arc::clone(&nanocodex_memory);
-        let nanocodex_evaluator = Evaluator::builder(nanocodex.clone())
+        let nanocodex_evaluator = Evaluator::new_builder(nanocodex.clone())
             .output_directory(comparison_directory.join("nanocodex"))
             .vm_with(
                 vm_resources.nanocodex_backend(),
@@ -4308,7 +4291,7 @@ impl DifferentialComparison {
         let codex_progress = progress.clone();
         let codex_memory = Arc::new(OnceLock::<VmAttemptMemory>::new());
         let codex_memory_slot = Arc::clone(&codex_memory);
-        let codex_evaluator = Evaluator::builder(nanocodex)
+        let codex_evaluator = Evaluator::new_builder(nanocodex)
             .output_directory(comparison_directory.join("codex"))
             .vm_with(codex_backend, move |attempt, _builder, runtime| {
                 let _ = codex_memory_slot.set(runtime.memory_observation());
@@ -4530,7 +4513,7 @@ impl DifferentialEvaluatorBuilder {
     /// A pair initially occupies two slots. Each completed arm returns one, so
     /// two independently completed arms can admit another pair while their
     /// former counterparts remain live. The default is one pair equivalent.
-    /// [`Self::build`] rejects zero.
+    /// [`Self::prepare`] rejects zero.
     #[must_use]
     pub const fn max_concurrency(mut self, max_concurrency: usize) -> Self {
         self.max_concurrency = max_concurrency;
@@ -4576,13 +4559,15 @@ impl DifferentialEvaluatorBuilder {
         self
     }
 
-    /// Validates required components and builds a reusable evaluator.
+    /// Validates required components and asynchronously prepares a reusable evaluator.
     ///
     /// # Errors
     ///
     /// Returns an error when Codex, VM resources, or executable identity is
     /// missing.
-    pub fn build(self) -> std::result::Result<DifferentialEvaluator, DifferentialBuildError> {
+    pub async fn prepare(
+        self,
+    ) -> std::result::Result<DifferentialEvaluator, DifferentialBuildError> {
         let Some(max_active_arms) = self.max_concurrency.checked_mul(DIFFERENTIAL_ARMS_PER_PAIR)
         else {
             return Err(DifferentialBuildError::InvalidConcurrency);
@@ -4598,25 +4583,44 @@ impl DifferentialEvaluatorBuilder {
         }
         let vm = self.vm.ok_or(DifferentialBuildError::MissingVm)?;
         let (codex_binary, codex_auth) = self.codex.ok_or(DifferentialBuildError::MissingCodex)?;
-        let (codex_binary, codex_sha256) = resolve_executable(&codex_binary, "stock Codex")
-            .map_err(|error| DifferentialBuildError::Executable(DifferentialError::new(error)))?;
-        let nanocodex_build = self
+        let nanocodex_identity = self
             .nanocodex_build
-            .ok_or(DifferentialBuildError::MissingNanocodexIdentity)?
-            .resolve("Nanocodex")
-            .map_err(|error| DifferentialBuildError::Executable(DifferentialError::new(error)))?;
-        let output = prepare_output_parent(&self.output)
-            .map_err(|error| DifferentialBuildError::Assets(DifferentialError::new(error)))?;
-        let memory_profile_path = self
-            .memory_profile_path
-            .unwrap_or_else(|| output.join("differential-memory-profiles.json"));
-        let memory =
-            DifferentialMemoryPlanner::load(memory_profile_path, self.initial_guest_memory_mb)
-                .map_err(|error| {
-                    DifferentialBuildError::MemoryProfiles(DifferentialError::new(error))
+            .ok_or(DifferentialBuildError::MissingNanocodexIdentity)?;
+        let output = self.output;
+        let memory_profile_path = self.memory_profile_path;
+        let initial_guest_memory_mb = self.initial_guest_memory_mb;
+        let (codex_sha256, nanocodex_build, output, memory, codex_release) =
+            tokio::task::spawn_blocking(move || {
+                let (codex_binary, codex_sha256) = resolve_executable(&codex_binary, "stock Codex")
+                    .map_err(|error| {
+                        DifferentialBuildError::Executable(DifferentialError::new(error))
+                    })?;
+                let nanocodex_build = nanocodex_identity.resolve("Nanocodex").map_err(|error| {
+                    DifferentialBuildError::Executable(DifferentialError::new(error))
                 })?;
-        let codex_release = prepare_diff_codex_release(&output, &codex_binary)
-            .map_err(|error| DifferentialBuildError::Assets(DifferentialError::new(error)))?;
+                let output = prepare_output_parent(&output).map_err(|error| {
+                    DifferentialBuildError::Assets(DifferentialError::new(error))
+                })?;
+                let memory_profile_path = memory_profile_path
+                    .unwrap_or_else(|| output.join("differential-memory-profiles.json"));
+                let memory =
+                    DifferentialMemoryPlanner::load(memory_profile_path, initial_guest_memory_mb)
+                        .map_err(|error| {
+                        DifferentialBuildError::MemoryProfiles(DifferentialError::new(error))
+                    })?;
+                let codex_release =
+                    prepare_diff_codex_release(&output, &codex_binary).map_err(|error| {
+                        DifferentialBuildError::Assets(DifferentialError::new(error))
+                    })?;
+                Ok::<_, DifferentialBuildError>((
+                    codex_sha256,
+                    nanocodex_build,
+                    output,
+                    memory,
+                    codex_release,
+                ))
+            })
+            .await??;
         Ok(DifferentialEvaluator {
             inner: Arc::new(DifferentialEvaluatorInner {
                 nanocodex: self.nanocodex,
@@ -4660,12 +4664,6 @@ impl DifferentialSweepResults {
     #[must_use]
     pub const fn skipped(&self) -> usize {
         self.skipped
-    }
-
-    /// Consumes the sweep result and returns reports produced by this process.
-    #[must_use]
-    pub fn into_reports(self) -> Vec<DifferentialReport> {
-        self.reports
     }
 }
 
@@ -5453,7 +5451,7 @@ async fn run_arm(
         "nanocodex"
     };
     progress.emit(arm_name, "attempt.started", task.name());
-    let (evaluator, events) = match evaluator.build() {
+    let evaluator = match evaluator.build() {
         Ok(built) => built,
         Err(error) => {
             let report = ArmReport::setup_error(format!("{error:#}"));
@@ -5470,16 +5468,15 @@ async fn run_arm(
     };
     let evaluator_directory = evaluator.directory().to_path_buf();
     let event_log = evaluator_directory.join("events.jsonl");
-    let stream = events.subscribe();
-    drop(events);
+    let run = evaluator.task(task);
+    let stream = run.events().subscribe();
     let event_path = event_log.clone();
     let event_progress = progress.clone();
     let event_recorder =
         tokio::spawn(
             async move { record_events(stream, &event_path, arm_name, event_progress).await },
         );
-    let outcome = evaluator.task(task).await;
-    drop(evaluator);
+    let outcome = run.await;
     let (recording, event_error) = match event_recorder.await {
         Ok(Ok(recording)) => (Some(recording), None),
         Ok(Err(error)) => (None, Some(format!("{error:#}"))),
@@ -8250,8 +8247,9 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{
-        AgentStatus, AtifStep, AtifTrajectory, AttemptAgent, EvalAttemptOutcome, EvalEventKind,
-        EvalStatus, VerifierResult, evaluator::AdmissionController,
+        AgentStatus, AtifStep, AtifTrajectory, EvalAttemptOutcome, EvalEventKind, EvalStatus,
+        VerifierResult,
+        evaluator::{AdmissionController, AttemptAgent},
     };
 
     use super::{
@@ -8285,19 +8283,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn differential_scheduler_rejects_zero_limits_before_asset_work() {
+    #[tokio::test]
+    async fn differential_scheduler_rejects_zero_limits_before_asset_work() {
         let nanocodex = Nanocodex::builder(OpenAi::new("test").unwrap());
         assert!(matches!(
             DifferentialEvaluator::builder(nanocodex.clone())
                 .max_concurrency(0)
-                .build(),
+                .prepare()
+                .await,
             Err(DifferentialBuildError::InvalidConcurrency)
         ));
         assert!(matches!(
             DifferentialEvaluator::builder(nanocodex)
                 .max_memory_mb(0)
-                .build(),
+                .prepare()
+                .await,
             Err(DifferentialBuildError::InvalidMemory)
         ));
     }
@@ -10299,7 +10299,7 @@ mod tests {
         let configured = codex.clone();
         let report = run_arm(
             task,
-            Evaluator::builder(agent)
+            Evaluator::new_builder(agent)
                 .output_directory(temporary.path().join("evaluations"))
                 .attempt_agent(move |_attempt, _builder| {
                     Ok::<_, Infallible>(AttemptAgent::codex(configured.clone()))

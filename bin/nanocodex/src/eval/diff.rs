@@ -1,14 +1,21 @@
 use std::{
     io::{self, Write as _},
+    num::NonZeroUsize,
     path::{Path, PathBuf},
 };
 
 use clap::{Args, ValueEnum};
 use eyre::{Result, eyre};
 use nanocodex::{Thinking, tools::ToolMode};
-use nanocodex_eval::*;
+use nanocodex_eval::{
+    differential::*,
+    vm::{CachePolicy, VmResources},
+};
 
-use super::run;
+use super::{
+    args::{SchedulingArgs, VmPreparationArgs},
+    run,
+};
 use crate::{
     config::{EvalAgentArgs, SharedAuth},
     observability::ObservabilityArgs,
@@ -187,28 +194,12 @@ pub(crate) struct Diff {
     #[arg(long, default_value = DEFAULT_OUTPUT_DIRECTORY)]
     output: PathBuf,
 
-    /// Number of independent matched pairs per task.
-    #[arg(
-        long,
-        default_value_t = run::DEFAULT_TRIALS,
-        value_parser = clap::value_parser!(u16).range(1..)
-    )]
-    trials: u16,
-
-    /// Active-arm capacity expressed as matched-pair equivalents.
-    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
-    concurrency: Option<u16>,
+    #[command(flatten)]
+    scheduling: SchedulingArgs,
 
     /// Maximum number of cold task images prepared concurrently.
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     prepare_concurrency: Option<u16>,
-
-    /// Target ceiling on measured host memory across live VM arms.
-    ///
-    /// Both arms are charged at pair start and released independently. A pair
-    /// whose current estimate exceeds this ceiling runs alone.
-    #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u64).range(1..))]
-    max_memory_mb: Option<u64>,
 
     /// Initial eval-only guest RAM allocated to each arm before calibration.
     ///
@@ -217,26 +208,8 @@ pub(crate) struct Diff {
     #[arg(long, value_name = "MIB", value_parser = clap::value_parser!(u64).range(1..))]
     guest_memory_mb: Option<u64>,
 
-    /// Percentage of detected host CPU and memory used for omitted limits.
-    #[arg(
-        long,
-        default_value_t = run::DEFAULT_HOST_UTILIZATION_PERCENT,
-        value_name = "PERCENT",
-        value_parser = clap::value_parser!(u8).range(1..=100)
-    )]
-    host_utilization: u8,
-
-    /// Use this prebuilt Nanocodex guest-runtime ELF.
-    #[arg(long, value_name = "ELF")]
-    vm_guest_runtime: Option<PathBuf>,
-
-    /// Content-addressed VM cache shared across differential runs.
-    #[arg(long, value_name = "DIRECTORY", default_value = ".cache/vm")]
-    vm_cache: PathBuf,
-
-    /// Resolve the task image at the registry instead of reusing its local resolution.
-    #[arg(long)]
-    vm_refresh: bool,
+    #[command(flatten)]
+    vm: VmPreparationArgs,
 
     /// Print the complete sweep record as JSON.
     #[arg(long)]
@@ -264,7 +237,9 @@ impl Diff {
         run::raise_eval_open_file_limit()?;
 
         let tasks = run::load_tasks(self.tasks, self.suites)?;
-        let requested_trials = usize::from(self.trials);
+        let trials = NonZeroUsize::new(usize::from(self.scheduling.trials))
+            .ok_or_else(|| eyre!("--trials must be greater than zero"))?;
+        let requested_trials = trials.get();
         let nanocodex_tool_modes = resolve_nanocodex_tool_modes(&self.nanocodex_tool_modes)?;
         let codex_tool_modes = resolve_codex_tool_modes(&self.codex_tool_modes)?;
         let tool_mode_pairs = resolve_tool_mode_pairs(&nanocodex_tool_modes, &codex_tool_modes)?;
@@ -280,12 +255,12 @@ impl Diff {
             .map(|task| task.name().to_owned())
             .collect::<Vec<_>>();
         let (automatic_concurrency, automatic_memory_mb) =
-            run::automatic_scheduling_defaults(self.host_utilization);
-        let concurrency = self.concurrency.unwrap_or(automatic_concurrency);
+            run::automatic_scheduling_defaults(self.scheduling.host_utilization);
+        let concurrency = self.scheduling.concurrency.unwrap_or(automatic_concurrency);
         let prepare_concurrency = self
             .prepare_concurrency
             .unwrap_or_else(|| concurrency.clamp(1, 8));
-        let max_memory_mb = self.max_memory_mb.or(automatic_memory_mb);
+        let max_memory_mb = self.scheduling.max_memory_mb.or(automatic_memory_mb);
         let initial_guest_memory_mb = self
             .guest_memory_mb
             .unwrap_or(DEFAULT_INITIAL_GUEST_MEMORY_MB);
@@ -294,7 +269,7 @@ impl Diff {
              {initial_guest_memory_mb} MiB initial per-arm guest RAM",
             tasks.len(),
             profiles.len(),
-            self.trials,
+            self.scheduling.trials,
             concurrency,
             max_memory_mb.map_or_else(
                 || "unbounded measured host memory".to_owned(),
@@ -309,13 +284,15 @@ impl Diff {
             SharedAuth::AuthFile(path) => CodexAuth::auth_file(path),
         };
         let current_executable = std::env::current_exe()?;
-        let runtime_image =
-            run::prepare_vm_guest_runtime_from(self.vm_guest_runtime.as_deref(), &self.vm_cache)
-                .await?;
+        let runtime_image = run::prepare_vm_guest_runtime_from(
+            self.vm.vm_guest_runtime.as_deref(),
+            &self.vm.vm_cache,
+        )
+        .await?;
         let vm = VmResources::builder(&current_executable, runtime_image)
             .tasks(tasks.clone())
-            .cache_directory(&self.vm_cache)
-            .cache_policy(if self.vm_refresh {
+            .cache_directory(&self.vm.vm_cache)
+            .cache_policy(if self.vm.vm_refresh {
                 CachePolicy::Refresh
             } else {
                 CachePolicy::Reuse
@@ -341,20 +318,20 @@ impl Diff {
                     .built_at(env!("VERGEN_BUILD_TIMESTAMP")),
             )
             .initial_guest_memory_mb(initial_guest_memory_mb)
-            .memory_profile_path(self.vm_cache.join(MEMORY_PROFILE_FILE))
+            .memory_profile_path(self.vm.vm_cache.join(MEMORY_PROFILE_FILE))
             .max_concurrency(usize::from(concurrency))
             .max_infrastructure_replacements(requested_trials);
         if let Some(max_memory_mb) = max_memory_mb {
             evaluator = evaluator.max_memory_mb(max_memory_mb);
         }
-        let evaluator = evaluator.build()?;
+        let evaluator = evaluator.prepare().await?;
         let comparison_count = tasks
             .len()
             .saturating_mul(profiles.len())
             .saturating_mul(requested_trials);
         let interrupts = run::ctrl_c_interrupt()?;
         let execution = run::finish_or_drain(
-            evaluator.tasks_n_with_profiles(tasks, requested_trials, profiles.clone()),
+            evaluator.tasks_n_with_profiles(tasks, trials, profiles.clone()),
             interrupts,
             comparison_count,
             || {
@@ -624,14 +601,14 @@ mod tests {
 
     use clap::Parser;
     use nanocodex::{Thinking, tools::ToolMode};
-    use nanocodex_eval::{CodexToolMode, DifferentialClassification};
+    use nanocodex_eval::differential::{CodexToolMode, DifferentialClassification};
 
     use super::{
         Diff, DifferentialScoreSummary, NanocodexToolMode, StockCodexToolMode,
         resolve_codex_tool_modes, resolve_differential_profiles, resolve_nanocodex_tool_modes,
         resolve_thinking_profiles, resolve_tool_mode_pairs,
     };
-    use crate::eval::run::DEFAULT_TRIALS;
+    use crate::eval::args::DEFAULT_TRIALS;
 
     #[derive(Parser)]
     struct TestCli {
@@ -678,8 +655,8 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(cli.diff.trials, DEFAULT_TRIALS);
-        assert_eq!(cli.diff.trials, 5);
+        assert_eq!(cli.diff.scheduling.trials, DEFAULT_TRIALS);
+        assert_eq!(cli.diff.scheduling.trials, 5);
     }
 
     #[test]
@@ -715,10 +692,10 @@ mod tests {
             ]
         );
         assert_eq!(cli.diff.suites, [Path::new("tasks/suite").to_path_buf()]);
-        assert_eq!(cli.diff.trials, 7);
-        assert_eq!(cli.diff.concurrency, Some(12));
+        assert_eq!(cli.diff.scheduling.trials, 7);
+        assert_eq!(cli.diff.scheduling.concurrency, Some(12));
         assert_eq!(cli.diff.prepare_concurrency, Some(6));
-        assert_eq!(cli.diff.max_memory_mb, Some(49_152));
+        assert_eq!(cli.diff.scheduling.max_memory_mb, Some(49_152));
         assert_eq!(cli.diff.guest_memory_mb, Some(1_024));
         assert_eq!(
             cli.diff.codex_tool_modes,

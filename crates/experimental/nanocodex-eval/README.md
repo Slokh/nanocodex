@@ -1,187 +1,94 @@
 # nanocodex-eval
 
-`nanocodex-eval` is the owned benchmark lifecycle for Nanocodex. It composes
-`nanocodex-agent` with `nanocodex-vm`, schedules task × agent × repetition
-sweeps, runs canonical verifiers, and retains exact events, API evidence,
-trajectories, timing, usage, and results.
+`nanocodex-eval` owns Nanocodex's VM-isolated benchmark lifecycle: task
+loading, bounded scheduling, fresh attempts, canonical verification, resumable
+jobs, typed events and outcomes, Harbor projection, aggregation, and matched
+Codex comparison.
 
-Harbor-compatible JSONL and ATIF are output formats. Harbor does not run the
-task, agent, VM, or verifier.
+Every benchmark attempt runs tools and verification in a microVM. Native host
+execution exists only inside focused crate tests. Harbor JSONL and ATIF are
+output formats, not alternate runners.
 
-Local eval artifacts use one current schema. Resume requires an exact current
-run manifest, and rerun requires the current invocation record. The crate does
-not decode or upgrade old nanoeval run directories; start a new job instead.
-The published-Harbor reader is a separate external-interoperability boundary.
+## One task
 
-## VM backend
-
-The benchmark CLI always uses a microVM-backed task environment. The
-Nanocodex driver stays in the host process while its workspace tools execute
-in the guest; a stock Codex comparison binary executes inside a separate
-matched guest. The native backend remains only as a small library test fixture.
-
-Applications install VM execution through the eval facade:
-
-```rust,ignore
+```rust,no_run
 use nanocodex_agent::{Nanocodex, OpenAi};
-use nanocodex_eval::{
-    Evaluator, Task, VmResources,
-    vm::VmBackend,
-};
+use nanocodex_eval::{Evaluator, Task, VmResources};
 
-let task = Task::load("terminal-bench/tasks/example")?;
-let agent = Nanocodex::builder(OpenAi::new(std::env::var("OPENAI_API_KEY")?)?);
-let resources = VmResources::builder(
-    "target/debug/nanocodex",
-    ".cache/vm/runtime.ext4",
-)
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let task = Task::load("tasks/write-greeting")?;
+let resources = VmResources::builder("nanocodex", "runtime.ext4")
     .task(task.clone())
     .prepare()
     .await?;
-let backend = VmBackend::builder()
-    .web_search(false)
-    .retain_passed_rootfs(false)
-    .build();
-resources.configure(&backend).await?;
+let evaluator = Evaluator::builder(
+    Nanocodex::builder(OpenAi::new(std::env::var("OPENAI_API_KEY")?)?),
+    resources.backend().await?,
+)
+.output_directory(".nanocodex/evals")
+.build()?;
 
-let (evaluator, events) = Evaluator::builder(agent)
-    .output_directory(".nanocodex/evals")
-    .max_concurrency(8)
-    .max_memory_mb(32_768)
-    .vm(backend)
-    .build()?;
-let _ = events;
-let result = evaluator.task(task).await?;
+let run = evaluator.task(task);
+let mut events = run.events().subscribe();
+let observer = tokio::spawn(async move {
+    while let Some(event) = events.recv().await? {
+        println!("{} {:?}", event.sequence, event.kind);
+    }
+    Ok::<_, nanocodex_eval::EvalEventStreamError>(())
+});
+let outcome = run.await?;
+observer.await??;
+println!("{:?}", outcome.outcome());
+# Ok(())
+# }
 ```
 
-`EvaluatorBuilder::vm` sets the durable environment identity to `micro_vm`
-itself. A caller cannot install this backend while accidentally recording the
-attempt as native.
+`EvalRun<T>` is independently awaitable and owns an optional event stream.
+Every event carries a job ID, invocation ID, invocation-wide sequence, and—on
+attempt events—typed attempt identity and ordering. Every invocation emits one
+terminal event, including cancellation.
 
-`VmResources` owns OCI image materialization, public-network helper discovery,
-task-to-environment mapping, and verifier-cache preparation. The detailed
-`VmBackendConfiguration` and `VmEnvironment` types remain available under
-`nanocodex_eval::vm` for custom runtimes, but the normal evaluator and
-differential paths do not assemble them.
+## Resumable sweep
 
-## Differential runner
+Build a `Sweep`, then consume it exactly once with
+`resume_incomplete(sweep)` or `fresh_run(sweep)`. The resulting evaluator is
+bound to that manifest, so execution is simply `evaluator.sweep()` and cannot
+accidentally receive a different workload.
 
-`DifferentialEvaluator` owns the reusable matched two-arm lifecycle and
-memory-weighted pair admission. The binary supplies the already configured
-Nanocodex recipe, shared auth selection, one prepared VM resource set, and
-executable identities:
+See the compiled examples:
 
-```rust,ignore
-use nanocodex_eval::{
-    CodexAuth, DifferentialEvaluator, ExecutableIdentity, Task, VmResources,
-};
+- `eval-task`: one VM attempt, independent events, and Harbor projection.
+- `eval-sweep`: a resumable multi-agent sweep.
+- `eval-differential`: matched Nanocodex-versus-Codex trials.
 
-let tasks = vec![
-    Task::load("terminal-bench/tasks/example-a")?,
-    Task::load("terminal-bench/tasks/example-b")?,
-];
-let vm = VmResources::builder("nanocodex", "runtime.ext4")
-    .tasks(tasks.clone())
-    .prepare()
-    .await?;
-let reports = DifferentialEvaluator::builder(nanocodex)
-    .codex("codex-linux", CodexAuth::auth_file("~/.codex/auth.json"))
-    .vm(vm)
-    .thinking(thinking)
-    .web_search(false)
-    .nanocodex_executable(ExecutableIdentity::new("nanocodex", version))
-    .max_concurrency(8)
-    .max_memory_mb(49_152)
-    .build()?
-    .tasks_n(tasks, 5)
-    .await?;
-```
+Set `NANOCODEX_BIN` and `NANOCODEX_VM_RUNTIME` when the default development
+paths do not apply.
 
-The library stages the Codex release once per evaluator, admits each pair
-against both arms' declared memory, releases each arm's charge after its
-evaluator and VM cleanup finish, creates matched isolated backends, runs both
-arms concurrently, streams the live divergence record, projects ATIF, compares
-API event loops, and returns typed retained reports with explicit one-indexed
-trial coordinates. Clap, observability installation, process build metadata,
-terminal formatting, and exit-code policy stay in the binary.
+## Differential evaluation
+
+Detailed comparison APIs live under `nanocodex_eval::differential`; detailed
+VM APIs live under `nanocodex_eval::vm`. `DifferentialEvaluatorBuilder::prepare`
+is async because it hashes and stages executables and loads retained memory
+profiles before execution.
+
+The scheduler is work-conserving across concurrency and memory limits. A task
+larger than the memory target runs alone, differential arms release capacity
+independently, image preparation overlaps across tasks, and draining stops new
+admission while joining work already admitted.
 
 ## CLI
 
-Run Nanocodex normally over one task or a complete suite:
-
 ```sh
-nanocodex eval \
-  --suite /data/terminal-bench-2.1/tasks \
-  --trials 5 \
-  --concurrency 24 \
-  --max-memory-mb 98304 \
-  --thinking medium \
-  --web-search false
-```
-
-Run a k=5, paired, concurrent `code_mode_only` sweep against a released Linux
-Codex binary:
-
-```sh
+nanocodex eval --suite /data/terminal-bench/tasks --trials 5
 nanocodex eval diff \
-  --suite /data/terminal-bench-2.1/tasks \
-  --codex-bin /opt/codex/codex-x86_64-unknown-linux-musl \
-  --concurrency 24 \
-  --max-memory-mb 49152 \
-  --thinking medium \
-  --web-search false
+  --suite /data/terminal-bench/tasks \
+  --codex-bin /opt/codex/codex-x86_64-unknown-linux-musl
 ```
 
-`eval diff` defaults to five independent matched pairs per task. Pass
-`--trials 1` only for a one-off diagnostic.
+The CLI installs auth and observability, resolves reusable scheduling and VM
+configuration, invokes this library, and renders results. Model execution,
+scheduling, verification, persistence, and comparison remain library-owned.
 
-Both agents default to `code_mode_only`. To run normal Code Mode on both arms,
-select it explicitly:
-
-```sh
-nanocodex eval diff \
-  --suite /data/terminal-bench-2.1/tasks \
-  --codex-bin /opt/codex/codex-x86_64-unknown-linux-musl \
-  --nanocodex-tool-mode code-mode \
-  --codex-tool-mode code-mode
-```
-
-Mode lists pair positionally, with a singleton broadcast across the other
-side. A two-treatment sweep therefore runs each of the four implementations
-once per task and trial:
-
-```sh
-nanocodex eval diff \
-  --suite /data/terminal-bench-2.1/tasks \
-  --codex-bin /opt/codex/codex-x86_64-unknown-linux-musl \
-  --nanocodex-tool-mode code-mode,code-mode-only \
-  --codex-tool-mode code-mode,code-mode-only
-```
-
-Both commands use the same central CLI auth and model flags. Authentication
-selection is, in order: `--api-key`, `--auth-file`, the default Codex auth
-file, `OPENAI_API_KEY`, then the default auth-file path. Normal agent sessions
-retain their standard defaults; eval defaults to medium thinking with web
-search disabled unless the flags or a resumed invocation say otherwise.
-
-The remaining command surface manages the same retained evidence:
-
-```sh
-nanocodex eval prepare --suite /data/terminal-bench-2.1/tasks
-nanocodex eval task /data/terminal-bench-2.1/tasks/example --prompt
-nanocodex eval inspect .nanocodex/evals/JOB --full
-nanocodex eval compare .nanocodex/evals/JOB
-nanocodex eval cleanup .nanocodex/evals/JOB --dry-run
-nanocodex eval vm --help
-```
-
-`eval diff` writes interleaved live progress while both lanes execute and
-retains the complete comparison, API exchanges, raw streams, derived ATIF,
-verifier output, and final workspaces for offline reanalysis.
-
-The ATIF summaries label their projection scope. Nanocodex lifecycle events
-contain both the model-visible Code Mode call and its nested tools, while the
-stock CLI stream exposes completed inner items. Those raw tool counts remain
-available but are not treated as directly comparable. The API event-loop
-comparison separately records the exact model-visible tool-call sequence for
-both arms and uses that sequence for parity claims.
+Local retained state has one current schema. Resume requires an exact current
+manifest; old run directories are not upgraded in place. Published Harbor
+reading remains a separate interoperability boundary.

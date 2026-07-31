@@ -93,5 +93,17 @@ path = "realtime_pipe.rs"
 name = "voice"
 path = "voice.rs"
 
+[[bin]]
+name = "eval-task"
+path = "src/bin/eval_task.rs"
+
+[[bin]]
+name = "eval-sweep"
+path = "src/bin/eval_sweep.rs"
+
+[[bin]]
+name = "eval-differential"
+path = "src/bin/eval_differential.rs"
+
 [lints]
 workspace = true

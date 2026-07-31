@@ -502,7 +502,8 @@ mod tests {
 
         let description = exec_description(&definitions, false, false);
 
-        assert!(description.contains("All nested tools are available"));
+        assert!(description.contains("All nested tools are on global `tools`"));
+        assert!(description.contains("check `ALL_TOOLS`"));
         assert!(!description.contains("### `update_plan`"));
         assert!(!description.contains("declare const tools"));
     }

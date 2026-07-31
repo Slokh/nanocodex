@@ -112,7 +112,6 @@ pub enum ResponsesCaptureProxyError {
 /// One running host-side Responses capture proxy.
 #[doc(hidden)]
 pub struct ResponsesCaptureProxy {
-    local_addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), ResponsesCaptureProxyError>>>,
 }
@@ -333,16 +332,9 @@ impl ResponsesCaptureProxy {
                 .map_err(ResponsesCaptureProxyError::Serve)
         });
         Ok(Self {
-            local_addr,
             shutdown: Some(shutdown),
             task: Some(task),
         })
-    }
-
-    /// Returns the host loopback endpoint assigned to this proxy.
-    #[must_use]
-    pub const fn local_addr(&self) -> SocketAddr {
-        self.local_addr
     }
 
     /// Requests graceful shutdown and waits for the server task to finish.

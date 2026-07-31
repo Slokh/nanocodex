@@ -83,8 +83,8 @@ impl CodexToolMode {
 #[derive(Clone)]
 enum CodexAuth {
     Inherit,
+    #[cfg(test)]
     ApiKey(Arc<str>),
-    File(PathBuf),
 }
 
 impl fmt::Debug for CodexExec {
@@ -178,32 +178,11 @@ impl CodexExec {
 
     /// Supplies an API key to the child without writing it to retained
     /// artifacts.
+    #[cfg(test)]
     #[must_use]
     pub fn api_key(mut self, api_key: impl Into<Arc<str>>) -> Self {
         self.auth = CodexAuth::ApiKey(api_key.into());
         self
-    }
-
-    /// Supplies a Codex-compatible `auth.json` through an attempt-private
-    /// temporary `CODEX_HOME`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the credential file is missing or not a regular
-    /// file.
-    pub fn auth_file(mut self, path: impl Into<PathBuf>) -> Result<Self, CodexExecError> {
-        let requested = path.into();
-        let path = requested
-            .canonicalize()
-            .map_err(|source| CodexExecError::AuthFile {
-                path: requested.clone(),
-                source,
-            })?;
-        if !path.is_file() {
-            return Err(CodexExecError::AuthNotAFile(path));
-        }
-        self.auth = CodexAuth::File(path);
-        Ok(self)
     }
 
     /// Runs the exact Codex argument vector through an evaluator-owned
@@ -504,20 +483,6 @@ pub enum CodexExecError {
     #[error("Codex executable is not a regular file: {0}")]
     NotAFile(PathBuf),
 
-    /// The configured credential file could not be resolved.
-    #[error("failed to resolve Codex auth file {path}: {source}")]
-    AuthFile {
-        /// Requested credential path.
-        path: PathBuf,
-        /// Filesystem error.
-        #[source]
-        source: io::Error,
-    },
-
-    /// The configured credential path was not a regular file.
-    #[error("Codex auth path is not a regular file: {0}")]
-    AuthNotAFile(PathBuf),
-
     /// A process or artifact I/O operation failed.
     #[error("Codex process I/O failed: {0}")]
     Io(#[from] io::Error),
@@ -707,11 +672,9 @@ impl CodexProcess {
             command.env("CODEX_HOME", home.path());
         }
         match &config.auth {
+            #[cfg(test)]
             CodexAuth::ApiKey(api_key) => {
                 command.env("OPENAI_API_KEY", api_key.as_ref());
-            }
-            CodexAuth::File(_) => {
-                command.env_remove("OPENAI_API_KEY");
             }
             CodexAuth::Inherit => {}
         }
@@ -1509,6 +1472,14 @@ async fn write_summary(events_path: &Path, transcript: &CodexTranscript) -> io::
     fs::write(summary, encoded).await
 }
 
+#[cfg(not(test))]
+const fn prepare_auth_home(auth: &CodexAuth) -> Result<Option<tempfile::TempDir>, CodexExecError> {
+    match auth {
+        CodexAuth::Inherit => Ok(None),
+    }
+}
+
+#[cfg(test)]
 fn prepare_auth_home(auth: &CodexAuth) -> Result<Option<tempfile::TempDir>, CodexExecError> {
     match auth {
         CodexAuth::Inherit => Ok(None),
@@ -1516,19 +1487,6 @@ fn prepare_auth_home(auth: &CodexAuth) -> Result<Option<tempfile::TempDir>, Code
             let home = tempfile::Builder::new()
                 .prefix("nanocodex-eval-codex-home-")
                 .tempdir()?;
-            Ok(Some(home))
-        }
-        CodexAuth::File(auth_file) => {
-            let home = tempfile::Builder::new()
-                .prefix("nanocodex-eval-codex-home-")
-                .tempdir()?;
-            let destination = home.path().join("auth.json");
-            std::fs::copy(auth_file, &destination)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o600))?;
-            }
             Ok(Some(home))
         }
     }

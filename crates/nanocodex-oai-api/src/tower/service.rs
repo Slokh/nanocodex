@@ -969,7 +969,7 @@ mod tests {
             events,
             Arc::clone(&stats),
         );
-        let request = factory.warmup(crate::Thinking::High, false);
+        let request = factory.warmup(crate::Model::Sol, crate::Thinking::High, false);
 
         let mut guard = WebSocketAttemptGuard::new(&mut connection, &request, Instant::now());
         guard.mark_request_sent();

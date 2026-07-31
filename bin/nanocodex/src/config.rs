@@ -6,8 +6,13 @@ use std::{
 
 use clap::{ArgAction, Args, builder::NonEmptyStringValueParser};
 use eyre::{Result, WrapErr, eyre};
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+use nanocodex::NanocodexBuilder;
 use nanocodex::{
-    AgentEvents, Model, Nanocodex, NanocodexBuilder, OpenAi, ReasoningMode, Thinking, Tools,
+    AgentEvents, Model, Nanocodex, OpenAi, ReasoningMode, Thinking, Tools,
     agent::{
         rollout::{DurableSession, RolloutConfig},
         session::{SessionId, SessionSnapshot},
@@ -77,13 +82,17 @@ pub(crate) enum SharedAuth {
 
 /// The deliberately small standard-agent configuration accepted by eval
 /// commands.
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
 #[derive(Args)]
 pub(crate) struct EvalAgentArgs {
     #[command(flatten)]
     auth: AuthArgs,
 
     #[command(flatten)]
-    model: ModelArgs,
+    model_policy: ModelArgs,
 }
 
 #[derive(Args)]
@@ -100,7 +109,7 @@ pub(crate) struct AgentArgs {
     cwd: Option<PathBuf>,
 
     #[command(flatten)]
-    model: ModelArgs,
+    model_policy: ModelArgs,
 
     /// GPT-5.6 coding model: gpt-5.6-sol or gpt-5.6-luna.
     #[arg(long, env = "OPENAI_MODEL", default_value_t)]
@@ -186,11 +195,11 @@ impl AgentArgs {
     }
 
     pub(crate) fn thinking(&self) -> Thinking {
-        self.model.thinking.unwrap_or_default()
+        self.model_policy.thinking.unwrap_or_default()
     }
 
     pub(crate) fn web_search(&self) -> bool {
-        self.model.web_search.unwrap_or(true)
+        self.model_policy.web_search.unwrap_or(true)
     }
 
     pub(crate) const fn model(&self) -> Model {
@@ -335,6 +344,10 @@ impl AuthArgs {
     }
 }
 
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
 impl EvalAgentArgs {
     pub(crate) fn builder(self, thinking: Thinking, web_search: bool) -> Result<NanocodexBuilder> {
         let auth = self.auth.resolve()?;
@@ -352,11 +365,11 @@ impl EvalAgentArgs {
     }
 
     pub(crate) const fn thinking(&self) -> Option<Thinking> {
-        self.model.thinking
+        self.model_policy.thinking
     }
 
     pub(crate) const fn web_search(&self) -> Option<bool> {
-        self.model.web_search
+        self.model_policy.web_search
     }
 }
 
@@ -369,6 +382,10 @@ impl SharedAuth {
     }
 }
 
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
 fn eval_builder_with_auth(
     auth: OpenAiAuth,
     thinking: Thinking,

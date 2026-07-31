@@ -8,11 +8,11 @@ use uuid::Uuid;
 use crate::{AgentId, Task};
 
 /// Execution environment used for one evaluation attempt.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalEnvironment {
-    /// Disposable workspace and verifier processes run directly on the host.
-    #[default]
+    /// Host execution retained for focused tests and published-record decoding.
+    /// Public evaluator construction does not select this environment.
     Native,
     /// Agent tools and verification run in a retained libkrun microVM.
     MicroVm,
@@ -57,12 +57,6 @@ impl EvalOutcome {
     #[must_use]
     pub const fn is_scored(self) -> bool {
         matches!(self, Self::Passed | Self::VerifierFailed)
-    }
-
-    /// Returns whether this outcome is a scored pass.
-    #[must_use]
-    pub const fn is_passed(self) -> bool {
-        matches!(self, Self::Passed)
     }
 }
 
@@ -211,14 +205,6 @@ impl EvalCleanup {
     #[must_use]
     pub const fn is_failed(&self) -> bool {
         self.agent.is_failed() || self.verifier.is_failed()
-    }
-
-    /// Returns the first cleanup diagnostic in lifecycle order.
-    #[must_use]
-    pub fn first_failure(&self) -> Option<(&CleanupDiagnostic, &PhaseTiming)> {
-        [&self.agent, &self.verifier]
-            .into_iter()
-            .find_map(|phase| phase.diagnostic.as_ref().zip(phase.timing.as_ref()))
     }
 }
 
@@ -392,12 +378,6 @@ impl SweepAttemptResult {
     pub const fn failure(&self) -> Option<&EvalFailure> {
         self.outcome.unscored()
     }
-
-    /// Consumes the coordinate wrapper and returns its terminal attempt output.
-    #[must_use]
-    pub fn into_outcome(self) -> EvalAttemptOutcome {
-        self.outcome
-    }
 }
 
 impl EvalAttemptOutcome {
@@ -461,15 +441,6 @@ impl EvalAttemptOutcome {
         match self {
             Self::Scored(_) => None,
             Self::Unscored(failure) => Some(failure),
-        }
-    }
-
-    /// Consumes this value and returns the scored result, when one exists.
-    #[must_use]
-    pub fn into_scored(self) -> Option<EvalResult> {
-        match self {
-            Self::Scored(result) => Some(result),
-            Self::Unscored(_) => None,
         }
     }
 }
@@ -658,14 +629,6 @@ pub enum MeasurementCompleteness {
     /// The producer retained observed work, but cancellation or failure may
     /// have omitted additional work.
     ObservedLowerBound,
-}
-
-impl MeasurementCompleteness {
-    /// Returns whether the retained measurement is complete.
-    #[must_use]
-    pub const fn is_complete(&self) -> bool {
-        matches!(self, Self::Complete)
-    }
 }
 
 /// Terminal state reported by the agent lifecycle.

@@ -15,8 +15,6 @@ use sha2::{Digest, Sha256};
 const FIXTURE_IMAGE: &str = "example.invalid/nanocodex-vm-benchmark:latest";
 const FIXTURE_MANIFEST: &str =
     "sha256:2eeb0b07339f47ea087a4a9a3ece22c2fd80cc74a812870f163189812f9fc4df";
-const FIXTURE_LAYER: &str =
-    "sha256:018f4abf7d81ee0c83a4a0ef7fd0f2e3ea315714209860653c4af66a648824cb";
 const DISK_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Serialize)]
@@ -64,13 +62,16 @@ impl Fixture {
 
         let blobs = cache.join("blobs");
         fs::create_dir_all(&blobs).expect("blob cache");
-        write_shell_layer(&blobs.join(FIXTURE_LAYER.replace(':', "-")));
+        let staged_layer = cache.join("fixture-layer.tar.gz");
+        let layer_digest = write_shell_layer(&staged_layer);
+        fs::rename(staged_layer, blobs.join(layer_digest.replace(':', "-")))
+            .expect("publish fixture layer");
         let reference = ReferenceRecord {
             version: 2,
             image_reference: FIXTURE_IMAGE,
             manifest_digest: FIXTURE_MANIFEST,
             layers: [LayerRecord {
-                digest: FIXTURE_LAYER,
+                digest: &layer_digest,
                 media_type: "application/vnd.oci.image.layer.v1.tar+gzip",
             }],
             config: ImageConfig::default(),
@@ -100,7 +101,7 @@ impl Fixture {
     }
 }
 
-fn write_shell_layer(path: &Path) {
+fn write_shell_layer(path: &Path) -> String {
     let output = File::create(path).expect("layer");
     let encoder = GzEncoder::new(output, Compression::fast());
     let mut archive = tar::Builder::new(encoder);
@@ -125,6 +126,8 @@ fn write_shell_layer(path: &Path) {
         .expect("shell");
     let encoder = archive.into_inner().expect("finish tar");
     drop(encoder.finish().expect("finish gzip"));
+    let bytes = fs::read(path).expect("read fixture layer");
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
 }
 
 fn reference_key(image: &str) -> String {

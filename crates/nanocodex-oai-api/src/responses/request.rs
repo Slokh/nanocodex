@@ -951,7 +951,12 @@ mod tests {
         let turn_metadata = RequestTurnMetadata::new();
         let request = serde_json::to_value(ResponseCreate::generation_with_policy(
             &config,
-            CreatePolicy::new(config.responses_transport, Thinking::Medium, false),
+            CreatePolicy::new(
+                config.responses_transport,
+                config.model,
+                Thinking::Medium,
+                false,
+            ),
             ResponsesInput::new(&[], &[], None),
             None,
             &profile,
@@ -984,7 +989,12 @@ mod tests {
         let encode = || {
             serde_json::to_value(ResponseCreate::generation_with_policy(
                 &config,
-                CreatePolicy::new(config.responses_transport, Thinking::Medium, false),
+                CreatePolicy::new(
+                    config.responses_transport,
+                    config.model,
+                    Thinking::Medium,
+                    false,
+                ),
                 ResponsesInput::new(&[], &[], None),
                 None,
                 &profile,

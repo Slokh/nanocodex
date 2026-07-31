@@ -3,6 +3,16 @@ mod browser;
 mod config;
 #[cfg(feature = "tempo")]
 mod credits;
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+mod eval;
+#[cfg(not(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
+#[path = "eval_unsupported.rs"]
 mod eval;
 mod mcp;
 #[cfg_attr(not(feature = "tempo"), path = "mpp_disabled.rs")]

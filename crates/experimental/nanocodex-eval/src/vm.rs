@@ -2,7 +2,7 @@
 //!
 //! This module composes the evaluator lifecycle with `nanocodex-vm`. Callers
 //! prepare task images and one guest runtime, configure a [`VmBackend`], and
-//! install it through [`EvaluatorBuilder::vm`]. Every admitted attempt receives
+//! pass it to [`Evaluator::builder`]. Every admitted attempt receives
 //! a fresh writable root disk, an isolated guest tool session, and a verifier
 //! that owns cleanup of the same environment.
 
@@ -59,9 +59,11 @@ pub use nanocodex_vm::{
 };
 
 use crate::{
-    AttemptAgent, AttemptVerification, AttemptVerificationFailure, AttemptVerifier, CleanupPhase,
-    CodexExec, EvalAttempt, EvalEnvironment, EvaluatorBuilder, NetworkPolicy, Task, TaskLoadError,
-    VerifierEnvironmentMode, VerifierResult,
+    CleanupPhase, CodexExec, EvalEnvironment, Evaluator, EvaluatorBuilder, NetworkPolicy, Task,
+    TaskLoadError, VerifierEnvironmentMode, VerifierResult,
+    evaluator::{
+        AttemptAgent, AttemptVerification, AttemptVerificationFailure, AttemptVerifier, EvalAttempt,
+    },
 };
 
 const EMBEDDED_GUEST_TOOL_RUNTIME: &str = "/usr/local/bin/nanocodex-vm-guest";
@@ -211,6 +213,16 @@ enum VmEnvironmentSource {
 }
 
 impl VmResources {
+    /// Prepares a default VM backend for every task in this resource set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when task environments or verifier caches cannot be
+    /// prepared.
+    pub async fn backend(&self) -> Result<VmBackend, VmResourcesError> {
+        self.backend_with(VmBackend::builder()).await
+    }
+
     /// Starts a resource recipe around one VMM executable and guest-runtime disk.
     #[must_use]
     pub fn builder(
@@ -241,7 +253,10 @@ impl VmResources {
     ///
     /// Returns an error when immutable backend configuration or verifier-cache
     /// preparation fails.
-    pub async fn backend(&self, builder: VmBackendBuilder) -> Result<VmBackend, VmResourcesError> {
+    pub async fn backend_with(
+        &self,
+        builder: VmBackendBuilder,
+    ) -> Result<VmBackend, VmResourcesError> {
         self.backend_for_tasks(builder, &self.tasks, None).await
     }
 
@@ -1233,7 +1248,7 @@ impl VmBackend {
     ///
     /// Returns an error when the backend is not configured, the task has no
     /// prepared environment, or the attempt environment cannot be created.
-    pub fn attempt(&self, attempt: EvalAttempt<'_>) -> Result<VmAttempt, VmAttemptError> {
+    pub(crate) fn attempt(&self, attempt: EvalAttempt<'_>) -> Result<VmAttempt, VmAttemptError> {
         let configuration = self.configuration()?;
         let environment = configuration
             .environments
@@ -1307,13 +1322,25 @@ impl VmBackendBuilder {
     }
 }
 
+impl Evaluator {
+    /// Starts a VM-backed evaluator builder from a reusable Nanocodex recipe.
+    ///
+    /// Every attempt receives an independent agent session, disposable host
+    /// workspace, and isolated guest environment. The backend also fixes the
+    /// durable execution identity to [`EvalEnvironment::MicroVm`].
+    #[must_use]
+    pub fn builder(nanocodex: NanocodexBuilder, backend: VmBackend) -> EvaluatorBuilder {
+        Self::new_builder(nanocodex).vm(backend)
+    }
+}
+
 impl EvaluatorBuilder {
     /// Runs every evaluator attempt through the configured VM backend.
     ///
     /// This also fixes the durable result environment to
     /// [`EvalEnvironment::MicroVm`].
     #[must_use]
-    pub fn vm(self, backend: VmBackend) -> Self {
+    pub(crate) fn vm(self, backend: VmBackend) -> Self {
         self.vm_with(backend, |_attempt, builder, runtime| {
             runtime.nanocodex(builder)
         })
@@ -1329,7 +1356,7 @@ impl EvaluatorBuilder {
     /// This also fixes the durable result environment to
     /// [`EvalEnvironment::MicroVm`].
     #[must_use]
-    pub fn vm_with<F>(self, backend: VmBackend, factory: F) -> Self
+    pub(crate) fn vm_with<F>(self, backend: VmBackend, factory: F) -> Self
     where
         F: for<'a> Fn(
                 EvalAttempt<'a>,
@@ -1467,7 +1494,7 @@ pub enum VmAttemptError {
 }
 
 /// One materialized VM attempt with its guest session and owned verifier.
-pub struct VmAttempt {
+pub(crate) struct VmAttempt {
     tools: Tools,
     timezone: String,
     verifier: VmVerifier,
@@ -1557,7 +1584,7 @@ impl VmAttempt {
     /// # Errors
     ///
     /// Returns an error after the owned guest session has been consumed.
-    pub fn session_handle(&self) -> Result<VmToolSessionHandle, VmAttemptError> {
+    pub(crate) fn session_handle(&self) -> Result<VmToolSessionHandle, VmAttemptError> {
         self.verifier
             .agent_session
             .as_ref()
@@ -1570,7 +1597,10 @@ impl VmAttempt {
     /// # Errors
     ///
     /// Returns an error after the owned guest session has been consumed.
-    pub fn nanocodex(self, builder: NanocodexBuilder) -> Result<AttemptAgent, VmAttemptError> {
+    pub(crate) fn nanocodex(
+        self,
+        builder: NanocodexBuilder,
+    ) -> Result<AttemptAgent, VmAttemptError> {
         self.nanocodex_inner(builder, None)
     }
 
@@ -1580,7 +1610,7 @@ impl VmAttempt {
     ///
     /// Returns an error after the owned guest session has been consumed or if
     /// the resulting tool selection is invalid.
-    pub fn nanocodex_with_tool_mode(
+    pub(crate) fn nanocodex_with_tool_mode(
         self,
         builder: NanocodexBuilder,
         tool_mode: nanocodex_tools::ToolMode,
@@ -1615,7 +1645,7 @@ impl VmAttempt {
 
     /// Attaches the owned VM verifier to a stock-Codex attempt driver.
     #[must_use]
-    pub fn codex(self, codex: CodexExec) -> AttemptAgent {
+    pub(crate) fn codex(self, codex: CodexExec) -> AttemptAgent {
         AttemptAgent::codex(codex).verifier(self.verifier)
     }
 }
@@ -3381,9 +3411,8 @@ mod tests {
         let output = tempfile::tempdir().unwrap();
         let backend = VmBackend::builder().build();
         let openai = OpenAi::new("test").unwrap();
-        let (evaluator, _) = crate::Evaluator::builder(Nanocodex::builder(openai))
+        let evaluator = crate::Evaluator::builder(Nanocodex::builder(openai), backend)
             .output_directory(output.path())
-            .vm(backend)
             .build()
             .unwrap();
 

@@ -1,3 +1,4 @@
+mod args;
 mod cleanup;
 mod compare;
 mod diff;

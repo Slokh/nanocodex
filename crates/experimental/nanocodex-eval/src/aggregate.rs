@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::{
     BillingCompleteness, EvalAttemptOutcome, EvalEnvironment, EvalExceptionKind, EvalFailure,
-    EvalOutcome, EvalResult, MeasurementCompleteness, SweepAttemptResult, Task, UsageTotals,
-    VerifierResult, digest::PACKAGE_DIGEST_SCHEMA,
+    EvalOutcome, EvalResult, MeasurementCompleteness, Task, UsageTotals, VerifierResult,
+    digest::PACKAGE_DIGEST_SCHEMA,
 };
 
 /// One self-contained attempt row used by aggregate and plotting consumers.
@@ -483,12 +483,6 @@ pub struct MetricSummary {
 }
 
 impl AttemptFact {
-    /// Builds a plot fact from one successful or verifier-failed sweep result.
-    #[must_use]
-    pub fn from_sweep_attempt(attempt: &SweepAttemptResult) -> Self {
-        Self::from_outcome(attempt.agent().as_str(), attempt.trial(), attempt.outcome())
-    }
-
     /// Builds a plot fact from a complete typed terminal attempt output.
     #[must_use]
     pub fn from_outcome(
@@ -926,17 +920,6 @@ impl AggregateDataset {
     pub const fn with_run_timing(mut self, run_timing: AggregateRunTiming) -> Self {
         self.run_timing = Some(run_timing);
         self
-    }
-
-    /// Builds an aggregate directly from typed sweep results.
-    #[must_use]
-    pub fn from_sweep(attempts: &[SweepAttemptResult]) -> Self {
-        Self::new(
-            attempts
-                .iter()
-                .map(AttemptFact::from_sweep_attempt)
-                .collect(),
-        )
     }
 }
 

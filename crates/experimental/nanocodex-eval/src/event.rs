@@ -1,4 +1,7 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use nanocodex_agent::events::AgentEvent;
 use serde::Serialize;
@@ -12,17 +15,29 @@ use crate::{EvalFailure, EvalResult, VerifierResult};
 pub struct EvalEvent {
     /// Evaluator job identity.
     pub run_id: Uuid,
+    /// Identity for the evaluator invocation that emitted this event.
+    pub invocation_id: Uuid,
+    /// One-based monotonic sequence within the invocation.
+    pub sequence: u64,
+    /// Attempt identity, absent for invocation-level events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<EvalEventAttempt>,
+    /// Typed event payload.
+    #[serde(flatten)]
+    pub kind: EvalEventKind,
+}
+
+/// Stable identity and ordering metadata for one attempt event.
+#[derive(Clone, Debug, Serialize)]
+pub struct EvalEventAttempt {
     /// `UUIDv7` identity for the emitting attempt.
-    pub attempt_id: Uuid,
+    pub id: Uuid,
     /// Stable task name.
     pub task_name: String,
     /// Filesystem-safe unique trial name.
     pub trial_name: String,
     /// One-based monotonic sequence within this attempt.
     pub sequence: u64,
-    /// Typed event payload.
-    #[serde(flatten)]
-    pub kind: EvalEventKind,
 }
 
 /// Agent and verifier activity exposed independently from [`EvalResult`].
@@ -53,15 +68,27 @@ pub enum EvalEventKind {
     Completed(Box<EvalResult>),
     /// The attempt failed without a score.
     Failed(Box<EvalFailure>),
+    /// Every attempt admitted by this invocation reached a terminal outcome.
+    RunCompleted {
+        /// Number of terminal attempts returned by this invocation.
+        attempts: usize,
+        /// Number of already-durable sweep attempts skipped during resume.
+        skipped: usize,
+    },
+    /// The invocation ended before it could return complete terminal outcomes.
+    RunFailed {
+        /// Complete formatted operational error.
+        error: String,
+    },
 }
 
-/// Cloneable source of independent subscriptions to one evaluation job.
+/// Cloneable source of independent subscriptions to one evaluator invocation.
 #[derive(Clone)]
 pub struct EvalEvents {
-    sender: broadcast::Sender<Arc<EvalEvent>>,
+    receiver: Arc<Mutex<broadcast::Receiver<Arc<EvalEvent>>>>,
 }
 
-/// One independent, ordered subscription to an evaluation job.
+/// One independent, ordered subscription to one evaluator invocation.
 pub struct EvalEventStream {
     receiver: broadcast::Receiver<Arc<EvalEvent>>,
 }
@@ -78,17 +105,22 @@ pub enum EvalEventStreamError {
 }
 
 impl EvalEvents {
-    pub(crate) const fn new(sender: broadcast::Sender<Arc<EvalEvent>>) -> Self {
-        Self { sender }
+    pub(crate) fn new(sender: &broadcast::Sender<Arc<EvalEvent>>) -> Self {
+        Self {
+            receiver: Arc::new(Mutex::new(sender.subscribe())),
+        }
     }
 
     /// Subscribes before attempts start. Each subscription receives the same
     /// subsequent events independently.
     #[must_use]
     pub fn subscribe(&self) -> EvalEventStream {
-        EvalEventStream {
-            receiver: self.sender.subscribe(),
-        }
+        let receiver = self
+            .receiver
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .resubscribe();
+        EvalEventStream { receiver }
     }
 }
 
@@ -118,12 +150,12 @@ mod tests {
     use tokio::sync::broadcast;
     use uuid::Uuid;
 
-    use super::{EvalEvent, EvalEventKind, EvalEventStreamError, EvalEvents};
+    use super::{EvalEvent, EvalEventAttempt, EvalEventKind, EvalEventStreamError, EvalEvents};
 
     #[tokio::test]
     async fn subscriptions_receive_the_same_event_independently() {
         let (sender, _) = broadcast::channel(4);
-        let events = EvalEvents::new(sender.clone());
+        let events = EvalEvents::new(&sender);
         let mut first = events.subscribe();
         let mut second = events.subscribe();
         let event = Arc::new(event(1));
@@ -139,7 +171,7 @@ mod tests {
     #[tokio::test]
     async fn lag_is_reported_instead_of_silently_skipping_events() {
         let (sender, _) = broadcast::channel(1);
-        let events = EvalEvents::new(sender.clone());
+        let events = EvalEvents::new(&sender);
         let mut subscriber = events.subscribe();
 
         sender.send(Arc::new(event(1))).unwrap();
@@ -155,10 +187,14 @@ mod tests {
     fn event(sequence: u64) -> EvalEvent {
         EvalEvent {
             run_id: Uuid::nil(),
-            attempt_id: Uuid::nil(),
-            task_name: "task".to_owned(),
-            trial_name: "task__attempt".to_owned(),
+            invocation_id: Uuid::nil(),
             sequence,
+            attempt: Some(EvalEventAttempt {
+                id: Uuid::nil(),
+                task_name: "task".to_owned(),
+                trial_name: "task__attempt".to_owned(),
+                sequence,
+            }),
             kind: EvalEventKind::VerifierStarted,
         }
     }

@@ -9,8 +9,9 @@ use chrono::{DateTime, Utc};
 use clap::Args;
 use eyre::{Result, eyre};
 use nanocodex_eval::{
-    AtifSource, AtifTrajectory, BillingCompleteness, EvalCleanup, EvalOutcome,
-    MeasurementCompleteness, PhaseTiming, UsageTotals,
+    BillingCompleteness, EvalCleanup, EvalOutcome, MeasurementCompleteness, PhaseTiming,
+    UsageTotals,
+    atif::{AtifSource, AtifTrajectory},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
