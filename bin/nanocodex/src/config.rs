@@ -69,6 +69,14 @@ pub(crate) struct AgentArgs {
     #[arg(long, env = "OPENAI_MODEL", default_value_t)]
     model: Model,
 
+    /// Optional namespace prepended to the model identifier on the wire.
+    ///
+    /// API-key HTTPS routers such as OpenRouter use `openai`, producing
+    /// identifiers such as `openai/gpt-5.6-sol` while retaining Sol's
+    /// Nanocodex behavior.
+    #[arg(long, env = "NANOCODEX_MODEL_ID_PREFIX")]
+    model_id_prefix: Option<String>,
+
     /// Reasoning execution mode: standard or pro.
     #[arg(long, env = "OPENAI_REASONING_MODE", default_value_t)]
     reasoning_mode: ReasoningMode,
@@ -211,6 +219,9 @@ impl AgentArgs {
         let mut openai = OpenAi::builder(auth)
             .transport(responses_transport)
             .websocket_url(direct_websocket_url);
+        if let Some(prefix) = self.model_id_prefix.as_deref() {
+            openai = openai.model_id_prefix(prefix);
+        }
         if mpp_enabled {
             openai = openai.max_attempts(NonZeroU32::MIN);
         }

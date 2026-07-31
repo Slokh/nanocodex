@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [model] Support selecting `gpt-5.6-luna` or `gpt-5.6-terra` when creating
   Rust, CLI, Python, JavaScript, and Harbor agent threads.
+- [transport] Support provider-qualified wire model IDs for API-key HTTPS
+  routing without expanding the closed GPT-5.6 model family.
 - [vm] Add persistent VM-backed workspace tools, immutable root-image
   preparation, and provider-neutral composable egress leases.
 

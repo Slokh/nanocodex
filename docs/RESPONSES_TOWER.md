@@ -6,7 +6,9 @@ Status: implemented.
 
 `OpenAi::new(auth)` creates the standard client recipe with `gpt-5.6-sol`.
 `OpenAi::builder(auth)` exposes the closed Sol/Terra/Luna model choice plus
-transport, storage, history, reasoning, and Tower policy.
+transport, storage, history, reasoning, wire-namespace, and Tower policy. The
+optional wire namespace applies only to API-key HTTPS routing and never expands
+the typed model family.
 `Nanocodex::builder(openai)` then adds agent instructions, tools, workspace,
 session identity, and lifecycle policy while keeping driver mechanics private.
 

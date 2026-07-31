@@ -43,6 +43,11 @@ that model for its lifetime, and each replayable attempt retains it across
 retries. Changing models would invalidate the provider checkpoint and require
 an inefficient replay of the complete retained context.
 
+API-key HTTPS routers may qualify those same closed model identifiers with
+`OpenAi::builder(auth).model_id_prefix("openai")`. The prefix changes only the
+wire model ID; model-specific reasoning, compaction, pricing, and snapshots
+continue to use the typed [`Model`] value.
+
 USD estimates require no pricing configuration. Each model applies its
 published standard rates, or its priority rates when
 [`OpenAiBuilder::fast_mode`] is enabled. Terra and Luna usage receive the same

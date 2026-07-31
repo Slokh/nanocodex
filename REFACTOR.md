@@ -175,6 +175,9 @@ let (agent, events) = Nanocodex::builder(openai)
 
 There is one supported model family with a deliberate public Sol/Terra/Luna
 selector.
+An optional wire namespace qualifies those same closed model identifiers for
+API-key HTTPS routing; it does not admit arbitrary models or add a provider
+abstraction.
 `NanocodexBuilder` is a cloneable recipe. Every `build()` creates fresh driver,
 context, transport, tools, and event resources.
 
