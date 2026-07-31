@@ -322,7 +322,7 @@ pub fn assign_missing_response_item_id(item: &mut ResponseItem) {
 }
 
 fn new_response_item_id(prefix: &str) -> ResponseItemId {
-    ResponseItemId::with_suffix(prefix, uuid::Uuid::now_v7())
+    ResponseItemId::with_suffix(prefix, crate::identity::new_uuid_v7())
 }
 
 fn synthetic_output_id(prefix: &str, source_id: Option<&ResponseItemId>) -> Option<ResponseItemId> {

@@ -916,8 +916,10 @@ async fn read_bounded(
 #[cfg(test)]
 mod tests {
     use std::{
+        env,
         ffi::OsString,
         fs::{self, File},
+        process, thread,
         time::{Duration, Instant, UNIX_EPOCH},
     };
 
@@ -939,6 +941,7 @@ mod tests {
     };
 
     const DEFAULT_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+    const DETACHED_PROCESS_PID_FILE_ENV: &str = "NANOCODEX_VM_TEST_DETACHED_PID_FILE";
     const PATH_TRACING_IMAGE_BYTES: u64 = 48_262_737;
 
     #[test]
@@ -1438,10 +1441,14 @@ mod tests {
             let workspace = workspace.path().to_owned();
             async move { serve_test_io(&workspace, guest_read, guest_write).await }
         });
+        let test_executable = env::current_exe().unwrap();
+        let test_executable = shlex::try_quote(test_executable.to_str().unwrap()).unwrap();
+        let pid_file_argument = shlex::try_quote(pid_file.to_str().unwrap()).unwrap();
         let command = format!(
-            "/bin/sh -c 'set -m; (trap : HUP; exec sleep 30) >/dev/null 2>&1 </dev/null & \
-             child=$!; printf %s \"$child\" > \"$1\"' sh '{}'",
-            pid_file.display()
+            "{DETACHED_PROCESS_PID_FILE_ENV}={pid_file_argument} {test_executable} \
+             --exact tools::guest::tests::deliberately_detached_process_child --nocapture \
+             >/dev/null 2>&1 </dev/null & child=$!; \
+             while [ ! -s {pid_file_argument} ]; do kill -0 \"$child\" || exit 1; sleep 0.01; done"
         );
         let start = SessionRequest::Tool(ToolRequest {
             id: 0,
@@ -1527,6 +1534,16 @@ mod tests {
             SessionResponse::Shutdown(response) if response.id == 2 && response.error.is_none()
         ));
         guest_task.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn deliberately_detached_process_child() {
+        let Some(pid_file) = env::var_os(DETACHED_PROCESS_PID_FILE_ENV) else {
+            return;
+        };
+        nix::unistd::setsid().unwrap();
+        fs::write(pid_file, process::id().to_string()).unwrap();
+        thread::sleep(Duration::from_secs(30));
     }
 
     #[tokio::test]

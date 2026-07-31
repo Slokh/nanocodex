@@ -1,12 +1,9 @@
 //! Byte-stable request profiles, persistent history, and wire serialization.
 
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use serde::{Serialize, Serializer, ser::SerializeSeq};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::ResponseItem;
 use crate::{ModelConfig, Thinking};
@@ -90,7 +87,7 @@ pub(crate) struct RequestTurnMetadata {
 impl RequestTurnMetadata {
     pub(crate) fn new() -> Self {
         Self {
-            turn_id: uuid::Uuid::now_v7().to_string(),
+            turn_id: crate::identity::new_uuid_v7().to_string(),
             started_at_unix_ms: unix_time_ms(),
         }
     }

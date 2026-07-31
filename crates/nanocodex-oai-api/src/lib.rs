@@ -14,6 +14,7 @@ pub mod auth;
 /// Complete typed lifecycle events emitted around Responses operations.
 #[cfg(feature = "client")]
 pub mod events;
+mod identity;
 #[cfg(feature = "client")]
 mod openai;
 /// Automatic model-specific USD estimates from provider token usage.

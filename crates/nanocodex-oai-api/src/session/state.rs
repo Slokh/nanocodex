@@ -23,7 +23,7 @@ impl SessionId {
     /// Generates a new `UUIDv7` session identity.
     #[must_use]
     pub fn new() -> Self {
-        Self(uuid::Uuid::now_v7())
+        Self(crate::identity::new_uuid_v7())
     }
 
     /// Returns the UUID representation.
