@@ -1,6 +1,6 @@
 //! Built-in USD estimates for supported GPT-5.6 models.
 //!
-//! Sol and Luna responses are priced automatically from provider-reported
+//! Sol, Terra, and Luna responses are priced automatically from provider-reported
 //! token usage and the selected standard or priority service tier.
 //!
 //! Standard rates and the cache-write multiplier are sourced from the OpenAI
@@ -14,6 +14,8 @@
 //! | --- | --- | ---: | ---: | ---: | ---: |
 //! | Sol | Standard | $5.00 | $0.50 | $6.25 | $30.00 |
 //! | Sol | Fast (`priority`) | $10.00 | $1.00 | $12.50 | $60.00 |
+//! | Terra | Standard | $2.00 | $0.20 | $2.50 | $12.00 |
+//! | Terra | Fast (`priority`) | $5.00 | $0.50 | $6.25 | $30.00 |
 //! | Luna | Standard | $0.20 | $0.02 | $0.25 | $1.20 |
 //! | Luna | Fast (`priority`) | $0.40 | $0.04 | $0.50 | $2.40 |
 //!
