@@ -123,6 +123,8 @@ use nanocodex_tools::{
 };
 
 #[cfg(feature = "guest-runtime")]
+pub use crate::overlay::GuestOverlayError;
+#[cfg(feature = "guest-runtime")]
 pub use guest::VmGuestError;
 #[cfg(all(
     feature = "host",
@@ -310,6 +312,26 @@ impl Tool for VmTool {
 #[cfg(feature = "guest-runtime")]
 pub async fn serve_guest(workspace: impl AsRef<Path>) -> Result<(), VmGuestError> {
     guest::serve(workspace.as_ref()).await
+}
+
+/// Mounts the fixed immutable-lower and writable-upper block devices as the
+/// guest's OverlayFS root, then serves canonical workspace-tool requests.
+///
+/// This entry point is intended for the static `nanocodex-vm-guest` binary
+/// when the host selected an OverlayFS VM configuration. The optional resolver
+/// configuration uses the same `\\n` representation accepted by the existing
+/// raw-ext4 bootstrap.
+///
+/// # Errors
+///
+/// Returns an error when a block filesystem or OverlayFS cannot be mounted,
+/// the guest cannot pivot into the merged root, or tool protocol serving fails.
+#[cfg(feature = "guest-runtime")]
+pub async fn serve_overlay_guest(
+    workspace: impl AsRef<Path>,
+    resolver_configuration: Option<&str>,
+) -> Result<(), VmGuestError> {
+    guest::serve_overlay(workspace.as_ref(), resolver_configuration).await
 }
 
 #[cfg(all(

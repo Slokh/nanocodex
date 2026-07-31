@@ -67,6 +67,15 @@ workspace.shutdown().await?;
 # }
 ```
 
+High-fanout ephemeral attempts use guest OverlayFS instead of copying that
+retained workspace shape. [`host::VmConfig::overlay_ext4`] boots the runtime
+disk read-only, mounts the prepared task disk read-only as the lower layer,
+and sends all mutations to a fresh sparse ext4 upper created by
+[`host::create_sparse_overlay_disk`]. Reset is deletion of that upper disk;
+the host filesystem needs ordinary sparse-file support, not reflinks, XFS, or
+a host OverlayFS mount. Attempts configured for rootfs retention continue to
+use standalone private ext4 copies so retained artifacts remain self-contained.
+
 [`VmWorkspace::tools`] returns a clone-cheap capability suitable for
 `NanocodexBuilder::tools_factory`. Every clone routes to the same retained
 guest runtime, filesystem, and interactive shell sessions. The non-cloneable

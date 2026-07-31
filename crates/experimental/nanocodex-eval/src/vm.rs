@@ -34,7 +34,7 @@ use nanocodex_tools::{Tools, ToolsBuildError, standard::UpdatePlanTool};
 use nanocodex_vm::{
     host::{
         BlockDevice, GuestCommand, Gvproxy as GvproxyProcess, GvproxyError as VmGvproxyError,
-        Network, VmConfig,
+        Network, OverlayDiskError, VmConfig, create_sparse_overlay_disk, overlay_guest_command,
     },
     tools::{VmCommandOutput, VmCommandPartialOutput, VmMemoryObservation, VmToolSession},
 };
@@ -93,6 +93,7 @@ const MAXIMUM_VERIFIER_CACHE_DISK_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const VERIFIER_SETUP_MARKER: &str = "# Check if we're in a valid working directory";
 const VERIFIER_CACHE_BLOCK_ID: &str = "nanoeval-verifier-cache";
 const VERIFIER_CACHE_BLOCK_DEVICE: &str = "/dev/vdc";
+const OVERLAY_VERIFIER_CACHE_BLOCK_DEVICE: &str = "/dev/vdd";
 const VERIFIER_CACHE_MOUNT: &str = "/run/nanoeval-verifier-cache";
 const CACHED_VERIFIER_SCRIPT: &str = "/tmp/nanoeval-verifier.sh";
 const VERIFIER_CACHE_PREPARE_SCRIPT: &str = "/tmp/nanoeval-prepare-verifier.sh";
@@ -1488,6 +1489,10 @@ pub enum VmAttemptError {
     #[error(transparent)]
     Ext4(#[from] arcbox_ext4::error::FormatError),
 
+    /// A sparse writable guest OverlayFS layer could not be created.
+    #[error(transparent)]
+    OverlayDisk(#[from] OverlayDiskError),
+
     /// The isolated userspace network process failed.
     #[error(transparent)]
     Network(#[from] VmGvproxyError),
@@ -1740,18 +1745,30 @@ struct VmAttemptSetupGuard {
 
 #[derive(Clone)]
 struct VmLaunch {
-    root: PathBuf,
+    root: VmLaunchRoot,
     workspace: String,
     shell: String,
     runtime_image: PathBuf,
     vmm: PathBuf,
     cpus: u32,
     memory_mib: u64,
-    ext4: bool,
     resolver_configuration: String,
     environment: BTreeMap<String, String>,
     network_socket: Option<PathBuf>,
     shared_directories: Vec<SharedDirectory>,
+}
+
+#[derive(Clone)]
+enum VmLaunchRoot {
+    Directory(PathBuf),
+    Ext4(PathBuf),
+    OverlayExt4 { lower: PathBuf, upper: PathBuf },
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum AttemptRootPolicy {
+    Retainable,
+    DisposableOverlay,
 }
 
 struct VerifierCache {
@@ -1817,10 +1834,21 @@ fn vm_attempt_inner(
     } else {
         prepare_verifier_cache(template, attempt.task(), host.verifier_cache)?
     };
-    let root = materialize_attempt_root(template, host.runtime_image, attempt.directory())?;
+    let root_policy = if host.retain_passed_rootfs || host.retain_failed_rootfs {
+        AttemptRootPolicy::Retainable
+    } else {
+        AttemptRootPolicy::DisposableOverlay
+    };
+    let root = materialize_attempt_root(
+        template,
+        host.runtime_image,
+        attempt.directory(),
+        "rootfs",
+        root_policy,
+    )?;
     let mut setup_guard = VmAttemptSetupGuard::new(host.retain_failed_rootfs);
-    if template.is_file() {
-        setup_guard.track_root_disk(root.clone());
+    if let Some(disk) = root.writable_disk() {
+        setup_guard.track_root_disk(disk.to_path_buf());
     }
     let network = spawn_attempt_network(
         attempt.task().network(),
@@ -1838,7 +1866,6 @@ fn vm_attempt_inner(
             attempt.task().resources().memory_mb,
             host.max_guest_memory_mb,
         ),
-        ext4: template.is_file(),
         resolver_configuration: network
             .as_ref()
             .map_or_else(String::new, |_| GUEST_PUBLIC_RESOLV_CONF.to_owned()),
@@ -1848,9 +1875,12 @@ fn vm_attempt_inner(
             .map(|network| network.socket().to_path_buf()),
         shared_directories: host.shared_directories.to_vec(),
     };
-    let separate_launch = prepare_separate_verifier_launch(environment, &launch, host, attempt)?;
-    if let Some(separate) = &separate_launch {
-        setup_guard.track_root_disk(separate.root.clone());
+    let separate_launch =
+        prepare_separate_verifier_launch(environment, &launch, host, attempt, root_policy)?;
+    if let Some(separate) = &separate_launch
+        && let Some(disk) = separate.root.writable_disk()
+    {
+        setup_guard.track_root_disk(disk.to_path_buf());
     }
     let verifier_directory = attempt.directory().join("verifier");
     fs::create_dir_all(&verifier_directory)?;
@@ -1940,16 +1970,30 @@ fn materialize_attempt_root(
     template: &Path,
     runtime_image: &Path,
     attempt_directory: &Path,
-) -> Result<PathBuf, VmAttemptError> {
+    disk_stem: &str,
+    policy: AttemptRootPolicy,
+) -> Result<VmLaunchRoot, VmAttemptError> {
     if template.is_file() {
         if !runtime_image.is_file() {
             return Err(VmAttemptError::MissingGuestRuntime(
                 runtime_image.to_path_buf(),
             ));
         }
-        let root = attempt_directory.join("rootfs.ext4");
-        reflink_or_sparse_copy(template, &root)?;
-        return Ok(root);
+        return match policy {
+            AttemptRootPolicy::Retainable => {
+                let root = attempt_directory.join(format!("{disk_stem}.ext4"));
+                reflink_or_sparse_copy(template, &root)?;
+                Ok(VmLaunchRoot::Ext4(root))
+            }
+            AttemptRootPolicy::DisposableOverlay => {
+                let upper = attempt_directory.join(format!("{disk_stem}.upper.ext4"));
+                create_sparse_overlay_disk(&upper, fs::metadata(template)?.len())?;
+                Ok(VmLaunchRoot::OverlayExt4 {
+                    lower: template.to_path_buf(),
+                    upper,
+                })
+            }
+        };
     }
 
     if !runtime_image.is_file() {
@@ -1990,7 +2034,7 @@ fn materialize_attempt_root(
     temporary
         .persist(&guest_runtime)
         .map_err(|error| error.error)?;
-    Ok(attempt_directory.to_path_buf())
+    Ok(VmLaunchRoot::Directory(attempt_directory.to_path_buf()))
 }
 
 fn prepare_separate_verifier_launch(
@@ -1998,13 +2042,19 @@ fn prepare_separate_verifier_launch(
     agent: &VmLaunch,
     host: VmAttemptHost<'_>,
     attempt: EvalAttempt<'_>,
+    root_policy: AttemptRootPolicy,
 ) -> Result<Option<VmLaunch>, VmAttemptError> {
     environment
         .verifier
         .as_ref()
         .map(|verifier| {
-            let root = attempt.directory().join("verifier-rootfs.ext4");
-            reflink_or_sparse_copy(&verifier.rootfs, &root)?;
+            let root = materialize_attempt_root(
+                &verifier.rootfs,
+                host.runtime_image,
+                attempt.directory(),
+                "verifier-rootfs",
+                root_policy,
+            )?;
             Ok(VmLaunch {
                 root,
                 workspace: verifier.workspace.clone(),
@@ -2016,7 +2066,6 @@ fn prepare_separate_verifier_launch(
                     attempt.task().resources().memory_mb,
                     host.max_guest_memory_mb,
                 ),
-                ext4: true,
                 resolver_configuration: agent.resolver_configuration.clone(),
                 environment: verifier.environment.clone(),
                 network_socket: agent.network_socket.clone(),
@@ -2087,10 +2136,12 @@ impl VmLaunch {
         } else {
             Network::Disabled
         };
-        let mut vm = if self.ext4 {
-            VmConfig::ext4(&self.root)
-        } else {
-            VmConfig::new(&self.root)
+        let mut vm = match &self.root {
+            VmLaunchRoot::Directory(root) => VmConfig::new(root),
+            VmLaunchRoot::Ext4(root) => VmConfig::ext4(root),
+            VmLaunchRoot::OverlayExt4 { lower, upper } => {
+                VmConfig::overlay_ext4(&self.runtime_image, lower, upper)
+            }
         }
         .cpus(u8::try_from(self.cpus).unwrap_or(u8::MAX))
         .memory_mib(u32::try_from(self.memory_mib).unwrap_or(u32::MAX))
@@ -2098,33 +2149,58 @@ impl VmLaunch {
         for directory in &self.shared_directories {
             vm = vm.shared_directory(directory.clone());
         }
-        if self.ext4 {
+        if matches!(self.root, VmLaunchRoot::Ext4(_)) {
             vm = vm.block_device(BlockDevice::read_only(
                 GUEST_RUNTIME_BLOCK_ID,
                 &self.runtime_image,
             ));
-            if let Some(cache) = verifier_cache {
-                vm = vm.block_device(BlockDevice::read_write(
-                    VERIFIER_CACHE_BLOCK_ID,
-                    &cache.disk,
-                ));
-            }
+        }
+        if !matches!(self.root, VmLaunchRoot::Directory(_))
+            && let Some(cache) = verifier_cache
+        {
+            vm = vm.block_device(BlockDevice::read_write(
+                VERIFIER_CACHE_BLOCK_ID,
+                &cache.disk,
+            ));
         }
 
-        let mut guest = if self.ext4 {
-            GuestCommand::new("/bin/sh")
-                .arg("-c")
-                .arg(vm_guest_bootstrap_script(
-                    &self.workspace,
-                    &self.resolver_configuration,
-                ))
-        } else {
-            GuestCommand::new(EMBEDDED_GUEST_TOOL_RUNTIME).arg(&self.workspace)
+        let mut guest = match &self.root {
+            VmLaunchRoot::Directory(_) => {
+                GuestCommand::new(EMBEDDED_GUEST_TOOL_RUNTIME).arg(&self.workspace)
+            }
+            VmLaunchRoot::Ext4(_) => {
+                GuestCommand::new("/bin/sh")
+                    .arg("-c")
+                    .arg(vm_guest_bootstrap_script(
+                        &self.workspace,
+                        &self.resolver_configuration,
+                    ))
+            }
+            VmLaunchRoot::OverlayExt4 { .. } => {
+                overlay_guest_command(&self.workspace, &self.resolver_configuration)
+            }
         };
         for (name, value) in &self.environment {
             guest = guest.env(name, value);
         }
         VmToolSession::spawn_vm(command, vm, guest).map_err(Into::into)
+    }
+
+    const fn verifier_cache_block_device(&self) -> &'static str {
+        match self.root {
+            VmLaunchRoot::OverlayExt4 { .. } => OVERLAY_VERIFIER_CACHE_BLOCK_DEVICE,
+            VmLaunchRoot::Directory(_) | VmLaunchRoot::Ext4(_) => VERIFIER_CACHE_BLOCK_DEVICE,
+        }
+    }
+}
+
+impl VmLaunchRoot {
+    fn writable_disk(&self) -> Option<&Path> {
+        match self {
+            Self::Directory(_) => None,
+            Self::Ext4(root) => Some(root),
+            Self::OverlayExt4 { upper, .. } => Some(upper),
+        }
     }
 }
 
@@ -2284,7 +2360,13 @@ impl VerifierCache {
         gvproxy: Option<&Path>,
     ) -> Result<(), VmAttemptError> {
         let temporary = tempfile::tempdir_in(&self.root)?;
-        let root = materialize_attempt_root(&environment.rootfs, runtime_image, temporary.path())?;
+        let root = materialize_attempt_root(
+            &environment.rootfs,
+            runtime_image,
+            temporary.path(),
+            "rootfs",
+            AttemptRootPolicy::DisposableOverlay,
+        )?;
         let network = spawn_preparation_network(
             task.network(),
             gvproxy,
@@ -2298,7 +2380,6 @@ impl VerifierCache {
             vmm: vmm.to_path_buf(),
             cpus: task.resources().cpus.clamp(1, u32::from(u8::MAX)),
             memory_mib: task.resources().memory_mb.clamp(1, u64::from(u32::MAX)),
-            ext4: true,
             resolver_configuration: network
                 .as_ref()
                 .map_or_else(String::new, |_| GUEST_PUBLIC_RESOLV_CONF.to_owned()),
@@ -2316,7 +2397,7 @@ impl VerifierCache {
         };
         format_verifier_cache_disk(&attempt_cache.disk, self.disk_bytes)?;
         let session = launch.spawn(Some(&attempt_cache), VmProcessGroup::Inherited)?;
-        mount_verifier_cache(&session).await?;
+        mount_verifier_cache(&session, launch.verifier_cache_block_device()).await?;
         let script = task.verifier_script_bytes()?;
         session
             .write_file(
@@ -3007,13 +3088,13 @@ impl VmVerifier {
 
         let mut failures = Vec::new();
         for launch in std::iter::once(&self.launch).chain(self.separate_launch.as_ref()) {
-            if !launch.ext4 {
+            let Some(root) = launch.root.writable_disk() else {
                 continue;
-            }
-            match remove_rootfs(&launch.root) {
+            };
+            match remove_rootfs(root) {
                 Ok(true) => info!(
                     target: "nanocodex_eval",
-                    vm_rootfs_path = %launch.root.display(),
+                    vm_rootfs_path = %root.display(),
                     vm_attempt_passed = passed,
                     "removed disposable attempt VM root disk"
                 ),
@@ -3021,12 +3102,12 @@ impl VmVerifier {
                 Err(error) => {
                     warn!(
                         target: "nanocodex_eval",
-                        vm_rootfs_path = %launch.root.display(),
+                        vm_rootfs_path = %root.display(),
                         vm_attempt_passed = passed,
                         %error,
                         "failed to remove disposable attempt VM root disk"
                     );
-                    failures.push(format!("{}: {error}", launch.root.display()));
+                    failures.push(format!("{}: {error}", root.display()));
                 }
             }
         }
@@ -3115,7 +3196,7 @@ impl VmVerifier {
     }
 
     async fn mount_verifier_cache(&self, session: &VmToolSession) -> Result<(), VmAttemptError> {
-        mount_verifier_cache(session).await
+        mount_verifier_cache(session, self.launch.verifier_cache_block_device()).await
     }
 
     fn verifier_command(
@@ -3239,13 +3320,16 @@ async fn restore_verifier_resolver(
     Ok(())
 }
 
-async fn mount_verifier_cache(session: &VmToolSession) -> Result<(), VmAttemptError> {
+async fn mount_verifier_cache(
+    session: &VmToolSession,
+    block_device: &str,
+) -> Result<(), VmAttemptError> {
     let output = session
         .command(
             VmCommand::new("/bin/sh")
                 .arg("-c")
                 .arg(format!(
-                    "mkdir -p {VERIFIER_CACHE_MOUNT} /var/cache/apt/archives /var/lib/apt/lists /root/.cache/uv /root/.local && mount -t ext4 {VERIFIER_CACHE_BLOCK_DEVICE} {VERIFIER_CACHE_MOUNT} && mount --bind {VERIFIER_CACHE_MOUNT}/apt-archives /var/cache/apt/archives && mount --bind {VERIFIER_CACHE_MOUNT}/apt-lists /var/lib/apt/lists && mount --bind {VERIFIER_CACHE_MOUNT}/uv-cache /root/.cache/uv && mount --bind {VERIFIER_CACHE_MOUNT}/uv-home /root/.local"
+                    "mkdir -p {VERIFIER_CACHE_MOUNT} /var/cache/apt/archives /var/lib/apt/lists /root/.cache/uv /root/.local && mount -t ext4 {block_device} {VERIFIER_CACHE_MOUNT} && mount --bind {VERIFIER_CACHE_MOUNT}/apt-archives /var/cache/apt/archives && mount --bind {VERIFIER_CACHE_MOUNT}/apt-lists /var/lib/apt/lists && mount --bind {VERIFIER_CACHE_MOUNT}/uv-cache /root/.cache/uv && mount --bind {VERIFIER_CACHE_MOUNT}/uv-home /root/.local"
                 ))
                 .timeout(Duration::from_secs(30)),
         )
@@ -3562,14 +3646,13 @@ mod tests {
         .unwrap();
         fs::set_permissions(&vmm, fs::Permissions::from_mode(0o700)).unwrap();
         let launch = VmLaunch {
-            root: directory.path().join("root"),
+            root: VmLaunchRoot::Directory(directory.path().join("root")),
             workspace: "/workspace".to_owned(),
             shell: "/bin/sh".to_owned(),
             runtime_image: directory.path().join("runtime"),
             vmm,
             cpus: 1,
             memory_mib: 128,
-            ext4: false,
             resolver_configuration: String::new(),
             environment: BTreeMap::new(),
             network_socket: None,
@@ -3686,6 +3769,79 @@ mod tests {
     }
 
     #[test]
+    fn disposable_attempt_root_is_a_sparse_overlay_over_the_immutable_template() {
+        let directory = tempfile::tempdir().unwrap();
+        let template = directory.path().join("template.ext4");
+        let runtime = directory.path().join("runtime.ext4");
+        let attempt = directory.path().join("attempt");
+        fs::File::create(&template)
+            .unwrap()
+            .set_len(512 * 1024 * 1024)
+            .unwrap();
+        fs::write(&runtime, b"runtime").unwrap();
+        fs::create_dir(&attempt).unwrap();
+
+        let root = materialize_attempt_root(
+            &template,
+            &runtime,
+            &attempt,
+            "rootfs",
+            AttemptRootPolicy::DisposableOverlay,
+        )
+        .unwrap();
+
+        let VmLaunchRoot::OverlayExt4 { lower, upper } = root else {
+            panic!("disposable block root did not use guest OverlayFS");
+        };
+        assert_eq!(lower, template);
+        assert_eq!(upper, attempt.join("rootfs.upper.ext4"));
+        let mut disk = Reader::new(&upper).unwrap();
+        assert!(disk.exists("/upper"));
+        assert!(disk.exists("/work"));
+    }
+
+    #[test]
+    fn overlay_cleanup_removes_only_the_writable_delta() {
+        let directory = tempfile::tempdir().unwrap();
+        let lower = directory.path().join("base.ext4");
+        let upper = directory.path().join("rootfs.upper.ext4");
+        fs::write(&lower, b"immutable base").unwrap();
+        fs::write(&upper, b"attempt delta").unwrap();
+        let mut verifier = verifier_with_launch_root(
+            VmLaunchRoot::OverlayExt4 {
+                lower: lower.clone(),
+                upper: upper.clone(),
+            },
+            false,
+        );
+
+        verifier.remove_disposable_root_disks(false).unwrap();
+
+        assert!(lower.exists());
+        assert!(!upper.exists());
+    }
+
+    #[test]
+    fn dropping_a_cancelled_overlay_attempt_removes_its_delta() {
+        let directory = tempfile::tempdir().unwrap();
+        let lower = directory.path().join("base.ext4");
+        let upper = directory.path().join("rootfs.upper.ext4");
+        fs::write(&lower, b"immutable base").unwrap();
+        fs::write(&upper, b"cancelled attempt delta").unwrap();
+
+        drop(verifier_with_launch_root(
+            VmLaunchRoot::OverlayExt4 {
+                lower: lower.clone(),
+                upper: upper.clone(),
+            },
+            false,
+        ));
+
+        assert!(lower.exists());
+        assert!(!upper.exists());
+    }
+
+    #[test]
     fn backend_retains_only_failed_rootfs_by_default() {
         let backend = VmBackend::builder().build();
         assert!(!backend.retain_passed_rootfs);
@@ -3765,18 +3921,26 @@ mod tests {
     }
 
     fn verifier_with_rootfs(rootfs: PathBuf, retain_failed_rootfs: bool) -> VmVerifier {
-        let directory = rootfs.parent().unwrap();
+        verifier_with_launch_root(VmLaunchRoot::Ext4(rootfs), retain_failed_rootfs)
+    }
+
+    fn verifier_with_launch_root(root: VmLaunchRoot, retain_failed_rootfs: bool) -> VmVerifier {
+        let directory = root
+            .writable_disk()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         VmVerifier {
             agent_session: None,
             launch: VmLaunch {
-                root: rootfs.clone(),
+                root,
                 workspace: "/workspace".to_owned(),
                 shell: "/bin/sh".to_owned(),
                 runtime_image: directory.join("runtime"),
                 vmm: directory.join("vmm"),
                 cpus: 1,
                 memory_mib: 256,
-                ext4: true,
                 resolver_configuration: String::new(),
                 environment: BTreeMap::new(),
                 network_socket: None,
@@ -4078,14 +4242,13 @@ done
             Task::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tasks/write-greeting"))
                 .unwrap();
         let launch = VmLaunch {
-            root: control.path().join("root"),
+            root: VmLaunchRoot::Directory(control.path().join("root")),
             workspace: "/workspace".to_owned(),
             shell: "/bin/sh".to_owned(),
             runtime_image: control.path().join("runtime"),
             vmm: control.path().join("vmm"),
             cpus: 1,
             memory_mib: 256,
-            ext4: false,
             resolver_configuration: String::new(),
             environment: BTreeMap::new(),
             network_socket: None,
