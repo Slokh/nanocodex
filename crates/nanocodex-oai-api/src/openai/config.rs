@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use crate::{Model, OpenAiAuth, ReasoningMode, ResponsesHistory, ResponsesTransport, Thinking};
 
@@ -15,6 +15,12 @@ const SYSTEM_PROMPT: &str = include_str!("../../prompts/system.md");
 pub struct ModelConfig {
     /// Selected GPT-5.6 coding model.
     pub model: Model,
+    /// Optional namespace prepended to the model identifier on the wire.
+    ///
+    /// This keeps Nanocodex's closed model semantics fixed while allowing an
+    /// API-key HTTPS router to require identifiers such as
+    /// `openai/gpt-5.6-sol`.
+    pub model_id_prefix: Option<Arc<str>>,
     /// Authentication source resolved for each transport connection.
     pub auth: OpenAiAuth,
     /// Reasoning execution mode.
@@ -41,6 +47,13 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
+    pub(crate) fn wire_model_id(&self, model: Model) -> Cow<'static, str> {
+        match self.model_id_prefix.as_deref() {
+            Some(prefix) => Cow::Owned(format!("{prefix}/{}", model.as_str())),
+            None => Cow::Borrowed(model.as_str()),
+        }
+    }
+
     /// Returns the fixed orchestration mode sent to the supported model.
     #[must_use]
     pub const fn orchestration() -> &'static str {
@@ -64,6 +77,7 @@ impl Default for ModelConfig {
     fn default() -> Self {
         Self {
             model: Model::default(),
+            model_id_prefix: None,
             auth: OpenAiAuth::api_key(String::new()),
             reasoning_mode: ReasoningMode::default(),
             thinking: Thinking::default(),
