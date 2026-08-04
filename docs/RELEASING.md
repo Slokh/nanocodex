@@ -11,11 +11,6 @@ Each successful run publishes an immutable `nightly-<full SHA>` prerelease and
 refreshes the rolling `nightly` prerelease with the same binaries and
 `SHA256SUMS`. The rolling tag is what `nanocodex update --nightly` follows.
 
-The separate `Docker` workflow publishes multi-architecture GHCR images. Tag
-pushes publish the version plus `latest`; scheduled or manually selected
-nightly runs publish `nightly` plus `nightly-<full SHA>`; commit dispatches
-publish the full SHA only.
-
 ## JavaScript package previews
 
 Every pull request and every commit merged to `master` builds and tests the
@@ -118,7 +113,7 @@ The tag starts the release workflow. It:
 2. validates all crate packages and archive documentation;
 3. creates a **draft** GitHub Release with grouped PR notes and contributor
    attribution;
-4. builds five portable native CLI binaries with the fat-LTO `maxperf` profile;
+4. builds optimized native CLI binaries for x86_64 Linux and Apple Silicon macOS;
 5. publishes the six crates to crates.io in dependency order;
 6. builds, tests, and publishes the Node/browser WASM package to npm with
    provenance;

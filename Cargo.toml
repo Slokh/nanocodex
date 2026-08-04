@@ -8,6 +8,7 @@ members = [
     "crates/experimental/nanocodex-browser",
     "crates/experimental/nanocodex-egress",
     "crates/experimental/nanocodex-voice",
+    "crates/experimental/nanocodex-eval",
     "crates/experimental/nanocodex-vm",
     "crates/nanocodex-oai-api",
     "crates/nanocodex-observability",
@@ -63,13 +64,15 @@ http-body-util = "0.1.3"
 hmac = "0.13.0"
 hudsucker = { version = "0.25.0", git = "https://github.com/gakonst/hudsucker", rev = "9a13609adc4b37b3e7fba28a320546bf672f0f4d", default-features = false, features = ["rcgen-ca", "ring", "rustls-client"] }
 ignore = "0.4.31"
+jiff = { version = "0.2.35", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 krun = { package = "libkrun", version = "=2.0.0-dev", git = "https://github.com/containers/libkrun", rev = "df85b8b75f55e8ef1b06b5bc18f08dc6d7b5aeb0", features = ["blk", "net"] }
-mpp = { version = "=0.11.0", git = "https://github.com/gakonst/mpp-rs", rev = "b1a7088bc05da933923220e29028ff75dbcb1ea4", default-features = false }
+mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "3e37469bb19434982b433ae44ea8c713f7ea923a", default-features = false }
 nanocodex = { version = "0.3.0", path = "crates/nanocodex" }
 nanocodex-agent = { version = "0.3.0", path = "crates/nanocodex-agent" }
 nanocodex-browser = { version = "0.3.0", path = "crates/experimental/nanocodex-browser" }
 nanocodex-egress = { version = "0.3.0", path = "crates/experimental/nanocodex-egress" }
 nanocodex-voice = { version = "0.3.0", path = "crates/experimental/nanocodex-voice" }
+nanocodex-eval = { version = "0.3.0", path = "crates/experimental/nanocodex-eval" }
 nanocodex-vm = { version = "0.3.0", path = "crates/experimental/nanocodex-vm" }
 nanocodex-oai-api = { version = "0.3.0", path = "crates/nanocodex-oai-api" }
 nanocodex-observability = { version = "0.3.0", path = "crates/nanocodex-observability" }
@@ -102,10 +105,12 @@ ratatex = "0.1.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider"] }
 reqwest-middleware = "0.5.2"
 rustls = { version = "0.23.42", default-features = false, features = ["ring"] }
+regex = "1"
 rusqlite = { version = "0.38", features = ["bundled"] }
 rquickjs = "0.12.1"
 rmcp = { version = "1.8.0", default-features = false, features = ["auth", "client", "reqwest-tls-no-provider", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
 oauth2 = { version = "5.0", default-features = false }
+safari-binarycookies = "1.0.0"
 schemars = "0.8.22"
 self-replace = "1.5.0"
 semver = "1.0.27"
@@ -118,6 +123,7 @@ simd-json = "=0.15.1"
 smallvec = { version = "1.15.1", features = ["serde"] }
 sonic-rs = "0.5.8"
 sourcemap = "9.3.2"
+sysinfo = { version = "0.37.2", default-features = false, features = ["system"] }
 syn = { version = "2.0.119", features = ["full"] }
 thiserror = "2.0.17"
 tempfile = "3.27.0"
@@ -126,7 +132,7 @@ toml = "1.1.3"
 tokio = "1.48.0"
 tokio-util = { version = "0.7", features = ["codec"] }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
-tempo-alloy = { version = "=1.10.1", git = "https://github.com/gakonst/tempo", rev = "c2cf774b95ea920b671d311aa07c96051913c314" }
+tempo-alloy = { version = "=1.10.1", git = "https://github.com/tempoxyz/tempo", rev = "bdc5c78c155d746d4e7f16d64b41ce791ba24580" }
 tower = { version = "0.5.2", features = ["limit", "load-shed", "retry", "timeout", "util"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-appender = "0.2.4"
@@ -135,7 +141,7 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "jso
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
 url = "2.5.7"
-uuid = { version = "1", features = ["js", "serde", "v5", "v7"] }
+uuid = { version = "1", features = ["js", "serde", "v4", "v5", "v7"] }
 v8-heap-parser = "1.1.0"
 vergen = { version = "8", default-features = false }
 wasm-bindgen = "0.2.105"
@@ -143,6 +149,7 @@ wasm-bindgen-futures = "0.4.55"
 web-time = "1.1.0"
 webrtc = "0.17.0"
 whoami = "1.6.1"
+yansi = { version = "1.0", features = ["detect-env", "detect-tty"] }
 zstd = "0.13"
 
 [workspace.lints.rust]
@@ -207,6 +214,12 @@ debug = "none"
 strip = "symbols"
 panic = "unwind"
 codegen-units = 16
+
+# Nightlies favor fast feedback while retaining fully optimized portable code.
+# Stable releases continue to use the thin-LTO release profile above.
+[profile.nightly]
+inherits = "release"
+lto = false
 
 # Opt-in builds can favor maximum runtime performance over build time, matching
 # Reth's maxperf profile without raising the minimum CPU level of binaries.

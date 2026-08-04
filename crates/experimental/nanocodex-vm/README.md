@@ -67,6 +67,54 @@ workspace.shutdown().await?;
 # }
 ```
 
+High-fanout ephemeral attempts use guest OverlayFS instead of copying that
+retained workspace shape. [`host::VmConfig::overlay_ext4`] boots the runtime
+disk read-only, mounts the prepared task disk read-only as the lower layer,
+and sends all mutations to a fresh sparse ext4 upper created by
+[`host::create_sparse_overlay_disk`]. Reset is deletion of that upper disk;
+the host filesystem needs ordinary sparse-file support, not reflinks, XFS, or
+a host OverlayFS mount. Attempts configured for rootfs retention continue to
+use standalone private ext4 copies so retained artifacts remain self-contained.
+
+```no_run
+use nanocodex_vm::{
+    host::{
+        EgressLease, Network, VmConfig, create_sparse_overlay_disk,
+        overlay_guest_command,
+    },
+    tools::VmToolSession,
+};
+use tokio::process::Command;
+
+# async fn launch() -> Result<(), Box<dyn std::error::Error>> {
+let upper = ".nanocodex/attempts/018f/upper.ext4";
+create_sparse_overlay_disk(upper, 10 * 1024 * 1024 * 1024)?;
+let config = VmConfig::overlay_ext4(
+    ".cache/nanocodex/vm/runtime.ext4",
+    ".cache/nanocodex/vm/prepared-task.ext4",
+    upper,
+)
+.cpus(2)
+.memory_mib(1024)
+.network(Network::Disabled);
+let session = VmToolSession::spawn_configured(
+    Command::new("dedicated-vmm-process"),
+    config,
+    overlay_guest_command("/workspace", ""),
+    EgressLease::disabled(),
+)
+.await?;
+session.shutdown().await?;
+# std::fs::remove_file(upper)?;
+# Ok(())
+# }
+```
+
+The caller owns upper-disk retention and deletion. Drop all session/tool
+capabilities and complete [`tools::VmToolSession::shutdown`] before removing
+the disk. Overlay startup creates only the requested workspace; harness- or
+application-specific directories remain the caller's responsibility.
+
 [`VmWorkspace::tools`] returns a clone-cheap capability suitable for
 `NanocodexBuilder::tools_factory`. Every clone routes to the same retained
 guest runtime, filesystem, and interactive shell sessions. The non-cloneable
@@ -77,6 +125,30 @@ The default tool selection keeps web search, image generation, and
 `update_plan` on the host. It replaces only `exec_command`, `write_stdin`,
 `apply_patch`, and `view_image`, preserving their standard model-visible names
 and schemas.
+
+### Session control and cleanup
+
+Specialized applications that construct a lower-level
+[`tools::VmToolSession`] can run trusted setup and harness commands with
+[`tools::VmCommand`]. Commands have explicit time and combined-output bounds.
+Dropping an in-flight command request queues cancellation; the guest terminates
+the command's process group on cancellation, timeout, output overflow, or
+session shutdown.
+
+[`tools::VmCommand::mirror_output`] additionally truncates two harness-owned
+guest files before launch and updates them as stdout and stderr arrive. This is
+intended for observing a long-running command from another request. It does not
+relax the command's retained-output bound or change its terminal result.
+
+At an agent-lifecycle boundary,
+[`tools::VmToolSession::terminate_tool_processes`] cancels processes and
+interactive shells owned by the workspace-tool runtime while leaving the VM,
+filesystem, and host-control channel alive. It does not claim to kill a process
+that deliberately detached from the runtime's managed process group. Call
+[`tools::VmToolSession::memory_observation`] for best-effort peak host RSS,
+guest memory use, and guest OOM evidence. Missing telemetry is represented by
+absent fields so it cannot replace the command or agent failure being
+diagnosed.
 
 ## Host, VMM, and guest ownership
 
@@ -142,6 +214,20 @@ Cached blobs and ext4 disks are published atomically and made read-only;
 changes to their inode, size, modification/change time, or permissions force
 validation or rebuilding. The caller-selected cache directory remains trusted
 application state rather than a security boundary against the same OS user.
+
+By default, the complete VMM executable is part of build-cache identity. An
+application whose small VMM entry point is embedded in a frequently changing
+binary may set [`image::VmImageBuilder::vmm_build_cache_identity`] to a stable,
+non-secret semantic version. This is an explicit correctness promise: the
+caller must change it whenever the VMM's Dockerfile-build behavior changes.
+The remaining runtime, firmware, resource, network, resolver, and egress inputs
+are still hashed independently. Empty and excessively large identities are
+rejected.
+
+Prepared roots retain the configured UID-zero account's supported `bash` or
+`sh` shell when that executable exists, then fall back to probing conventional
+shell paths. A cache hit revalidates the shell from the immutable disk instead
+of trusting metadata written by an older release.
 
 Dockerfile build VMs temporarily install the current usable host resolver and
 restore the image's original `/etc/resolv.conf` before a stage disk can be
@@ -242,8 +328,10 @@ The remaining control methods have these payloads:
 | `write_file` | `path`, base64 `contents`, Unix `mode`, optional `modified_unix_seconds` | `error` |
 | `create_directory` | `path`, Unix `mode`, optional `modified_unix_seconds` | `error` |
 | `read_file` | `path` | base64 `contents` or `error` |
-| `execute` | `program`, `arguments`, `current_directory`, `environment`, `timeout_millis`, `max_output_bytes` | `exit_code`, base64 `stdout`, base64 `stderr`, `error`, `timed_out`, `output_limit_exceeded` |
+| `memory` | none | optional `total_kib`, optional `minimum_available_kib`, `oom_kills`, `error` |
+| `execute` | `program`, `arguments`, `current_directory`, `environment`, `timeout_millis`, `max_output_bytes`, optional `stdout_mirror`, optional `stderr_mirror` | `exit_code`, base64 `stdout`, base64 `stderr`, `error`, `timed_out`, `output_limit_exceeded` |
 | `cancel` | `target_id` | `error` |
+| `terminate_tool_processes` | none | `error` |
 | `shutdown` | none | `error` |
 
 Concrete examples:
@@ -259,17 +347,24 @@ Concrete examples:
 {"kind":"execute","payload":{"id":5,"exit_code":0,"stdout":"b2s=","stderr":"","error":null,"timed_out":false,"output_limit_exceeded":false}}
 {"kind":"cancel","payload":{"id":6,"target_id":5}}
 {"kind":"cancel","payload":{"id":6,"error":null}}
-{"kind":"shutdown","payload":{"id":7}}
-{"kind":"shutdown","payload":{"id":7,"error":null}}
+{"kind":"memory","payload":{"id":7}}
+{"kind":"memory","payload":{"id":7,"total_kib":786432,"minimum_available_kib":524288,"oom_kills":0,"error":null}}
+{"kind":"terminate_tool_processes","payload":{"id":8}}
+{"kind":"terminate_tool_processes","payload":{"id":8,"error":null}}
+{"kind":"shutdown","payload":{"id":9}}
+{"kind":"shutdown","payload":{"id":9,"error":null}}
 ```
 
 `write_file` creates parents and publishes through a sibling temporary file
 plus rename. `read_file` accepts only regular files and caps contents at
 32 MiB. `execute` clears the inherited environment, uses only the supplied
 pairs, captures combined output up to the requested bound, and kills the
-process group on timeout, output overflow, cancellation, or shutdown. It is a
-bounded one-response operation rather than a streaming terminal; retained
-interactive shells use the `exec_command`/`write_stdin` tool protocol.
+process group on timeout, output overflow, cancellation, or shutdown. Optional
+mirror paths receive the same stdout and stderr incrementally but do not alter
+that bound. `execute` is a bounded one-response operation rather than a
+streaming terminal; retained interactive shells use the
+`exec_command`/`write_stdin` tool protocol. `memory` reports the guest's
+minimum observed `MemAvailable` and OOM-kill counter over the session.
 
 Dropping a host request removes its pending response and queues a `cancel` with
 a fresh ID. The cancellation queue is bounded by the same 63 admission
@@ -304,6 +399,11 @@ using the resulting lease for Dockerfile builds must assign a non-secret
 identity with [`host::EgressLease::set_build_cache_scope`] after composition;
 otherwise image preparation fails rather than reusing output built through a
 different route or credential policy.
+
+The default [`host::Gvproxy`] topology exposes host loopback to the guest at
+[`host::Gvproxy::HOST_IPV4`]. If an owned gvproxy exits before cleanup, its
+status is appended to the caller-selected gvproxy log and emitted through
+tracing; ordinary owner drop still terminates and reaps a live child.
 
 The last workspace/tool capability kills the VMM child. Workspace startup has
 a 30-second default deadline covering readiness and egress provisioning;

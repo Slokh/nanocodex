@@ -181,6 +181,15 @@ The higher-level `nanocodex-agent` crate decides *when* to compact and how to
 execute tools. This crate implements the provider operation and atomic history
 replacement without embedding agent policy.
 
+## Attempt accounting
+
+Transport metrics distinguish physical Responses attempts from retries. A sent
+attempt that is cancelled or fails before a provider terminal event increments
+`billing_uncertain_response_attempts`; its `ModelAttemptFailed` event also sets
+`billing_uncertain`. This does not assume that the provider charged the request.
+It records that observed token usage is only a lower bound, while completed and
+provider-rejected responses remain exact.
+
 ## Contract-only builds
 
 The default `client` feature remains the complete OpenAI boundary, including
@@ -198,6 +207,12 @@ a `nanocodex-tools::Tools` registry automatically. Use `nanocodex-agent` for
 that batteries-included composition. Consumers implementing their own loop can
 install definitions with [`SessionBuilder::tool_definitions`] and return paired
 tool outputs with [`session::ResponseInput::items`].
+
+[`tools::ToolDefinition::namespace`] represents the provider-native Responses
+namespace shape for related function tools. Function output schemas remain
+client-owned execution metadata: they are available through
+[`tools::ToolDefinition::output_schema`] for Code Mode declarations but are not
+serialized into the provider's function declaration.
 
 ## Going lower level
 

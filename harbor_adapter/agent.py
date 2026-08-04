@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import shlex
@@ -43,6 +44,20 @@ RUN_METRIC_FIELDS = (
 USAGE_METRIC_FIELDS = ("cache_write_input_tokens", "reasoning_output_tokens")
 
 
+def _retained_instruction_evidence(
+    system_prompt_path: Path | None, agents_md_path: Path | None
+) -> dict[str, str | None]:
+    def digest(path: Path | None) -> str | None:
+        if path is None:
+            return None
+        return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+
+    return {
+        "system_prompt_sha256": digest(system_prompt_path),
+        "agents_md_sha256": digest(agents_md_path),
+    }
+
+
 def _cli_tools_install_command(*, install_node: bool) -> str:
     """Build a portable installer for the stock Codex task-side CLI toolset."""
     packages = ["ca-certificates", "curl", "bash", "ripgrep"]
@@ -69,11 +84,28 @@ def _cli_tools_install_command(*, install_node: bool) -> str:
         )
 
     package_list = " ".join(packages)
-    command_checks = "; ".join(
-        f"command -v {command} >/dev/null 2>&1" for command in checks
+    command_checks = " && ".join(
+        [
+            "curl_path=$(command -v curl)",
+            *(
+                f"command -v {command} >/dev/null 2>&1"
+                for command in checks
+                if command != "curl"
+            ),
+        ]
+    )
+    fast_path_checks = (
+        f"{command_checks} && "
+        'case "$curl_path" in '
+        "/opt/nanocodex-verifier/bin/curl) "
+        "test -s /opt/nanocodex-toolbox/etc/ssl/certs/ca-certificates.crt ;; "
+        "*) { test -s /etc/ssl/certs/ca-certificates.crt || "
+        "test -s /etc/pki/tls/certs/ca-bundle.crt; } ;; esac"
     )
     return (
-        node_modules_cleanup
+        "PATH=$PATH:/opt/nanocodex-verifier/bin; export PATH; "
+        f"if ! {{ {fast_path_checks}; }}; then "
+        + node_modules_cleanup
         + "if ldd --version 2>&1 | grep -qi musl || "
         "[ -f /etc/alpine-release ]; then "
         f"apk add --no-cache {package_list}; "
@@ -83,10 +115,8 @@ def _cli_tools_install_command(*, install_node: bool) -> str:
         f"{package_list}; "
         "elif command -v yum >/dev/null 2>&1; then "
         f"yum install -y {package_list}; "
-        "else "
-        "echo 'No supported package manager found; checking preinstalled tools' >&2; "
-        "fi; "
-        f"{command_checks}"
+        "else echo 'No supported package manager found' >&2; exit 127; fi; fi; "
+        + fast_path_checks
     )
 
 
@@ -129,6 +159,7 @@ class NanocodexAgent(BaseInstalledAgent):
         binary_sha256: str | None = None,
         model_name: str | None = None,
         effort: str = "low",
+        fast_mode: bool = False,
         web_search: bool = True,
         subagents: bool = False,
         install_node: bool = False,
@@ -165,6 +196,7 @@ class NanocodexAgent(BaseInstalledAgent):
             supported = ", ".join(sorted(SUPPORTED_MODELS))
             raise ValueError(f"nanocodex supports only {supported}, got {self._model}")
         self._effort = effort
+        self._fast_mode = fast_mode
         self._web_search = web_search
         self._subagents = subagents
         self._install_node = install_node
@@ -279,8 +311,16 @@ class NanocodexAgent(BaseInstalledAgent):
         await self._stage_agents_md(environment)
         arguments = self._run_arguments(instruction)
         agent_command = (
+            "if [ -s /etc/ssl/certs/ca-certificates.crt ]; then "
+            "ca_bundle=/etc/ssl/certs/ca-certificates.crt; "
+            "elif [ -s /etc/pki/tls/certs/ca-bundle.crt ]; then "
+            "ca_bundle=/etc/pki/tls/certs/ca-bundle.crt; "
+            "elif [ -s /opt/nanocodex-toolbox/etc/ssl/certs/ca-certificates.crt ]; then "
+            "ca_bundle=/opt/nanocodex-toolbox/etc/ssl/certs/ca-certificates.crt; "
+            "else echo 'No CA certificate bundle found' >&2; exit 1; fi; "
             f'api_key=$(<{self._API_KEY_FILE}) && test -n "$api_key" && '
             f'rm -f {self._API_KEY_FILE} && OPENAI_API_KEY="$api_key" '
+            'SSL_CERT_FILE="$ca_bundle" '
             + (
                 "NANOCODEX_SUBAGENT_JSONL=1 "
                 if getattr(self, "_subagents", False)
@@ -310,6 +350,10 @@ class NanocodexAgent(BaseInstalledAgent):
             self._model,
             "--thinking",
             self._effort,
+            "--rollouts",
+            "false",
+            "--fast-mode",
+            str(getattr(self, "_fast_mode", False)).lower(),
             "--web-search",
             str(self._web_search).lower(),
             "--subagents",
@@ -503,6 +547,10 @@ class NanocodexAgent(BaseInstalledAgent):
             **runtime_metrics,
             "last_response_id": terminal_payload.get("last_response_id"),
             "cost_status": terminal_payload.get("cost_status"),
+            **_retained_instruction_evidence(
+                getattr(self, "_system_prompt_path", None),
+                getattr(self, "_agents_md_path", None),
+            ),
         }
 
     def _verify_model_context(self, events: list[dict[str, Any]]) -> None:

@@ -35,18 +35,9 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: nanocodex-x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            artifact: nanocodex-aarch64-unknown-linux-gnu
           - os: macos-14
             target: aarch64-apple-darwin
             artifact: nanocodex-aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            artifact: nanocodex-x86_64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: nanocodex-x86_64-pc-windows-msvc.exe
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -71,21 +62,14 @@ jobs:
           TAG_NAME: ${{ inputs.pr && format('pr-{0}', inputs.pr) || 'nightly' }}
         run: |
           VERGEN_GIT_SHA="$BUILD_SHA" \
-            cargo build --locked --release \
+            cargo build --locked --profile nightly \
               --package nanocodex-bin --bin nanocodex --features tempo \
               --target ${{ matrix.target }}
-      - name: Stage Unix artifact
-        if: runner.os != 'Windows'
+      - name: Stage artifact
         shell: bash
         run: |
           mkdir dist
-          cp "target/${{ matrix.target }}/release/nanocodex" "dist/${{ matrix.artifact }}"
-      - name: Stage Windows artifact
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path dist
-          Copy-Item "target/${{ matrix.target }}/release/nanocodex.exe" "dist/${{ matrix.artifact }}"
+          cp "target/${{ matrix.target }}/nightly/nanocodex" "dist/${{ matrix.artifact }}"
       - name: Stage PR provenance and checksum
         if: github.event_name == 'workflow_dispatch' && inputs.pr != ''
         shell: bash
@@ -109,74 +93,12 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.pr && 7 || 1 }}
 
-  build-harbor:
-    if: github.repository == 'gakonst/nanocodex'
-    name: build Harbor static x86_64 Linux
-    runs-on: ubuntu-22.04
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: ${{ inputs.pr && format('refs/pull/{0}/head', inputs.pr) || github.sha }}
-          persist-credentials: false
-      - name: Record exact source revision
-        shell: bash
-        run: echo "BUILD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-      - name: Build static Harbor agent
-        shell: bash
-        env:
-          TAG_NAME: ${{ inputs.pr && format('pr-{0}', inputs.pr) || 'nightly' }}
-        run: |
-          mkdir dist
-          docker build \
-            --platform linux/amd64 \
-            --build-arg CARGO_PROFILE=release \
-            --build-arg TAG_NAME="$TAG_NAME" \
-            --build-arg VERGEN_GIT_SHA="$BUILD_SHA" \
-            --file harbor_adapter/nanocodex.Dockerfile \
-            --target artifact \
-            --output type=local,dest=dist \
-            .
-          mv dist/nanocodex dist/nanocodex-x86_64-unknown-linux-musl
-      - name: Verify the Harbor artifact is portable
-        shell: bash
-        run: |
-          file dist/nanocodex-x86_64-unknown-linux-musl
-          docker run --rm \
-            --volume "$PWD/dist:/dist:ro" \
-            alpine:3.21 \
-            /dist/nanocodex-x86_64-unknown-linux-musl --version
-          docker run --rm \
-            --volume "$PWD/dist:/dist:ro" \
-            ubuntu:22.04 \
-            /dist/nanocodex-x86_64-unknown-linux-musl --version
-      - name: Stage PR provenance and checksum
-        if: github.event_name == 'workflow_dispatch' && inputs.pr != ''
-        shell: bash
-        env:
-          ARTIFACT: nanocodex-x86_64-unknown-linux-musl
-          PR_NUMBER: ${{ inputs.pr }}
-        run: |
-          cd dist
-          sha256sum "$ARTIFACT" > "$ARTIFACT.sha256"
-          printf '{"repository":"%s","pr":%s,"sha":"%s","artifact":"%s","run_id":%s}\n' \
-            "$GITHUB_REPOSITORY" "$PR_NUMBER" "$BUILD_SHA" "$ARTIFACT" \
-            "$GITHUB_RUN_ID" > PR_BUILD.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: nanocodex-x86_64-unknown-linux-musl
-          path: dist/*
-          if-no-files-found: error
-          retention-days: ${{ inputs.pr && 7 || 1 }}
-
   publish:
     if: >-
       github.repository == 'gakonst/nanocodex' &&
       (github.event_name != 'workflow_dispatch' || inputs.pr == '')
     name: publish immutable and rolling nightlies
-    needs: [build, build-harbor]
+    needs: build
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:

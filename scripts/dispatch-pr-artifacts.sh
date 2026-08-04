@@ -49,6 +49,6 @@ fi
 gh workflow run "$workflow" --repo "$repository" --ref "$workflow_ref" \
     --field "pr=$pr"
 
-printf 'Dispatched PR #%s artifacts for %s.\n' "$pr" "$head_sha"
+printf 'Dispatched PR #%s CLI artifacts for %s.\n' "$pr" "$head_sha"
 printf 'Track it with: gh run list --repo %s --workflow %s --event workflow_dispatch\n' \
     "$repository" "$workflow"

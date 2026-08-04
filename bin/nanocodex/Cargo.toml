@@ -23,7 +23,6 @@ tempo = [
     "dep:mpp",
     "dep:nanocodex-egress",
     "dep:nanousd",
-    "dep:nix",
     "dep:rand",
     "dep:tempo-alloy",
 ]
@@ -45,7 +44,7 @@ nanocodex.workspace = true
 nanocodex-browser.workspace = true
 nanocodex-observability.workspace = true
 nanocodex-voice.workspace = true
-nix = { workspace = true, optional = true }
+nix.workspace = true
 nanousd = { workspace = true, optional = true }
 pulldown-cmark.workspace = true
 mpp = { workspace = true, optional = true, features = ["middleware", "tempo", "reqwest-rustls-tls-no-provider"] }
@@ -70,9 +69,17 @@ tempo-alloy = { workspace = true, optional = true }
 tracing.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
+yansi.workspace = true
 
 [target.'cfg(any(all(target_os = "linux", not(target_env = "musl")), all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
+arcbox-ext4.workspace = true
+chrono.workspace = true
+ignore.workspace = true
+nanocodex-eval.workspace = true
 nanocodex-vm.workspace = true
+regex.workspace = true
+sysinfo.workspace = true
+uuid.workspace = true
 
 [build-dependencies]
 chrono.workspace = true

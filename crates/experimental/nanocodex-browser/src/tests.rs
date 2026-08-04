@@ -42,6 +42,37 @@ fn remote_browser_accepts_cookie_only_brave_sessions() -> Result<()> {
 }
 
 #[test]
+fn browser_accepts_an_explicit_all_cookie_brave_session() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let executable = directory.path().join("brave");
+    std::fs::write(&executable, [])?;
+    let user_data = directory.path().join("user-data");
+    std::fs::create_dir(&user_data)?;
+    let brave = BraveSession::new(executable, user_data).copy_all_cookies();
+
+    Browser::builder().brave_session(brave).build()?;
+    Ok(())
+}
+
+#[test]
+fn browser_cookie_source_is_independent_from_the_browser_executable() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let brave_executable = directory.path().join("brave");
+    let chromium_executable = directory.path().join("chromium");
+    std::fs::write(&brave_executable, [])?;
+    std::fs::write(&chromium_executable, [])?;
+    let user_data = directory.path().join("user-data");
+    std::fs::create_dir(&user_data)?;
+    let cookies = BraveSession::new(brave_executable, user_data).copy_all_cookies();
+
+    Browser::builder()
+        .executable(chromium_executable)
+        .cookie_source(cookies)
+        .build()?;
+    Ok(())
+}
+
+#[test]
 fn harness_owned_browser_secrets_are_redacted_from_debug_output() {
     let state = BrowserStorageState {
         cookies: vec![BrowserCookie {
@@ -324,15 +355,16 @@ async fn deferred_browser_is_discoverable_without_model_schema_bytes() -> Result
             r#"
 const browser = ALL_TOOLS.find((tool) => tool.name === "browser");
 if (!browser) throw new Error("browser metadata missing");
-const schema = JSON.stringify(browser.input_schema);
+if (typeof browser.description !== "string") {
+  throw new Error("browser description missing");
+}
 const opened = await tools[browser.name]({
   action: "open",
   url: "https://example.com"
 });
 text({
   name: browser.name,
-  hasOpen: schema.includes('"open"'),
-  hasSnapshot: schema.includes('"snapshot"'),
+  hasDescription: browser.description.length > 0,
   opened
 });
 "#,
@@ -344,8 +376,7 @@ text({
     assert_eq!(execution.nested_calls.len(), 1);
     let output: Value = serde_json::from_str(execution_text(&execution.output)?)?;
     assert_eq!(output["name"], "browser");
-    assert_eq!(output["hasOpen"], true);
-    assert_eq!(output["hasSnapshot"], true);
+    assert_eq!(output["hasDescription"], true);
     assert_eq!(output["opened"]["action"], "open");
     assert_eq!(recording.actions()?.len(), 1);
     Ok(())

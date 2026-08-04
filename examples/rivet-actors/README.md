@@ -33,8 +33,10 @@ mode-`0600` Codex auth file for each connection. It never uses the refresh token
 or stores credentials in Rivet SQLite. Deployments can instead use the singleton
 `nanocodexAuth` actor to own dedicated rotating credentials, refresh five
 minutes early, single-flight concurrent refreshes, and retry one WebSocket
-upgrade after revision-guarded 401 recovery. In both paths bearer credentials
-remain in host code and never enter Nanocodex WASM.
+upgrade after revision-guarded 401 recovery. Disposable deployments may omit
+the refresh token and use only the current Codex access token, matching the
+Cloudflare demo. In both paths bearer credentials remain in host code and never
+enter Nanocodex WASM.
 
 ## Build and run
 
@@ -80,9 +82,17 @@ In another terminal:
 ```sh
 npm run repl --prefix examples/rivet-actors
 npm run smoke --prefix examples/rivet-actors
+npm run multiclient --prefix examples/rivet-actors
 npm run stress --prefix examples/rivet-actors
 npm run brutalize --prefix examples/rivet-actors
 ```
+
+`multiclient` attaches two independent realtime clients to one actor and
+requires both to receive the same accepted prompt, Nanocodex event stream, and
+durably committed terminal result. The browser uses the same broadcasts, so
+tabs or devices connected with the same actor key stay synchronized. A newly
+connected client also reconstructs any active prompt from `status()` before
+joining its remaining event stream.
 
 The REPL is intentionally disposable. It stores only the Rivet endpoint,
 actor key, and an unfinished turn ID/input in `.nanocodex/rivet-repl.json`.
@@ -103,7 +113,12 @@ provider response cannot be resumed.
 The local Rivet endpoint is `http://127.0.0.1:6420`. Set
 `RIVET_PUBLIC_ENDPOINT` for another deployment. Set `NANOCODEX_WEB_HOST` or
 `NANOCODEX_WEB_PORT` to move the static browser client; it binds to loopback by
-default.
+default. On Rivet Compute it runs RivetKit's serverless listener on the injected
+`PORT`, satisfying the runner health check and serving both the actor routes and
+demo page from the same container. A fresh hosted page selects its same-origin
+`/api/rivet` endpoint automatically. A separately hosted static page can select
+a deployment without embedding it in source by adding
+`?endpoint=https%3A%2F%2F...` to the page URL.
 
 The smoke also forces the real model to invoke `runtimeInfo` and requires a
 completed Nanocodex `tool.call`/`tool.result` event pair, so it verifies the
@@ -124,8 +139,24 @@ stable defaults prevent repeated local runs from accumulating actor records.
 ## Deployment-managed subscription authentication
 
 The local command above is the safest demo path. A deployed actor cannot read
-your local Codex auth file, so give it dedicated rotating subscription
-credentials instead. This still does not require `OPENAI_API_KEY`:
+your local Codex auth file. For a disposable hosted demo, the deployment helper
+securely reads the current access token and account metadata, checks the auth
+file permissions and token lifetime, and does not copy the rotating refresh
+token:
+
+```sh
+export RIVET_CLOUD_TOKEN=cloud_api_xxxxx
+npm run deploy:subscription --prefix examples/rivet-actors
+```
+
+This is the same access-token-only policy as the Cloudflare demo. It keeps
+working until the current access token expires or ChatGPT rejects it; then run
+`codex login` and deploy again. `NANOCODEX_CODEX_AUTH_FILE`, `CODEX_HOME`, and
+`RIVET_NAMESPACE` override the auth path and target namespace.
+
+For a long-lived deployment, give the auth actor dedicated rotating
+subscription credentials instead. This still does not require
+`OPENAI_API_KEY`:
 
 ```sh
 export NANOCODEX_AUTH_MODE=chatgpt
@@ -190,18 +221,17 @@ npx @rivetkit/cli@2.3.10 deploy \
   --env OPENAI_API_KEY="$OPENAI_API_KEY"
 ```
 
-For deployment-managed ChatGPT authentication, replace the last two flags with
-the `NANOCODEX_AUTH_MODE`, capability, actor key, and dedicated ChatGPT
-credential variables documented above. Do not share that rotating refresh
-token with another deployment or local Codex installation.
+For ChatGPT subscription authentication, use the access-token-only helper from
+the preceding section. Set `CHATGPT_REFRESH_TOKEN` before invoking it only when
+that refresh token is dedicated to this deployment; never copy the refresh
+token still used by a local Codex installation.
 
-Once the pool is ready, mint a client-safe public token and use the resulting
-endpoint with the REPL, smoke driver, or browser client:
+Once the pool is ready, copy a client-safe publishable endpoint from the
+namespace's **Connect** page in the Rivet dashboard. Use that endpoint with the
+REPL, smoke driver, or browser client:
 
 ```sh
-RIVET_PUBLIC_TOKEN="$(npx @rivetkit/cli@2.3.10 token create \
-  --kind public --namespace production)"
-export RIVET_PUBLIC_ENDPOINT="https://production:${RIVET_PUBLIC_TOKEN}@api.rivet.dev"
+export RIVET_PUBLIC_ENDPOINT='https://<namespace>:pk_...@api.rivet.dev'
 npm run smoke --prefix examples/rivet-actors
 npm run repl --prefix examples/rivet-actors
 ```
